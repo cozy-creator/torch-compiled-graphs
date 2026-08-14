@@ -62,6 +62,16 @@ Those are the exact v1 top-level and graph-class fields; extensions and abandone
 pre-launch shapes are refused. Readers reject missing, duplicate, non-file, or
 unexpected archive members and materialize only into a new directory.
 
+Archive admission is streaming and bounded before publication: `metadata.json`
+is limited to 8 MiB, `model.pt2` to 16 GiB, and `constants.safetensors` to
+4 GiB, with a total uncompressed ceiling equal to their sum. The package limit
+is four times ZIP32's 4 GiB boundary so unusually large generated host or CUDA
+code remains representable. Literal bytes above the ZIP32 boundary are treated
+as model state and belong in the separately bound repository snapshot. Declared
+oversize members, non-canonical tar extensions, truncated compression streams,
+and bytes beyond the total ceiling fail as `ArtifactError`; an unsuccessful
+import publishes neither a destination nor a HashRepo ref.
+
 The `host_isa` object must include `machine`, `host_isa_level`,
 `host_isa_features`, `cpp_march`, and `cpp_simdlen`. x86-64 writers cap `cpp_march` at
 `x86-64-v3`, record only the cumulative features required by that level, and
