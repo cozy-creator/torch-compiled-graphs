@@ -9,6 +9,7 @@ import shutil
 import struct
 import tarfile
 import tempfile
+import zlib
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, BinaryIO, cast
@@ -33,6 +34,23 @@ _REQUIRED_MEMBERS = frozenset((METADATA_NAME, PACKAGE_NAME))
 _MEMBERS = _REQUIRED_MEMBERS | {LITERALS_NAME}
 _MAX_METADATA_BYTES = 8 << 20
 _MAX_SAFETENSORS_HEADER_BYTES = 8 << 20
+# A code-only AOTI package must not carry model weights. Sixteen GiB is four
+# times ZIP32's 4 GiB boundary: enough for unusually large generated host/CUDA
+# code while still making remote decompression a finite admission operation.
+_MAX_PACKAGE_BYTES = 16 << 30
+# Literal constants are the only tensor bytes this envelope permits. Four GiB
+# is the ZIP32 boundary; larger payloads are model-state in practice and belong
+# in the separately bound repository snapshot, not one compiled graph.
+_MAX_LITERALS_BYTES = 4 << 30
+# The sum, rather than a second convention, is the exact v1 envelope budget.
+_MAX_MEMBER_BYTES = _MAX_METADATA_BYTES + _MAX_PACKAGE_BYTES + _MAX_LITERALS_BYTES
+# Deflate's documented worst-case expansion is well below one percent. That
+# margin plus one canonical tar record bounds the fetched/compressed input too,
+# including concatenated empty gzip members that add CPU without member bytes.
+_MAX_ARCHIVE_BYTES = _MAX_MEMBER_BYTES + _MAX_MEMBER_BYTES // 100 + tarfile.RECORDSIZE
+# Three member headers/padding plus the USTAR terminator fit well within two
+# records. This is the gzip decoder's output ceiling before tar semantics run.
+_MAX_TAR_BYTES = _MAX_MEMBER_BYTES + 2 * tarfile.RECORDSIZE
 _CONSTANT_FIELDS = frozenset(("fqn", "source", "dtype", "shape"))
 _CONSTANT_SOURCES = frozenset(("state_dict", "computed", "literal"))
 _TOP_LEVEL_FIELDS = frozenset(
@@ -472,6 +490,30 @@ def _tarinfo(name: str, size: int) -> tarfile.TarInfo:
     return info
 
 
+def _member_limit(name: str) -> int:
+    limits = {
+        METADATA_NAME: _MAX_METADATA_BYTES,
+        PACKAGE_NAME: _MAX_PACKAGE_BYTES,
+        LITERALS_NAME: _MAX_LITERALS_BYTES,
+    }
+    return limits[name]
+
+
+def _validate_member_sizes(sizes: Mapping[str, int]) -> None:
+    total = 0
+    for name, size in sizes.items():
+        if type(size) is not int or size < 0:
+            raise ArtifactError(f"artifact member {name!r} has an invalid size")
+        limit = _member_limit(name)
+        if size > limit:
+            raise ArtifactError(f"{name} exceeds the {limit}-byte v1 budget")
+        total += size
+        if total > _MAX_MEMBER_BYTES:
+            raise ArtifactError(
+                f"artifact total uncompressed bytes exceed the {_MAX_MEMBER_BYTES}-byte v1 budget"
+            )
+
+
 def pack_artifact(
     package: str | Path,
     output: str | Path,
@@ -488,6 +530,14 @@ def pack_artifact(
     if literal_path is not None and not literal_path.is_file():
         raise FileNotFoundError(literal_path)
     checked = validate_metadata(metadata, has_literals=literal_path is not None)
+    encoded = _metadata_bytes(checked)
+    sizes = {
+        METADATA_NAME: len(encoded),
+        PACKAGE_NAME: package_path.stat().st_size,
+    }
+    if literal_path is not None:
+        sizes[LITERALS_NAME] = literal_path.stat().st_size
+    _validate_member_sizes(sizes)
     _verify_literals(literal_path, checked)
     verify_package(package_path, checked)
     target = Path(output)
@@ -499,7 +549,6 @@ def pack_artifact(
                 with tarfile.open(
                     fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT
                 ) as archive:
-                    encoded = _metadata_bytes(checked)
                     archive.addfile(_tarinfo(METADATA_NAME, len(encoded)), io.BytesIO(encoded))
                     for name, source in (
                         (PACKAGE_NAME, package_path),
@@ -548,23 +597,93 @@ def verify_package(package: str | Path, metadata: Mapping[str, Any]) -> None:
         raise ArtifactError("AOTInductor package is not code-only: " + "; ".join(violations))
 
 
-def _members(artifact: Path) -> tuple[tarfile.TarFile, dict[str, tarfile.TarInfo]]:
+def _validate_single_gzip_member(artifact: Path) -> None:
+    decoder = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+    uncompressed = 0
     try:
+        with artifact.open("rb") as source:
+            while compressed := source.read(1 << 16):
+                pending = compressed
+                while pending:
+                    output = decoder.decompress(pending, 1 << 20)
+                    uncompressed += len(output)
+                    if uncompressed > _MAX_TAR_BYTES:
+                        raise ArtifactError(
+                            "artifact decompressed bytes exceed the "
+                            f"{_MAX_TAR_BYTES}-byte v1 budget"
+                        )
+                    pending = decoder.unconsumed_tail
+                    if decoder.eof:
+                        if decoder.unused_data or pending or source.read(1):
+                            raise ArtifactError("artifact must contain exactly one gzip member")
+                        return
+            if not decoder.eof:
+                raise ArtifactError("artifact has a truncated gzip member")
+    except ArtifactError:
+        raise
+    except (OSError, zlib.error) as exc:
+        raise ArtifactError(f"cannot decompress artifact {artifact}: {exc}") from exc
+
+
+def _members(artifact: Path) -> tuple[tarfile.TarFile, dict[str, tarfile.TarInfo]]:
+    archive: tarfile.TarFile | None = None
+    try:
+        artifact_size = artifact.stat().st_size
+        if artifact_size > _MAX_ARCHIVE_BYTES:
+            raise ArtifactError(
+                f"artifact compressed bytes exceed the {_MAX_ARCHIVE_BYTES}-byte v1 budget"
+            )
+        _validate_single_gzip_member(artifact)
         archive = tarfile.open(artifact, mode="r:*")
-        rows = archive.getmembers()
-    except (OSError, tarfile.TarError) as exc:
-        raise ArtifactError(f"cannot read artifact {artifact}: {exc}") from exc
-    members: dict[str, tarfile.TarInfo] = {}
-    for row in rows:
-        if row.name not in _MEMBERS or not row.isfile() or row.name in members:
+        members: dict[str, tarfile.TarInfo] = {}
+        sizes: dict[str, int] = {}
+        while (row := archive.next()) is not None:
+            if (
+                row.name not in _MEMBERS
+                or not row.isfile()
+                or row.pax_headers
+                or row.name in members
+            ):
+                raise ArtifactError(f"unexpected or duplicate artifact member {row.name!r}")
+            sizes[row.name] = row.size
+            _validate_member_sizes(sizes)
+            members[row.name] = row
+        # The v1 writer closes USTAR with two zero blocks and pads to the next
+        # 20-block record. Consume exactly those canonical bytes, then force one
+        # EOF read so gzip validates its CRC and end marker.
+        expected_end = (
+            (
+                archive.offset
+                + 2 * tarfile.BLOCKSIZE
+                + tarfile.RECORDSIZE
+                - 1
+            )
+            // tarfile.RECORDSIZE
+        ) * tarfile.RECORDSIZE
+        remaining_padding = expected_end - archive.fileobj.tell()
+        if not 0 <= remaining_padding <= tarfile.RECORDSIZE:
+            raise ArtifactError("artifact has a non-canonical USTAR end marker")
+        while remaining_padding:
+            trailer = archive.fileobj.read(min(1 << 20, remaining_padding))
+            if not trailer:
+                raise ArtifactError("artifact has truncated USTAR padding")
+            if trailer.strip(b"\0"):
+                raise ArtifactError("artifact has nonzero bytes after the USTAR end marker")
+            remaining_padding -= len(trailer)
+        if archive.fileobj.read(1):
+            raise ArtifactError("artifact has bytes after the canonical USTAR record")
+        missing = _REQUIRED_MEMBERS - set(members)
+        if missing:
+            raise ArtifactError(f"artifact is missing {sorted(missing)!r}")
+        return archive, members
+    except ArtifactError:
+        if archive is not None:
             archive.close()
-            raise ArtifactError(f"unexpected or duplicate artifact member {row.name!r}")
-        members[row.name] = row
-    missing = _REQUIRED_MEMBERS - set(members)
-    if missing:
-        archive.close()
-        raise ArtifactError(f"artifact is missing {sorted(missing)!r}")
-    return archive, members
+        raise
+    except (EOFError, OSError, tarfile.TarError) as exc:
+        if archive is not None:
+            archive.close()
+        raise ArtifactError(f"cannot read artifact {artifact}: {exc}") from exc
 
 
 def read_metadata(artifact: str | Path) -> dict[str, Any]:
@@ -572,8 +691,6 @@ def read_metadata(artifact: str | Path) -> dict[str, Any]:
     archive, members = _members(path)
     try:
         info = members[METADATA_NAME]
-        if info.size > _MAX_METADATA_BYTES:
-            raise ArtifactError(f"metadata exceeds {_MAX_METADATA_BYTES} bytes")
         handle = archive.extractfile(info)
         if handle is None:
             raise ArtifactError("metadata member is unreadable")
@@ -584,6 +701,10 @@ def read_metadata(artifact: str | Path) -> dict[str, Any]:
         if not isinstance(raw, dict):
             raise ArtifactError("metadata root must be an object")
         return validate_metadata(raw, has_literals=LITERALS_NAME in members)
+    except ArtifactError:
+        raise
+    except (EOFError, OSError, tarfile.TarError) as exc:
+        raise ArtifactError(f"cannot read artifact {path}: {exc}") from exc
     finally:
         archive.close()
 
@@ -603,9 +724,9 @@ def _verify_materialized(directory: Path) -> dict[str, Any]:
     missing = _REQUIRED_MEMBERS - names
     if missing:
         raise ArtifactError(f"materialized artifact is missing {sorted(missing)!r}")
+    sizes = {name: (directory / name).stat().st_size for name in names}
+    _validate_member_sizes(sizes)
     metadata_path = directory / METADATA_NAME
-    if metadata_path.stat().st_size > _MAX_METADATA_BYTES:
-        raise ArtifactError(f"metadata exceeds {_MAX_METADATA_BYTES} bytes")
     try:
         raw = json.loads(metadata_path.read_bytes(), object_pairs_hook=_unique_object)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -619,6 +740,32 @@ def _verify_materialized(directory: Path) -> dict[str, Any]:
     return checked
 
 
+def _copy_member(
+    archive: tarfile.TarFile,
+    info: tarfile.TarInfo,
+    destination: Path,
+) -> None:
+    extracted = archive.extractfile(info)
+    if extracted is None:
+        raise ArtifactError(f"artifact member {info.name!r} is unreadable")
+    remaining = info.size
+    try:
+        with extracted as source:
+            with destination.open("wb") as output:
+                while remaining:
+                    chunk = source.read(min(1 << 20, remaining))
+                    if not chunk:
+                        raise ArtifactError(f"artifact member {info.name!r} is truncated")
+                    output.write(chunk)
+                    remaining -= len(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+    except ArtifactError:
+        raise
+    except (EOFError, OSError, tarfile.TarError) as exc:
+        raise ArtifactError(f"cannot read artifact member {info.name!r}: {exc}") from exc
+
+
 def unpack_artifact(artifact: str | Path, destination: str | Path) -> dict[str, Any]:
     """Validate and atomically materialize an artifact into a new directory."""
 
@@ -630,14 +777,7 @@ def unpack_artifact(artifact: str | Path, destination: str | Path) -> dict[str, 
     stage = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=target.parent))
     try:
         for name, info in members.items():
-            extracted = archive.extractfile(info)
-            if extracted is None:
-                raise ArtifactError(f"artifact member {name!r} is unreadable")
-            with extracted as source:
-                with (stage / name).open("wb") as output:
-                    shutil.copyfileobj(source, output, length=1 << 20)
-                    output.flush()
-                    os.fsync(output.fileno())
+            _copy_member(archive, info, stage / name)
         metadata = _verify_materialized(stage)
         _fsync_dir(stage)
         os.replace(stage, target)

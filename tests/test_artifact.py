@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
@@ -392,8 +393,8 @@ def test_v1_refuses_retired_artifact_shapes(retired: str) -> None:
 
 
 def test_unexpected_archive_member_is_refused_without_destination(tmp_path: Path) -> None:
-    artifact = tmp_path / "bad.tar"
-    with tarfile.open(artifact, "w") as archive:
+    artifact = tmp_path / "bad.tar.gz"
+    with tarfile.open(artifact, "w:gz") as archive:
         payload = b"bad"
         info = tarfile.TarInfo("../escape")
         info.size = len(payload)
@@ -402,3 +403,158 @@ def test_unexpected_archive_member_is_refused_without_destination(tmp_path: Path
     with pytest.raises(ArtifactError, match="unexpected"):
         unpack_artifact(artifact, destination)
     assert not destination.exists()
+
+
+def test_noncanonical_pax_extension_is_refused_without_destination(tmp_path: Path) -> None:
+    artifact = tmp_path / "pax.tar.gz"
+    with tarfile.open(artifact, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+        for name, data in (
+            ("metadata.json", json.dumps(metadata(), separators=(",", ":")).encode()),
+            ("model.pt2", b"package"),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.pax_headers = {"comment": "not part of compiled-graph v1"}
+            archive.addfile(info, io.BytesIO(data))
+    destination = tmp_path / "output"
+    with pytest.raises(ArtifactError, match="unexpected"):
+        unpack_artifact(artifact, destination)
+    assert not destination.exists()
+
+
+def test_pack_refuses_package_above_v1_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    monkeypatch.setattr(artifact_module, "_MAX_PACKAGE_BYTES", package.stat().st_size - 1)
+    with pytest.raises(ArtifactError, match="model.pt2 exceeds"):
+        pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    assert not (tmp_path / "artifact.tar.gz").exists()
+
+
+def test_pack_refuses_literal_payload_above_v1_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = struct.pack("<4f", 1.0, 2.0, 3.0, 4.0)
+    package = aoti_package(tmp_path / "source.pt2", literal=True)
+    literals = safetensors_file(
+        tmp_path / "constants.safetensors", [("table", "F32", (2, 2), expected)]
+    )
+    monkeypatch.setattr(artifact_module, "_MAX_LITERALS_BYTES", literals.stat().st_size - 1)
+    with pytest.raises(ArtifactError, match="constants.safetensors exceeds"):
+        pack_artifact(
+            package,
+            tmp_path / "artifact.tar.gz",
+            metadata(literal=expected),
+            literals=literals,
+        )
+    assert not (tmp_path / "artifact.tar.gz").exists()
+
+
+def test_unpack_refuses_metadata_above_v1_budget_before_materializing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    with tarfile.open(artifact, "r:gz") as archive:
+        metadata_size = archive.getmember("metadata.json").size
+    monkeypatch.setattr(artifact_module, "_MAX_METADATA_BYTES", metadata_size - 1)
+    destination = tmp_path / "materialized"
+    with pytest.raises(ArtifactError, match="metadata.json exceeds"):
+        unpack_artifact(artifact, destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".materialized.*"))
+
+
+def test_unpack_refuses_archive_above_the_compressed_input_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    monkeypatch.setattr(artifact_module, "_MAX_ARCHIVE_BYTES", artifact.stat().st_size - 1)
+    destination = tmp_path / "materialized"
+    with pytest.raises(ArtifactError, match="compressed bytes"):
+        unpack_artifact(artifact, destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".materialized.*"))
+
+
+def test_unpack_refuses_declared_member_before_decompression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "bomb.tar.gz"
+    payload = b"x" * (1 << 20)
+    with tarfile.open(artifact, "w:gz") as archive:
+        info = tarfile.TarInfo("model.pt2")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+        encoded = json.dumps(metadata(), separators=(",", ":")).encode()
+        info = tarfile.TarInfo("metadata.json")
+        info.size = len(encoded)
+        archive.addfile(info, io.BytesIO(encoded))
+    monkeypatch.setattr(artifact_module, "_MAX_PACKAGE_BYTES", len(payload) - 1)
+    destination = tmp_path / "materialized"
+    with pytest.raises(ArtifactError, match="model.pt2 exceeds"):
+        unpack_artifact(artifact, destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".materialized.*"))
+
+
+def test_unpack_enforces_total_uncompressed_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    monkeypatch.setattr(artifact_module, "_MAX_MEMBER_BYTES", package.stat().st_size)
+    destination = tmp_path / "materialized"
+    with pytest.raises(ArtifactError, match="total uncompressed bytes"):
+        unpack_artifact(artifact, destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".materialized.*"))
+
+
+def test_unpack_normalizes_truncated_decompression_and_cleans_stage(tmp_path: Path) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    raw = artifact.read_bytes()
+    artifact.write_bytes(raw[: len(raw) // 2])
+    destination = tmp_path / "materialized"
+    with pytest.raises(ArtifactError, match="cannot read artifact|truncated"):
+        unpack_artifact(artifact, destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".materialized.*"))
+
+
+def test_unpack_refuses_a_truncated_gzip_trailer(tmp_path: Path) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    raw = artifact.read_bytes()
+    artifact.write_bytes(raw[:-4])
+    destination = tmp_path / "materialized"
+    with pytest.raises(ArtifactError, match="truncated gzip"):
+        unpack_artifact(artifact, destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".materialized.*"))
+
+
+@pytest.mark.parametrize("empty_members", [1, 2])
+def test_unpack_refuses_empty_concatenated_gzip_members(
+    empty_members: int, tmp_path: Path
+) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    artifact.write_bytes(
+        artifact.read_bytes() + gzip.compress(b"", mtime=0) * empty_members
+    )
+    destination = tmp_path / "materialized"
+    with pytest.raises(ArtifactError, match="exactly one gzip member"):
+        unpack_artifact(artifact, destination)
+    assert not destination.exists()
+
+
+def test_unpack_refuses_a_nonempty_concatenated_gzip_member(tmp_path: Path) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    artifact.write_bytes(artifact.read_bytes() + gzip.compress(b"\0", mtime=0))
+    with pytest.raises(ArtifactError, match="exactly one gzip member"):
+        unpack_artifact(artifact, tmp_path / "materialized")
