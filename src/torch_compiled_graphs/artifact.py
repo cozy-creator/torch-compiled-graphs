@@ -43,6 +43,10 @@ _MAX_PACKAGE_BYTES = 16 << 30
 _MAX_LITERALS_BYTES = 4 << 30
 # The sum, rather than a second convention, is the exact v1 envelope budget.
 _MAX_MEMBER_BYTES = _MAX_METADATA_BYTES + _MAX_PACKAGE_BYTES + _MAX_LITERALS_BYTES
+# Deflate's documented worst-case expansion is well below one percent. That
+# margin plus one canonical tar record bounds the fetched/compressed input too,
+# including concatenated empty gzip members that add CPU without member bytes.
+_MAX_ARCHIVE_BYTES = _MAX_MEMBER_BYTES + _MAX_MEMBER_BYTES // 100 + tarfile.RECORDSIZE
 _CONSTANT_FIELDS = frozenset(("fqn", "source", "dtype", "shape"))
 _CONSTANT_SOURCES = frozenset(("state_dict", "computed", "literal"))
 _TOP_LEVEL_FIELDS = frozenset(
@@ -592,6 +596,11 @@ def verify_package(package: str | Path, metadata: Mapping[str, Any]) -> None:
 def _members(artifact: Path) -> tuple[tarfile.TarFile, dict[str, tarfile.TarInfo]]:
     archive: tarfile.TarFile | None = None
     try:
+        artifact_size = artifact.stat().st_size
+        if artifact_size > _MAX_ARCHIVE_BYTES:
+            raise ArtifactError(
+                f"artifact compressed bytes exceed the {_MAX_ARCHIVE_BYTES}-byte v1 budget"
+            )
         archive = tarfile.open(artifact, mode="r:*")
         members: dict[str, tarfile.TarInfo] = {}
         sizes: dict[str, int] = {}

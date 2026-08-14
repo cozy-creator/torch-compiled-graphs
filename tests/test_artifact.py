@@ -466,6 +466,19 @@ def test_unpack_refuses_metadata_above_v1_budget_before_materializing(
     assert not list(tmp_path.glob(".materialized.*"))
 
 
+def test_unpack_refuses_archive_above_the_compressed_input_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    monkeypatch.setattr(artifact_module, "_MAX_ARCHIVE_BYTES", artifact.stat().st_size - 1)
+    destination = tmp_path / "materialized"
+    with pytest.raises(ArtifactError, match="compressed bytes"):
+        unpack_artifact(artifact, destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".materialized.*"))
+
+
 def test_unpack_refuses_declared_member_before_decompression(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
