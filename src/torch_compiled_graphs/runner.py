@@ -104,6 +104,7 @@ class CompiledGraphRunner:
     _constants: tuple[_Constant, ...]
     _package: Any
     _bound_values: dict[str, Any]
+    _retained_values: dict[str, Any]
     _bound: bool
     _failed: bool
 
@@ -121,8 +122,19 @@ class CompiledGraphRunner:
         self.graph_class = str(graph_class["name"])
         self._graph = graph
         self._constants = _constants(graph)
-        self._package = _load_package(graph.package, self.graph_class)
+        try:
+            self._package = _load_package(graph.package, self.graph_class)
+        except ConstantBindingError as exc:
+            oom = _oom_in_chain(exc)
+            if oom is None:
+                raise
+            raise ConstantBindingError(
+                "out_of_memory",
+                f"loading compiled graph {self.graph_class!r} exhausted device memory "
+                f"({type(oom).__name__}: {oom})",
+            ) from exc
         self._bound_values = {}
+        self._retained_values = {}
         self._bound = False
         self._failed = False
         self.calls = 0
@@ -158,6 +170,13 @@ class CompiledGraphRunner:
             actual = {str(name) for name in self._package.get_constant_fqns()}
         except Exception as exc:
             self._failed = True
+            oom = _oom_in_chain(exc)
+            if oom is not None:
+                raise ConstantBindingError(
+                    "out_of_memory",
+                    f"reading the artifact constant table exhausted device memory "
+                    f"({type(oom).__name__}: {oom})",
+                ) from exc
             raise ConstantBindingError(
                 "constant_table_unreadable",
                 f"artifact will not report its constant FQNs: {type(exc).__name__}: {exc}",
@@ -172,7 +191,23 @@ class CompiledGraphRunner:
                 f"artifact-only={sorted(actual - declared)[:6]!r}",
             )
 
-        literals = _load_literals(self._graph.literals, requested_device)
+        try:
+            literals = _load_literals(self._graph.literals, requested_device)
+        except Exception as exc:
+            self._failed = True
+            oom = _oom_in_chain(exc)
+            if oom is not None:
+                raise ConstantBindingError(
+                    "out_of_memory",
+                    f"loading literal constants exhausted device memory "
+                    f"({type(oom).__name__}: {oom})",
+                ) from exc
+            if isinstance(exc, ConstantBindingError):
+                raise
+            raise ConstantBindingError(
+                "literal_load_failed",
+                f"cannot load compiled-graph literals: {type(exc).__name__}: {exc}",
+            ) from exc
         values: dict[str, Any] = {}
         missing: list[str] = []
         for constant in self._constants:
@@ -189,6 +224,16 @@ class CompiledGraphRunner:
                         value = value.detach().contiguous()
                 except AttributeError:
                     pass
+                except Exception as exc:
+                    self._failed = True
+                    oom = _oom_in_chain(exc)
+                    reason = "out_of_memory" if oom is not None else "normalization_failed"
+                    cause = oom or exc
+                    raise ConstantBindingError(
+                        reason,
+                        f"cannot normalize constant {constant.fqn!r} for by-reference "
+                        f"binding ({type(cause).__name__}: {cause})",
+                    ) from exc
             values[constant.fqn] = value
         if missing:
             self._failed = True
@@ -197,6 +242,10 @@ class CompiledGraphRunner:
                 f"{len(missing)} declared constant(s) have no value: {sorted(missing)[:6]!r}",
             )
 
+        # AOTI may install some raw pointers before reporting a later failure.
+        # Retain every attempted value even on that failure so no installed
+        # user-managed pointer can outlive its Python owner.
+        self._retained_values = values
         try:
             self._package.load_constants(
                 values,

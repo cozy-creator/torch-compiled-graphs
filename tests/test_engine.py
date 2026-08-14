@@ -125,6 +125,31 @@ def literal_packager(output: str, files: Mapping[str, Sequence[object]]) -> obje
     return output
 
 
+def computed_packager(output: str, files: Mapping[str, Sequence[object]]) -> object:
+    assert len(files) == 1
+    entry = next(iter(files))
+    wrapper = "\n".join(
+        (
+            "AOTInductorModelBase(1, 1, 1, device_str, std::move(cubin_dir), false)",
+            'constants_info_[0].name = "folded";',
+            'constants_info_[0].original_fqn = "folded";',
+            "constants_info_[0].data_size = 8;",
+            "constants_info_[0].from_folded = true;",
+            "constants_info_[0].type = static_cast<int32_t>(",
+            "    torch::aot_inductor::ConstantType::FoldedConstant);",
+            "constants_info_[0].dtype = cached_torch_dtype_float32;",
+            "constants_info_[0].shape = {2};",
+        )
+    )
+    with zipfile.ZipFile(output, "w") as archive:
+        for info, data in (
+            _zip_entry(f"data/aotinductor/{entry}/model.wrapper.cpp", wrapper),
+            _zip_entry(f"data/aotinductor/{entry}/model.so", _elf()),
+        ):
+            archive.writestr(info, data)
+    return output
+
+
 def _fake_compile_package(
     package: Callable[[str, Mapping[str, Sequence[object]]], object] = packager,
     *,
@@ -535,6 +560,41 @@ def test_compile_derives_its_own_key_and_reuses_without_recompiling(
     assert calls == 1
 
 
+def test_compile_refuses_a_state_dict_constant_eliminated_by_the_package(
+    tmp_path: Path,
+) -> None:
+    program = torch.export.export(WithBuffer(), (torch.ones(2),))
+    spec = _spec_for(program)
+
+    with pytest.raises(AdmissionError, match="eliminated.*state-dict.*scale"):
+        Engine(LocalCAS(tmp_path / "cas")).compile(spec, _runtime(), tmp_path / "refused")
+
+    assert not (tmp_path / "refused").exists()
+
+
+def test_compile_refuses_a_package_constant_the_program_never_lifted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_module, "_compile_package", _fake_compile_package(literal_packager))
+
+    with pytest.raises(AdmissionError, match="declares.*never lifted.*table"):
+        Engine(LocalCAS(tmp_path / "cas")).compile(_spec(), _runtime(), tmp_path / "refused")
+
+
+def test_compile_allows_package_only_computed_constants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_module, "_compile_package", _fake_compile_package(computed_packager))
+
+    result = Engine(LocalCAS(tmp_path / "cas")).compile(_spec(), _runtime(), tmp_path / "compiled")
+
+    graph_class = result.compiled_graph.metadata["graph_class"]
+    assert isinstance(graph_class, dict)
+    assert graph_class["constants"] == [
+        {"fqn": "folded", "source": "computed", "dtype": "float32", "shape": [2]}
+    ]
+
+
 @pytest.mark.real_aoti
 def test_real_aoti_package_survives_restart_reuse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -609,6 +669,42 @@ def test_real_aoti_runner_binds_named_state_by_reference(tmp_path: Path) -> None
     representative = torch.tensor([4.0, 5.0])
     torch.testing.assert_close(runner(representative), module(representative))
     assert runner.bound_fqns == ("scale",)
+
+
+@pytest.mark.real_aoti
+def test_real_aoti_named_buffer_runs_after_interpreter_restart(tmp_path: Path) -> None:
+    module = WithBuffer()
+    spec = _spec_for(torch.export.export(module, (torch.ones(2),)))
+    runtime = _runtime()
+    cas_root = tmp_path / "cas"
+    result = Engine(LocalCAS(cas_root)).compile(spec, runtime, tmp_path / "compiled")
+    code = """
+import sys
+from pathlib import Path
+
+import torch
+from hashrepo import LocalCAS
+from torch_compiled_graphs import Engine
+
+runner = Engine(LocalCAS(Path(sys.argv[1]))).runner(sys.argv[2], Path(sys.argv[3]))
+assert runner is not None
+runner.bind({"scale": torch.tensor([7.0, 11.0])}, device="cpu")
+actual = runner(torch.tensor([4.0, 5.0]))
+torch.testing.assert_close(actual, torch.tensor([28.0, 55.0]))
+"""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            str(cas_root),
+            result.compiled_graph.key,
+            str(tmp_path / "restarted"),
+        ],
+        check=True,
+        cwd=Path.cwd(),
+        env={**os.environ, "TORCHINDUCTOR_CACHE_DIR": str(tmp_path / "subprocess-cache")},
+    )
 
 
 @pytest.mark.real_aoti

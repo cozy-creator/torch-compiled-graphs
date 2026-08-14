@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -149,3 +151,110 @@ def test_empty_update_still_runs_the_package_full_update_gate(
 
     assert package.loaded == {}
     assert runner.bound
+
+
+def test_literal_load_oom_is_typed_and_poisons_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    package = FakePackage(("table",))
+    monkeypatch.setattr(runner_module, "_load_package", lambda path, name: package)
+
+    def fail_literals(path: Path | None, device: str) -> dict[str, Any]:
+        del path, device
+        try:
+            raise OutOfMemoryError("CUDA out of memory")
+        except OutOfMemoryError as exc:
+            raise ConstantBindingError("literal_load_failed", "wrapped") from exc
+
+    monkeypatch.setattr(runner_module, "_load_literals", fail_literals)
+    runner = CompiledGraphRunner._from_verified_graph(
+        _graph(tmp_path, [{"fqn": "table", "source": "literal"}])
+    )
+
+    with pytest.raises(ConstantBindingError) as caught:
+        runner.bind({}, device="cuda")
+    assert caught.value.reason == "out_of_memory"
+    with pytest.raises(ConstantBindingError) as retry:
+        runner.bind({}, device="cuda")
+    assert retry.value.reason == "binding_failed"
+
+
+def test_contiguity_copy_oom_is_typed_and_poisons_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    class Value:
+        def is_contiguous(self) -> bool:
+            return False
+
+        def detach(self) -> Value:
+            return self
+
+        def contiguous(self) -> Value:
+            raise OutOfMemoryError("allocation failed")
+
+    package = FakePackage(("weight",))
+    monkeypatch.setattr(runner_module, "_load_package", lambda path, name: package)
+    runner = CompiledGraphRunner._from_verified_graph(
+        _graph(tmp_path, [{"fqn": "weight", "source": "state_dict"}])
+    )
+
+    with pytest.raises(ConstantBindingError) as caught:
+        runner.bind({"weight": Value()}, device="cuda")
+    assert caught.value.reason == "out_of_memory"
+    with pytest.raises(ConstantBindingError) as retry:
+        runner.bind({"weight": Value()}, device="cuda")
+    assert retry.value.reason == "binding_failed"
+
+
+def test_failed_partial_user_managed_update_keeps_attempted_values_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Value:
+        pass
+
+    package = FakePackage(("weight",))
+    observed: weakref.ReferenceType[Value] | None = None
+
+    def fail(values: dict[str, Any], *, check_full_update: bool, user_managed: bool) -> None:
+        nonlocal observed
+        assert check_full_update and user_managed
+        observed = weakref.ref(values["weight"])
+        raise RuntimeError("partial update")
+
+    package.load_constants = fail  # type: ignore[method-assign]
+    monkeypatch.setattr(runner_module, "_load_package", lambda path, name: package)
+    runner = CompiledGraphRunner._from_verified_graph(
+        _graph(tmp_path, [{"fqn": "weight", "source": "state_dict"}])
+    )
+    value = Value()
+
+    with pytest.raises(ConstantBindingError) as caught:
+        runner.bind({"weight": value}, device="cpu")
+    assert caught.value.reason == "injection_failed"
+    del value
+    gc.collect()
+    assert observed is not None and observed() is not None
+    assert runner.bound_fqns == ()
+
+
+def test_package_load_nested_oom_is_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    def fail(path: Path, graph_class: str) -> Any:
+        del path, graph_class
+        try:
+            raise OutOfMemoryError("CUDA out of memory")
+        except OutOfMemoryError as exc:
+            raise ConstantBindingError("package_load_failed", "wrapped") from exc
+
+    monkeypatch.setattr(runner_module, "_load_package", fail)
+    with pytest.raises(ConstantBindingError) as caught:
+        CompiledGraphRunner._from_verified_graph(_graph(tmp_path, []))
+    assert caught.value.reason == "out_of_memory"

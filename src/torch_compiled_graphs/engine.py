@@ -99,6 +99,38 @@ def _compile_package(plan: _GraphClassPlan, workspace: Path) -> Path:
     )
 
 
+def _program_state_dict_fqns(program: object) -> set[str]:
+    signature = getattr(program, "graph_signature", None)
+    return {
+        str(name)
+        for field in ("parameters", "buffers")
+        for name in (getattr(signature, field, ()) or ())
+    }
+
+
+def _admit_constant_table(plan: _GraphClassPlan, constants: tuple[DeclaredConstant, ...]) -> None:
+    """Prove the package did not invent a constant or compile in a weight."""
+
+    stated = plan.declaration.graph.get("constant_fqns")
+    if not isinstance(stated, list) or not all(isinstance(name, str) for name in stated):
+        raise AdmissionError("graph declaration has no canonical constant FQN table")
+    program = set(stated)
+    package = {constant.fqn for constant in constants}
+    bindable = {constant.fqn for constant in constants if constant.source != "computed"}
+    package_only = sorted(bindable - program)
+    if package_only:
+        raise AdmissionError(
+            f"compiled package declares {len(package_only)} constant(s) the exported "
+            f"program never lifted: {package_only[:6]!r}"
+        )
+    folded_weights = sorted(_program_state_dict_fqns(plan.spec.program) - package)
+    if folded_weights:
+        raise AdmissionError(
+            f"compiled package eliminated {len(folded_weights)} state-dict constant(s): "
+            f"{folded_weights[:6]!r}; their checkpoint values may be compiled into code"
+        )
+
+
 class Engine:
     """One local compiled-graph engine backed exclusively by HashRepo."""
 
@@ -234,6 +266,7 @@ class Engine:
             if plan.spec.declare() != plan.declaration:
                 raise AdmissionError("exported program changed during compilation or packaging")
             constants = declared_constants(package, plan.declaration.graph_class)
+            _admit_constant_table(plan, constants)
             literals = workspace / "constants.safetensors"
             _write_literals(plan.spec.program, constants, literals)
             metadata = build_metadata(
