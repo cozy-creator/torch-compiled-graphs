@@ -243,7 +243,11 @@ def _constant_names(program: object) -> tuple[str, ...]:
 
 
 def _literal_digest(program: object) -> str:
-    names = _literal_names(program)
+    return _literal_digest_for(program, _literal_names(program))
+
+
+def _literal_digest_for(program: object, names: Iterable[str]) -> str:
+    names = tuple(sorted({str(name) for name in names}))
     if not names:
         return ""
     values = getattr(program, "constants", {}) or {}

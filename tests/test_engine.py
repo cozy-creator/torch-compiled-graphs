@@ -61,6 +61,16 @@ class WithBuffer(torch.nn.Module):  # type: ignore[misc]
         return value * self.scale
 
 
+class WithTwoLiterals(torch.nn.Module):  # type: ignore[misc]
+    def __init__(self) -> None:
+        super().__init__()
+        self.first = torch.tensor([2.0])
+        self.second = torch.tensor([3.0])
+
+    def forward(self, value: Any) -> Any:
+        return value * self.first + self.second
+
+
 def _elf() -> bytes:
     names = b"\0.shstrtab\0.lrodata\0"
     section_offset = 64
@@ -139,6 +149,31 @@ def computed_packager(output: str, files: Mapping[str, Sequence[object]]) -> obj
             "    torch::aot_inductor::ConstantType::FoldedConstant);",
             "constants_info_[0].dtype = cached_torch_dtype_float32;",
             "constants_info_[0].shape = {2};",
+        )
+    )
+    with zipfile.ZipFile(output, "w") as archive:
+        for info, data in (
+            _zip_entry(f"data/aotinductor/{entry}/model.wrapper.cpp", wrapper),
+            _zip_entry(f"data/aotinductor/{entry}/model.so", _elf()),
+        ):
+            archive.writestr(info, data)
+    return output
+
+
+def first_literal_packager(output: str, files: Mapping[str, Sequence[object]]) -> object:
+    assert len(files) == 1
+    entry = next(iter(files))
+    wrapper = "\n".join(
+        (
+            "AOTInductorModelBase(1, 1, 1, device_str, std::move(cubin_dir), false)",
+            'constants_info_[0].name = "first";',
+            'constants_info_[0].original_fqn = "first";',
+            "constants_info_[0].data_size = 4;",
+            "constants_info_[0].from_folded = false;",
+            "constants_info_[0].type = static_cast<int32_t>(",
+            "    torch::aot_inductor::ConstantType::TensorConstant);",
+            "constants_info_[0].dtype = cached_torch_dtype_float32;",
+            "constants_info_[0].shape = {1};",
         )
     )
     with zipfile.ZipFile(output, "w") as archive:
@@ -579,6 +614,44 @@ def test_compile_refuses_a_package_constant_the_program_never_lifted(
 
     with pytest.raises(AdmissionError, match="declares.*never lifted.*table"):
         Engine(LocalCAS(tmp_path / "cas")).compile(_spec(), _runtime(), tmp_path / "refused")
+
+
+def test_compile_allows_an_eliminated_literal_whose_value_is_keyed(tmp_path: Path) -> None:
+    spec = _spec_for(torch.export.export(WithLiteral(), (torch.ones(2),)))
+
+    result = Engine(LocalCAS(tmp_path / "cas")).compile(
+        spec, _runtime(), tmp_path / "compiled"
+    )
+
+    graph_class = result.compiled_graph.metadata["graph_class"]
+    assert isinstance(graph_class, dict)
+    assert graph_class["literal_values"] == spec.declare().literal_values
+    assert graph_class["literal_payload_values"] == ""
+    assert graph_class["constants"] == []
+    assert result.compiled_graph.literals is None
+
+
+def test_compile_authenticates_only_the_surviving_literal_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from safetensors.torch import load_file
+
+    spec = _spec_for(torch.export.export(WithTwoLiterals(), (torch.ones(1),)))
+    monkeypatch.setattr(
+        engine_module, "_compile_package", _fake_compile_package(first_literal_packager)
+    )
+
+    result = Engine(LocalCAS(tmp_path / "cas")).compile(
+        spec, _runtime(), tmp_path / "compiled"
+    )
+
+    graph_class = result.compiled_graph.metadata["graph_class"]
+    assert isinstance(graph_class, dict)
+    assert graph_class["literal_values"] == spec.declare().literal_values
+    assert graph_class["literal_payload_values"]
+    assert graph_class["literal_payload_values"] != graph_class["literal_values"]
+    assert result.compiled_graph.literals is not None
+    assert set(load_file(result.compiled_graph.literals)) == {"first"}
 
 
 def test_compile_allows_package_only_computed_constants(

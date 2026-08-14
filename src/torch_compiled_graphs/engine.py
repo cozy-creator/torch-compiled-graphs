@@ -13,7 +13,12 @@ from hashrepo import LocalCAS
 
 from .artifact import build_metadata, pack_artifact, read_metadata
 from .compiler import _compile_exported_program, _package_compiled_files
-from .declaration import GraphClassDeclaration, GraphClassSpec, RuntimeCompatibility
+from .declaration import (
+    GraphClassDeclaration,
+    GraphClassSpec,
+    RuntimeCompatibility,
+    _literal_digest_for,
+)
 from .host_isa import HostISAError, _admit_host
 from .identity import CompiledGraphKey, toolchain_axis_digest
 from .introspection import DeclaredConstant, declared_constants
@@ -63,10 +68,15 @@ def _literal_value(program: object, constant: DeclaredConstant) -> Any:
     raise AdmissionError(f"declared literal constant {constant.fqn!r} has no exported value")
 
 
-def _write_literals(program: object, constants: tuple[DeclaredConstant, ...], target: Path) -> None:
-    literals = [constant for constant in constants if constant.source == "literal"]
+def _write_literals(
+    program: object, constants: tuple[DeclaredConstant, ...], target: Path
+) -> str:
+    literals = sorted(
+        (constant for constant in constants if constant.source == "literal"),
+        key=lambda constant: constant.fqn,
+    )
     if not literals:
-        return
+        return ""
     try:
         from safetensors import TensorSpec, serialize_file
     except ImportError as exc:  # pragma: no cover - package dependency
@@ -88,6 +98,7 @@ def _write_literals(program: object, constants: tuple[DeclaredConstant, ...], ta
         serialize_file(specs, str(target))
     except Exception as exc:
         raise AdmissionError(f"cannot serialize literal graph constants: {exc}") from exc
+    return _literal_digest_for(program, (constant.fqn for constant in literals))
 
 
 def _compile_package(plan: _GraphClassPlan, workspace: Path) -> Path:
@@ -268,7 +279,7 @@ class Engine:
             constants = declared_constants(package, plan.declaration.graph_class)
             _admit_constant_table(plan, constants)
             literals = workspace / "constants.safetensors"
-            _write_literals(plan.spec.program, constants, literals)
+            literal_payload_values = _write_literals(plan.spec.program, constants, literals)
             metadata = build_metadata(
                 graph_class={
                     "name": plan.declaration.graph_class,
@@ -282,6 +293,7 @@ class Engine:
                     "strict": plan.declaration.strict,
                     "lora_bucket": plan.declaration.lora_bucket,
                     "literal_values": plan.declaration.literal_values,
+                    "literal_payload_values": literal_payload_values,
                     "placement": list(plan.declaration.placement),
                     "constants": [constant.as_manifest_row() for constant in constants],
                 },
