@@ -9,9 +9,11 @@ from typing import Any
 
 KEY_SCHEME = "cg-key-v1"
 MAX_KEY_LENGTH = 96
-_DIGEST_HEX = 64
+_DIGEST_HEX = 56
+_TOOLCHAIN_DIGEST_HEX = 16
 _REQUIRED_AXES = ("graph", "sm", "toolchain")
-_KEY_RE = re.compile(rf"{KEY_SCHEME}-[0-9a-f]{{{_DIGEST_HEX}}}\Z")
+_NOT_TOOLCHAIN = frozenset(("diffusers", "transformers", "peft"))
+_KEY_RE = re.compile(rf"[a-z0-9][a-z0-9._-]*-[0-9a-f]{{{_DIGEST_HEX}}}\Z")
 
 
 class IdentityError(ValueError):
@@ -57,10 +59,11 @@ class CompiledGraphKey:
 
 
 def is_compiled_graph_key(value: object) -> bool:
-    """Return whether a boundary value has the versioned key shape.
+    """Return whether a boundary value has the compiled-graph key shape.
 
-    Pre-launch v1 has one accepted key representation and no compatibility
-    reader for abandoned or future schemes.
+    The digest is the anchored suffix; never split on ``-`` because schemes may
+    contain hyphens. The grammar refuses shape, not scheme, so a future scheme
+    can reach axis-based admission without teaching every boundary its name.
     """
 
     return (
@@ -100,9 +103,14 @@ def _facts_digest(facts: Mapping[str, Any]) -> str:
 
 
 def toolchain_axis_digest(block: Mapping[str, Any]) -> str:
-    """Digest explicit compiler components/settings; callers supply no model facts."""
+    """Restate the worker's compiler-content axis from its recorded block."""
 
-    return _facts_digest({str(name): str(value) for name, value in block.items()})
+    facts = {
+        str(name): str(value)
+        for name, value in block.items()
+        if str(name) not in _NOT_TOOLCHAIN
+    }
+    return _facts_digest(facts)[:_TOOLCHAIN_DIGEST_HEX]
 
 
 def from_artifact_metadata(metadata: Mapping[str, Any]) -> CompiledGraphKey:
@@ -111,12 +119,12 @@ def from_artifact_metadata(metadata: Mapping[str, Any]) -> CompiledGraphKey:
     sm = metadata.get("sm")
     if not isinstance(sm, str) or not sm.strip():
         raise IdentityError("artifact records no GPU compute capability")
-    entry = metadata.get("entry")
-    if not isinstance(entry, Mapping):
-        raise IdentityError("artifact records no entry object")
-    graph = entry.get("class_hash")
+    graph_class = metadata.get("graph_class")
+    if not isinstance(graph_class, Mapping):
+        raise IdentityError("compiled graph records no graph_class object")
+    graph = graph_class.get("class_hash")
     if not isinstance(graph, str) or not graph.strip():
-        raise IdentityError("artifact entry records no class_hash")
+        raise IdentityError("compiled graph records no graph-class hash")
     toolchain = metadata.get("toolchain")
     if (
         not isinstance(toolchain, Mapping)

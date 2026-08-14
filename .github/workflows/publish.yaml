@@ -62,7 +62,7 @@ jobs:
 
           from torch_compiled_graphs import is_compiled_graph_key
 
-          assert is_compiled_graph_key("cg-key-v1-" + "0" * 64)
+          assert is_compiled_graph_key("cg-key-v1-" + "0" * 56)
           assert "torch" not in sys.modules
           PY
 

@@ -1,0 +1,41 @@
+{
+  "authority": "python-gen-worker gen_worker.aot_serve.class_hash at 0a2c33970bd963d3f940d7664a1e96d705af0655",
+  "block": {
+    "class_dims": [
+      [
+        "height",
+        64
+      ],
+      [
+        "width",
+        96
+      ]
+    ],
+    "fork": [
+      [
+        "adapter",
+        false
+      ]
+    ],
+    "graph": {
+      "constant_fqns": [],
+      "lifted_inputs": [],
+      "pytree": {
+        "in": "[1, {\"type\": null, \"context\": null, \"children_spec\": [{\"type\": null, \"context\": null, \"children_spec\": []}]}]",
+        "out": "[1, {\"type\": null, \"context\": null, \"children_spec\": [{\"type\": null, \"context\": null, \"children_spec\": []}]}]"
+      },
+      "specialization": {},
+      "v": 3
+    },
+    "graph_witness": "54ceeee7225e57c9",
+    "placement": [
+      "cuda:0",
+      "cuda:1"
+    ],
+    "range_digest": "0123456789abcdef0123456789abcdef",
+    "target": "denoiser"
+  },
+  "class_hash": "c59210f4ddf6b420",
+  "lora_bucket": 8,
+  "strict": true
+}

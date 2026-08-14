@@ -11,7 +11,7 @@ from pathlib import Path
 from hashrepo import LocalCAS
 
 from .artifact import read_metadata, unpack_artifact
-from .storage import _GraphStore
+from .engine import Engine
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -46,9 +46,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print(unpack_artifact(args.artifact, Path(raw) / "artifact"))
         return 0
     if args.command == "resolve":
-        graph = _GraphStore(LocalCAS(args.cas_root)).resolve(args.key, args.destination)
-        if graph is None:
-            parser.error(f"no local artifact for {args.key}")
-        _print(graph.metadata)
+        compiled_graph = Engine(LocalCAS(args.cas_root)).resolve(args.key, args.destination)
+        if compiled_graph is None:
+            parser.error(f"no local compiled graph for {args.key}")
+        _print(compiled_graph.metadata)
         return 0
     raise AssertionError(f"unhandled command {args.command!r}")

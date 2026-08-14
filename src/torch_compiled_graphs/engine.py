@@ -13,17 +13,17 @@ from hashrepo import LocalCAS
 
 from .artifact import build_metadata, pack_artifact, read_metadata
 from .compiler import _compile_exported_program, _package_compiled_files
-from .declaration import GraphDeclaration, GraphSpec, RuntimeCompatibility
+from .declaration import GraphClassDeclaration, GraphClassSpec, RuntimeCompatibility
 from .host_isa import HostISAError, _admit_host
-from .identity import CompiledGraphKey
+from .identity import CompiledGraphKey, toolchain_axis_digest
 from .introspection import DeclaredConstant, declared_constants
 from .storage import (
     QuarantinedArtifact,
     StorageError,
-    StoredGraph,
+    StoredCompiledGraph,
     StoreOutcome,
     StoreResult,
-    _GraphStore,
+    _CompiledGraphStore,
 )
 
 
@@ -37,11 +37,11 @@ class EnsureOutcome(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class _GraphPlan:
+class _GraphClassPlan:
     """The one declaration and exact key used by both resolve and mint."""
 
-    spec: GraphSpec
-    declaration: GraphDeclaration
+    spec: GraphClassSpec
+    declaration: GraphClassDeclaration
     runtime: RuntimeCompatibility
     key: CompiledGraphKey
 
@@ -49,7 +49,7 @@ class _GraphPlan:
 @dataclass(frozen=True, slots=True)
 class EnsureResult:
     outcome: EnsureOutcome
-    graph: StoredGraph
+    compiled_graph: StoredCompiledGraph
     publication: StoreOutcome | None = None
 
 
@@ -89,10 +89,10 @@ def _write_literals(program: object, constants: tuple[DeclaredConstant, ...], ta
         raise AdmissionError(f"cannot serialize literal graph constants: {exc}") from exc
 
 
-def _compile_package(plan: _GraphPlan, workspace: Path) -> Path:
+def _compile_package(plan: _GraphClassPlan, workspace: Path) -> Path:
     files = _compile_exported_program(plan.spec.program)
     return _package_compiled_files(
-        plan.declaration.entry,
+        plan.declaration.graph_class,
         files,
         workspace / "model.pt2",
     )
@@ -102,43 +102,54 @@ class Engine:
     """One local compiled-graph engine backed exclusively by HashRepo."""
 
     def __init__(self, cas: LocalCAS) -> None:
-        self._store = _GraphStore(cas)
+        self._store = _CompiledGraphStore(cas)
 
     @staticmethod
-    def _plan(spec: GraphSpec, runtime: RuntimeCompatibility) -> _GraphPlan:
+    def _plan(spec: GraphClassSpec, runtime: RuntimeCompatibility) -> _GraphClassPlan:
         declaration = spec.declare()
-        return _GraphPlan(spec, declaration, runtime, runtime.key(declaration))
+        return _GraphClassPlan(spec, declaration, runtime, runtime.key(declaration))
 
     @staticmethod
     def _admit_host_metadata(metadata: Mapping[str, object]) -> None:
-        toolchain = metadata.get("toolchain")
-        if not isinstance(toolchain, Mapping):
-            raise AdmissionError("artifact records no toolchain")
+        host_isa = metadata.get("host_isa")
+        if not isinstance(host_isa, Mapping):
+            raise AdmissionError("artifact records no host_isa")
         try:
-            _admit_host(cast(Mapping[str, str], toolchain))
+            _admit_host(cast(Mapping[str, str], host_isa))
         except HostISAError as exc:
             raise AdmissionError(f"artifact host ISA is unsupported: {exc}") from exc
 
     @staticmethod
-    def _admit(plan: _GraphPlan, graph: StoredGraph) -> None:
-        metadata = graph.metadata
-        entry = metadata.get("entry")
-        if not isinstance(entry, Mapping):
-            raise AdmissionError("artifact records no graph entry")
-        expected_entry: dict[str, object] = {
-            "name": plan.declaration.entry,
+    def _admit(plan: _GraphClassPlan, compiled_graph: StoredCompiledGraph) -> None:
+        metadata = compiled_graph.metadata
+        graph_class = metadata.get("graph_class")
+        if not isinstance(graph_class, Mapping):
+            raise AdmissionError("compiled graph records no graph_class")
+        expected_graph_class: dict[str, object] = {
+            "name": plan.declaration.graph_class,
             "target": plan.declaration.target,
             "class_hash": plan.declaration.class_hash,
-            "graph": plan.declaration.graph,
+            "graph": dict(plan.declaration.graph),
+            "graph_witness": plan.declaration.graph_witness,
+            "range_digest": plan.declaration.range_digest,
+            "fork": [[name, value] for name, value in plan.declaration.fork],
+            "class_dims": [[name, value] for name, value in plan.declaration.class_dims],
+            "strict": plan.declaration.strict,
+            "lora_bucket": plan.declaration.lora_bucket,
             "literal_values": plan.declaration.literal_values,
             "placement": list(plan.declaration.placement),
         }
         mismatches = [
-            field for field, expected in expected_entry.items() if entry.get(field) != expected
+            field
+            for field, expected in expected_graph_class.items()
+            if graph_class.get(field) != expected
         ]
         if metadata.get("sm") != plan.runtime.sm:
             mismatches.append("sm")
-        if metadata.get("toolchain") != plan.runtime.toolchain:
+        stored_toolchain = metadata.get("toolchain")
+        if not isinstance(stored_toolchain, Mapping) or toolchain_axis_digest(
+            stored_toolchain
+        ) != toolchain_axis_digest(plan.runtime.toolchain):
             mismatches.append("toolchain")
         if metadata.get("compiled_graph_key") != str(plan.key):
             mismatches.append("compiled_graph_key")
@@ -147,7 +158,9 @@ class Engine:
                 "artifact does not satisfy the exact graph plan: " + ", ".join(mismatches)
             )
 
-    def resolve(self, key: str | CompiledGraphKey, destination: str | Path) -> StoredGraph | None:
+    def resolve(
+        self, key: str | CompiledGraphKey, destination: str | Path
+    ) -> StoredCompiledGraph | None:
         """Resolve and verify an exact key without importing Torch or building a program."""
 
         graph = self._store.resolve(key, destination)
@@ -157,12 +170,22 @@ class Engine:
         return graph
 
     @staticmethod
-    def _admit_request(graph: StoredGraph, *, target: str, deployment_compatibility: str) -> None:
+    def _admit_request(
+        compiled_graph: StoredCompiledGraph,
+        *,
+        target: str,
+        toolchain: Mapping[str, str],
+    ) -> None:
         requested_target = str(target).strip().lower()
-        requested_deployment = str(deployment_compatibility).strip()
-        if not requested_target or not requested_deployment:
-            raise AdmissionError("ensure requires target and deployment_compatibility")
-        stored_target = graph.metadata.get("sm")
+        requested_toolchain = {
+            str(name): str(value) for name, value in toolchain.items()
+        }
+        if not requested_target or not requested_toolchain or any(
+            not name or name != name.strip() or not value or value != value.strip()
+            for name, value in requested_toolchain.items()
+        ):
+            raise AdmissionError("ensure requires target and a recorded toolchain block")
+        stored_target = compiled_graph.metadata.get("sm")
         target_matches = stored_target == requested_target or (
             requested_target == "cpu"
             and isinstance(stored_target, str)
@@ -172,14 +195,12 @@ class Engine:
             raise AdmissionError(
                 f"stored target {stored_target!r} does not match requested {requested_target!r}"
             )
-        toolchain = graph.metadata.get("toolchain")
-        stored_deployment = (
-            toolchain.get("deployment_compatibility") if isinstance(toolchain, Mapping) else None
-        )
-        if stored_deployment != requested_deployment:
+        stored_toolchain = compiled_graph.metadata.get("toolchain")
+        if not isinstance(stored_toolchain, Mapping) or toolchain_axis_digest(
+            stored_toolchain
+        ) != toolchain_axis_digest(requested_toolchain):
             raise AdmissionError(
-                "stored deployment_compatibility "
-                f"{stored_deployment!r} does not match requested {requested_deployment!r}"
+                "stored toolchain axis does not match the requested compiler-content facts"
             )
 
     def import_artifact(self, key: str | CompiledGraphKey, artifact: str | Path) -> StoreResult:
@@ -193,7 +214,7 @@ class Engine:
 
         return self._store.export_artifact(key, destination)
 
-    def _mint(self, plan: _GraphPlan) -> StoreResult:
+    def _mint(self, plan: _GraphClassPlan) -> StoreResult:
         """Compile, package, verify, and publish one plan into the local CAS."""
 
         with tempfile.TemporaryDirectory(prefix="torch-compiled-graphs-mint-") as raw:
@@ -201,25 +222,34 @@ class Engine:
             package = _compile_package(plan, workspace)
             if plan.spec.declare() != plan.declaration:
                 raise AdmissionError("exported program changed during compilation or packaging")
-            constants = declared_constants(package, plan.declaration.entry)
+            constants = declared_constants(package, plan.declaration.graph_class)
             literals = workspace / "constants.safetensors"
             _write_literals(plan.spec.program, constants, literals)
             metadata = build_metadata(
-                entry={
-                    "name": plan.declaration.entry,
+                graph_class={
+                    "name": plan.declaration.graph_class,
                     "target": plan.declaration.target,
                     "class_hash": plan.declaration.class_hash,
-                    "graph": plan.declaration.graph,
+                    "graph": dict(plan.declaration.graph),
+                    "graph_witness": plan.declaration.graph_witness,
+                    "range_digest": plan.declaration.range_digest,
+                    "fork": [[name, value] for name, value in plan.declaration.fork],
+                    "class_dims": [
+                        [name, value] for name, value in plan.declaration.class_dims
+                    ],
+                    "strict": plan.declaration.strict,
+                    "lora_bucket": plan.declaration.lora_bucket,
                     "literal_values": plan.declaration.literal_values,
                     "placement": list(plan.declaration.placement),
                     "constants": [constant.as_manifest_row() for constant in constants],
                 },
                 sm=plan.runtime.sm,
                 toolchain=plan.runtime.toolchain,
+                host_isa=plan.runtime.host_isa,
             )
             artifact = pack_artifact(
                 package,
-                workspace / "compiled-graph.tar.gz",
+                workspace / "compiled_graph.tar.gz",
                 metadata,
                 literals=literals if literals.is_file() else None,
             )
@@ -231,8 +261,8 @@ class Engine:
         destination: str | Path,
         *,
         target: str,
-        deployment_compatibility: str,
-        recipe: Callable[[], GraphSpec],
+        toolchain: Mapping[str, str],
+        recipe: Callable[[], GraphClassSpec],
     ) -> EnsureResult:
         """Reuse an admitted exact key, compiling only on a miss or quarantine."""
 
@@ -245,12 +275,12 @@ class Engine:
             self._admit_request(
                 existing,
                 target=target,
-                deployment_compatibility=deployment_compatibility,
+                toolchain=toolchain,
             )
             return EnsureResult(EnsureOutcome.REUSED, existing)
 
         spec = recipe()
-        runtime = RuntimeCompatibility(target, deployment_compatibility=deployment_compatibility)
+        runtime = RuntimeCompatibility(target, toolchain=toolchain)
         plan = self._plan(spec, runtime)
         if str(plan.key) != requested:
             raise AdmissionError(f"lazy recipe derives {plan.key}, not requested key {requested!r}")

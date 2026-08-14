@@ -1,11 +1,11 @@
 """Mint and reuse verified PyTorch AOTInductor graphs through HashRepo."""
 
-from .artifact import ArtifactError
+from .artifact import COMPILED_GRAPH_FORMAT, ArtifactError
 from .compiler import CompileError
 from .declaration import (
     DeclarationError,
-    GraphDeclaration,
-    GraphSpec,
+    GraphClassDeclaration,
+    GraphClassSpec,
     RuntimeCompatibility,
 )
 from .engine import (
@@ -22,7 +22,7 @@ from .identity import (
 from .storage import (
     QuarantinedArtifact,
     StorageError,
-    StoredGraph,
+    StoredCompiledGraph,
     StoreOutcome,
     StoreResult,
 )
@@ -31,19 +31,20 @@ __all__ = [
     "AdmissionError",
     "ArtifactError",
     "CompileError",
+    "COMPILED_GRAPH_FORMAT",
     "CompiledGraphKey",
     "DeclarationError",
     "Engine",
     "EnsureOutcome",
     "EnsureResult",
-    "GraphDeclaration",
-    "GraphSpec",
+    "GraphClassDeclaration",
+    "GraphClassSpec",
     "IdentityError",
     "QuarantinedArtifact",
     "RuntimeCompatibility",
     "StorageError",
     "StoreOutcome",
     "StoreResult",
-    "StoredGraph",
+    "StoredCompiledGraph",
     "is_compiled_graph_key",
 ]
