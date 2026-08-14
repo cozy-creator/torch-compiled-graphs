@@ -110,7 +110,7 @@ Package releases use SemVer, beginning with `0.1.0`; the first release tag is
 launch an internal v1 may be replaced in place: there are no dual readers,
 compatibility aliases, or migration paths for abandoned pre-launch formats.
 
-### 0.1.2 public API
+### 0.1.3 public API
 
 - Compilation is owned by `Engine`; no public compiler, packager, context, or
   options callback can replace the fixed output-producing path. The engine
