@@ -10,9 +10,11 @@ from . import _wrapper_split
 from .host_isa import HostISAError, _impose_host_policy
 
 _COMPILER_OPTIONS: dict[str, object] = {
-    # pgw#757 measured 32 -> 4 as effectively free (-2% wall) while sharply
-    # reducing contention with live serving. Four is the one sealed policy;
-    # callers cannot select a different compiler topology.
+    # pgw#757 measured 32 -> 4 as effectively free while sharply reducing
+    # contention with live serving. A later balanced 16-run 1-vs-4 cold AOTI
+    # comparison put both means inside run-to-run noise (4 was 1.0% lower), so
+    # there is no measured reason to fork the current worker's value. Four is
+    # the one sealed policy; callers cannot select a compiler topology.
     "compile_threads": 4,
     "aot_inductor.package_constants_in_so": False,
     "aot_inductor.use_runtime_constant_folding": True,

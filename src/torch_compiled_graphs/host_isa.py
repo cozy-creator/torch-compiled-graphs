@@ -25,6 +25,23 @@ _LEVELS: tuple[tuple[str, frozenset[str]], ...] = (
     ),
 )
 _RANK = {name: index for index, (name, _) in enumerate(_LEVELS)}
+_X86_FEATURE_SWITCHES = {
+    "abm": "-mabm",
+    "avx": "-mavx",
+    "avx2": "-mavx2",
+    "bmi1": "-mbmi",
+    "bmi2": "-mbmi2",
+    "cx16": "-mcx16",
+    "f16c": "-mf16c",
+    "fma": "-mfma",
+    "lahf_lm": "-msahf",
+    "movbe": "-mmovbe",
+    "popcnt": "-mpopcnt",
+    "sse4_1": "-msse4.1",
+    "sse4_2": "-msse4.2",
+    "ssse3": "-mssse3",
+    "xsave": "-mxsave",
+}
 _HOST_FACTS = frozenset(
     {"machine", "host_isa_level", "host_isa_features", "cpp_march", "cpp_simdlen"}
 )
@@ -177,8 +194,27 @@ def _assert_command_is_clamped(command: str) -> None:
         arguments = shlex.split(command)
     except ValueError as exc:
         raise HostISAError(f"cannot parse host compiler command: {exc}") from exc
-    if any(argument in {"-march=native", "--param=march=native"} for argument in arguments):
-        raise HostISAError("host compiler command carries -march=native despite the ISA clamp")
+    requirement = _host_requirement()
+    expected_march = f"-march={requirement.march}"
+    marches = [argument for argument in arguments if argument.startswith("-march=")]
+    if marches != [expected_march]:
+        raise HostISAError(
+            "host compiler command violates the ISA clamp: "
+            f"expected exactly {expected_march!r}, found {marches!r}"
+        )
+
+    allowed_features = {
+        _X86_FEATURE_SWITCHES[feature]
+        for feature in requirement.features
+        if feature in _X86_FEATURE_SWITCHES
+    }
+    for argument in arguments:
+        if argument == expected_march or argument in allowed_features:
+            continue
+        if argument == "-m64" or argument.startswith(("-mno-", "-mtune=")):
+            continue
+        if argument.startswith("-m") or argument.startswith("--param=march="):
+            raise HostISAError(f"host compiler command violates the ISA clamp with {argument!r}")
 
 
 def _validate_host_facts(toolchain: Mapping[str, str]) -> _Requirement:

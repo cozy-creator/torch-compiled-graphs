@@ -46,12 +46,15 @@ compile policy, packages it as a
 verified artifact, stores it through HashRepo, and materializes it. A later
 process pointed at the same HashRepo root reuses it without compiling.
 
-The sealed compiler policy uses four Inductor compile workers (pgw#757's
-measured contention knee) and privately rewrites the generated C++ wrapper's
-pathological constructor and `run_impl` functions into reconstruction-checked
-smaller functions/translation units. Unrecognized shapes compile unchanged;
-failed transformed builds retry PyTorch's original source. Neither transform
-is a caller option, environment switch, public API, or identity axis.
+The sealed compiler policy uses four Inductor compile workers: pgw#757's
+measured contention ceiling and the current worker value. A balanced 16-run
+one-versus-four comparison found no material wall-time difference, so this is
+parity and a ceiling, not a claim that four is intrinsically faster. The
+compiler privately rewrites the generated C++ wrapper's pathological
+constructor and `run_impl` functions into reconstruction-checked smaller
+functions/translation units. Unrecognized shapes compile unchanged; failed
+transformed builds retry PyTorch's original source. Neither transform is a
+caller option, environment switch, public API, or identity axis.
 
 `recorded_toolchain` is an explicit adapter input, not a guessed version or
 host fingerprint. A worker records its settings declaration, loaded-library
@@ -113,7 +116,11 @@ uv run pytest
 PyTorch is an optional install extra because production workers control their
 exact compiler build. The default compiler imports it only when minting. CI
 installs all extras and runs a real CPU `torch.export` to AOTInductor to
-HashRepo to restart-reuse test.
+HashRepo to restart-reuse test. CPU AOTI currently exercises the transforms'
+installed decline/fallback path; the applied-transform tests compile and run
+the generated CUDA-wrapper shapes as real C++. A CUDA-generated applied-path
+proof remains an explicit worker integration gate rather than being implied by
+the CPU test.
 
 ## Versioning and release
 

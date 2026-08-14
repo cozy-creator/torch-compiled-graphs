@@ -630,6 +630,81 @@ def _main_tu(lines: Sequence[str], a: Anchors, body: Body, plan: Plan) -> str:
 # The gate: a self-contained mechanical inverse
 # ---------------------------------------------------------------------------
 
+_PART_DEFINITION = re.compile(
+    rf"^void {re.escape(CTX)}::{re.escape(PREFIX)}part_(?P<part>\d+)\((?P<params>.*)\) \{{$"
+)
+_PARAMETER_NAME = re.compile(r"(?P<name>[A-Za-z_]\w*)$")
+_CTX_CONSTRUCTION = (
+    f"    {CTX} {PREFIX}ctx{{this->constants_, this->kernels_, "
+    f"this->device_idx_, this->cubin_dir_}};" + MARK
+)
+
+
+def _parameter_names(parameters: str) -> tuple[str, ...]:
+    if not parameters:
+        return ()
+    names: list[str] = []
+    for parameter in parameters.split(", "):
+        match = _PARAMETER_NAME.search(parameter)
+        if match is None:
+            raise Declined(f"cannot read generated parameter {parameter!r}")
+        names.append(match.group("name"))
+    return tuple(names)
+
+
+def _validate_dispatch(main: str, parts: Sequence[str]) -> None:
+    """Prove the generated continuation chain executes every emitted chunk.
+
+    Reconstruction proves statement preservation, but generated calls are
+    intentionally absent from the reconstructed source. Validate those calls
+    independently so a faulty emitter cannot preserve every statement while
+    making some or all of them unreachable.
+    """
+
+    if len(parts) < 2:
+        raise Declined("generated dispatch has fewer than two parts")
+
+    definitions: list[tuple[str, ...]] = []
+    part_lines: list[list[str]] = []
+    for expected_part, text in enumerate(parts):
+        lines = text.split("\n")
+        matches = [match for line in lines if (match := _PART_DEFINITION.match(line))]
+        if len(matches) != 1 or int(matches[0].group("part")) != expected_part:
+            raise Declined(f"part {expected_part} has no unique matching definition")
+        definitions.append(_parameter_names(matches[0].group("params")))
+        part_lines.append(lines)
+
+    main_lines = main.split("\n")
+    if main_lines.count(_CTX_CONSTRUCTION) != 1:
+        raise Declined("main dispatch has no unique exact context construction")
+    expected_main = f"    {PREFIX}ctx.{PREFIX}part_0({', '.join(definitions[0])}); " + PARTS
+    main_dispatches = [line for line in main_lines if line.endswith(PARTS)]
+    if main_dispatches != [expected_main]:
+        raise Declined("main dispatch does not call part 0 with its exact live set")
+
+    for part, lines in enumerate(part_lines):
+        begin = CHUNK_BEGIN + str(part)
+        end = CHUNK_END + str(part)
+        unique_ordered_markers = (
+            lines.count(begin) == 1
+            and lines.count(end) == 1
+            and lines.index(begin) < lines.index(end)
+        )
+        if not unique_ordered_markers:
+            raise Declined(f"part {part} has non-unique or misordered chunk markers")
+        emitted_calls = [line for line in lines if f"this->{PREFIX}part_" in line]
+        if part + 1 == len(parts):
+            if emitted_calls:
+                raise Declined(f"part {part} dispatches after the final chunk")
+            continue
+        expected_call = (
+            f"    this->{PREFIX}part_{part + 1}({', '.join(definitions[part + 1])});" + MARK
+        )
+        if emitted_calls != [expected_call]:
+            raise Declined(
+                f"part {part} dispatch does not call part {part + 1} with its exact live set"
+            )
+
 
 def reconstruct(main: str, parts: Sequence[str]) -> str:
     """Rebuild the original source from the split output ALONE.
@@ -643,6 +718,8 @@ def reconstruct(main: str, parts: Sequence[str]) -> str:
 
     Raises :class:`Declined` when the output is not a well-formed split.
     """
+    _validate_dispatch(main, parts)
+
     rederived: list[str] = []
     chunks: list[list[str]] = []
 

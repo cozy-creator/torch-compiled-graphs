@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -389,6 +390,59 @@ def test_a_faulty_emitter_declines(source: str, monkeypatch: pytest.MonkeyPatch)
     split = v2.split_run_impl(source, parts=4)
     assert not split.applied
     assert "byte for byte" in split.reason
+
+
+def _skip_main_dispatch(main: str) -> str:
+    lines = main.split("\n")
+    dispatch = next(index for index, line in enumerate(lines) if line.endswith(v2.PARTS))
+    lines[dispatch] = "    /* skip entire continuation chain */ " + v2.PARTS
+    return "\n".join(lines)
+
+
+def _redirect_main_dispatch(main: str) -> str:
+    return main.replace("    _tcg_ctx._tcg_part_0(", "    _tcg_ctx._tcg_part_1(")
+
+
+@pytest.mark.parametrize("sabotage", [_skip_main_dispatch, _redirect_main_dispatch])
+def test_faulty_main_dispatch_declines(
+    source: str,
+    monkeypatch: pytest.MonkeyPatch,
+    sabotage: Callable[[str], str],
+) -> None:
+    real = v2._main_tu
+
+    def faulty(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return sabotage(real(*args, **kwargs))
+
+    monkeypatch.setattr(v2, "_main_tu", faulty)
+    split = v2.split_run_impl(source, parts=4)
+    assert not split.applied
+    assert "main dispatch" in split.reason
+
+
+@pytest.mark.parametrize("replacement", ["", "    return;  //@tcg"])
+def test_faulty_continuation_dispatch_declines(
+    source: str,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str,
+) -> None:
+    real = v2._part_tu
+
+    def faulty(lines, anchors, k, body, plan):  # type: ignore[no-untyped-def]
+        emitted = real(lines, anchors, k, body, plan)
+        if k != 1:
+            return emitted
+        rows = emitted.split("\n")
+        call = next(
+            index for index, row in enumerate(rows) if row.strip().startswith("this->_tcg_part_2(")
+        )
+        rows[call] = replacement
+        return "\n".join(rows)
+
+    monkeypatch.setattr(v2, "_part_tu", faulty)
+    split = v2.split_run_impl(source, parts=4)
+    assert not split.applied
+    assert "part 1 dispatch" in split.reason
 
 
 # ---------------------------------------------------------------------------
