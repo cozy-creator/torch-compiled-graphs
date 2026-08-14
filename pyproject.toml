@@ -1,6 +1,6 @@
 [project]
 name = "torch-compiled-graphs"
-version = "0.1.1"
+version = "0.1.2"
 description = "Mint, package, store, and reuse PyTorch AOTInductor graphs"
 readme = "README.md"
 license = "MIT"
