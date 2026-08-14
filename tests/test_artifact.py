@@ -393,8 +393,8 @@ def test_v1_refuses_retired_artifact_shapes(retired: str) -> None:
 
 
 def test_unexpected_archive_member_is_refused_without_destination(tmp_path: Path) -> None:
-    artifact = tmp_path / "bad.tar"
-    with tarfile.open(artifact, "w") as archive:
+    artifact = tmp_path / "bad.tar.gz"
+    with tarfile.open(artifact, "w:gz") as archive:
         payload = b"bad"
         info = tarfile.TarInfo("../escape")
         info.size = len(payload)
@@ -531,17 +531,30 @@ def test_unpack_refuses_a_truncated_gzip_trailer(tmp_path: Path) -> None:
     raw = artifact.read_bytes()
     artifact.write_bytes(raw[:-4])
     destination = tmp_path / "materialized"
-    with pytest.raises(ArtifactError, match="cannot read artifact"):
+    with pytest.raises(ArtifactError, match="truncated gzip"):
         unpack_artifact(artifact, destination)
     assert not destination.exists()
     assert not list(tmp_path.glob(".materialized.*"))
 
 
-def test_unpack_refuses_a_concatenated_gzip_tail(tmp_path: Path) -> None:
+@pytest.mark.parametrize("empty_members", [1, 2])
+def test_unpack_refuses_empty_concatenated_gzip_members(
+    empty_members: int, tmp_path: Path
+) -> None:
     package = aoti_package(tmp_path / "source.pt2")
     artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
-    artifact.write_bytes(artifact.read_bytes() + gzip.compress(b"\0"))
+    artifact.write_bytes(
+        artifact.read_bytes() + gzip.compress(b"", mtime=0) * empty_members
+    )
     destination = tmp_path / "materialized"
-    with pytest.raises(ArtifactError, match="after the canonical USTAR record"):
+    with pytest.raises(ArtifactError, match="exactly one gzip member"):
         unpack_artifact(artifact, destination)
     assert not destination.exists()
+
+
+def test_unpack_refuses_a_nonempty_concatenated_gzip_member(tmp_path: Path) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    artifact.write_bytes(artifact.read_bytes() + gzip.compress(b"\0", mtime=0))
+    with pytest.raises(ArtifactError, match="exactly one gzip member"):
+        unpack_artifact(artifact, tmp_path / "materialized")

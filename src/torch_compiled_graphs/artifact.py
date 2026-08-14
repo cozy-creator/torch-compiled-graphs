@@ -9,6 +9,7 @@ import shutil
 import struct
 import tarfile
 import tempfile
+import zlib
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, BinaryIO, cast
@@ -47,6 +48,9 @@ _MAX_MEMBER_BYTES = _MAX_METADATA_BYTES + _MAX_PACKAGE_BYTES + _MAX_LITERALS_BYT
 # margin plus one canonical tar record bounds the fetched/compressed input too,
 # including concatenated empty gzip members that add CPU without member bytes.
 _MAX_ARCHIVE_BYTES = _MAX_MEMBER_BYTES + _MAX_MEMBER_BYTES // 100 + tarfile.RECORDSIZE
+# Three member headers/padding plus the USTAR terminator fit well within two
+# records. This is the gzip decoder's output ceiling before tar semantics run.
+_MAX_TAR_BYTES = _MAX_MEMBER_BYTES + 2 * tarfile.RECORDSIZE
 _CONSTANT_FIELDS = frozenset(("fqn", "source", "dtype", "shape"))
 _CONSTANT_SOURCES = frozenset(("state_dict", "computed", "literal"))
 _TOP_LEVEL_FIELDS = frozenset(
@@ -593,6 +597,34 @@ def verify_package(package: str | Path, metadata: Mapping[str, Any]) -> None:
         raise ArtifactError("AOTInductor package is not code-only: " + "; ".join(violations))
 
 
+def _validate_single_gzip_member(artifact: Path) -> None:
+    decoder = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+    uncompressed = 0
+    try:
+        with artifact.open("rb") as source:
+            while compressed := source.read(1 << 16):
+                pending = compressed
+                while pending:
+                    output = decoder.decompress(pending, 1 << 20)
+                    uncompressed += len(output)
+                    if uncompressed > _MAX_TAR_BYTES:
+                        raise ArtifactError(
+                            "artifact decompressed bytes exceed the "
+                            f"{_MAX_TAR_BYTES}-byte v1 budget"
+                        )
+                    pending = decoder.unconsumed_tail
+                    if decoder.eof:
+                        if decoder.unused_data or pending or source.read(1):
+                            raise ArtifactError("artifact must contain exactly one gzip member")
+                        return
+            if not decoder.eof:
+                raise ArtifactError("artifact has a truncated gzip member")
+    except ArtifactError:
+        raise
+    except (OSError, zlib.error) as exc:
+        raise ArtifactError(f"cannot decompress artifact {artifact}: {exc}") from exc
+
+
 def _members(artifact: Path) -> tuple[tarfile.TarFile, dict[str, tarfile.TarInfo]]:
     archive: tarfile.TarFile | None = None
     try:
@@ -601,6 +633,7 @@ def _members(artifact: Path) -> tuple[tarfile.TarFile, dict[str, tarfile.TarInfo
             raise ArtifactError(
                 f"artifact compressed bytes exceed the {_MAX_ARCHIVE_BYTES}-byte v1 budget"
             )
+        _validate_single_gzip_member(artifact)
         archive = tarfile.open(artifact, mode="r:*")
         members: dict[str, tarfile.TarInfo] = {}
         sizes: dict[str, int] = {}

@@ -69,9 +69,10 @@ is four times ZIP32's 4 GiB boundary so unusually large generated host or CUDA
 code remains representable. Literal bytes above the ZIP32 boundary are treated
 as model state and belong in the separately bound repository snapshot. Declared
 oversize members, a compressed input above the total plus a one-percent deflate
-margin, non-canonical tar extensions or tails, truncated compression streams,
-and bytes beyond the uncompressed ceiling fail as `ArtifactError`; an
-unsuccessful import publishes neither a destination nor a HashRepo ref.
+margin, multiple gzip members, non-canonical tar extensions or tails, truncated
+compression streams, and bytes beyond the uncompressed ceiling fail as
+`ArtifactError`; an unsuccessful import publishes neither a destination nor a
+HashRepo ref.
 
 The `host_isa` object must include `machine`, `host_isa_level`,
 `host_isa_features`, `cpp_march`, and `cpp_simdlen`. x86-64 writers cap `cpp_march` at
