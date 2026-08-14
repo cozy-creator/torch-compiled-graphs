@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import sysconfig
+from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import Any
 
 from .identity import CompiledGraphKey, _facts_digest, from_axes, toolchain_axis_digest
@@ -67,8 +76,7 @@ def _render_value(value: Any, symbols: _Symbols) -> str:
     if value is None:
         return "-"
     if isinstance(value, torch.Tensor):
-        shape = ",".join(_render_symbol(dimension, symbols) for dimension in value.shape)
-        return f"t({value.dtype}|[{shape}]|{value.device.type})"
+        return _render_tensor(value, symbols, include_device=True)
     if isinstance(value, (torch.SymInt, torch.SymFloat, torch.SymBool)):
         return f"sym({_render_symbol(value, symbols)})"
     if isinstance(value, (list, tuple)):
@@ -97,11 +105,20 @@ def _render_argument(value: Any, names: dict[Any, str], symbols: _Symbols) -> st
         )
         return "{" + body + "}"
     if isinstance(value, torch.Tensor):
-        shape = ",".join(_render_symbol(dimension, symbols) for dimension in value.shape)
-        return f"t({value.dtype}|[{shape}])"
+        return _render_tensor(value, symbols, include_device=False)
     if isinstance(value, (torch.SymInt, torch.SymFloat, torch.SymBool)):
         return f"sym({_render_symbol(value, symbols)})"
     return _render_scalar(value)
+
+
+def _render_tensor(value: Any, symbols: _Symbols, *, include_device: bool) -> str:
+    shape = ",".join(_render_symbol(dimension, symbols) for dimension in value.shape)
+    layout = str(value.layout)
+    stride = "-"
+    if layout == "torch.strided":
+        stride = ",".join(_render_symbol(dimension, symbols) for dimension in value.stride())
+    device = f"|device={value.device.type}" if include_device else ""
+    return f"t({value.dtype}|shape=[{shape}]|stride=[{stride}]|layout={layout}{device})"
 
 
 def _target(node: Any) -> str:
@@ -209,7 +226,7 @@ def _canonical_graph(program: object) -> tuple[str, ...]:
 
 def _graph_digest(program: object) -> str:
     payload = "\n".join(_canonical_graph(program)).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()[:16]
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _literal_names(program: object) -> tuple[str, ...]:
@@ -234,19 +251,39 @@ def _literal_digest(program: object) -> str:
         value = values.get(name)
         if value is None:
             raise DeclarationError(f"literal constant {name!r} carries no value")
-        digest.update(name.encode("utf-8") + b"\0")
         try:
             import torch
 
             tensor = value.detach().cpu().contiguous().reshape(-1)
-            digest.update(str(value.dtype).encode("utf-8"))
-            digest.update(str(tuple(value.shape)).encode("utf-8"))
-            digest.update(tensor.view(torch.uint8).numpy().tobytes())
+            _update_literal_digest(
+                digest,
+                name=name,
+                dtype=str(value.dtype).removeprefix("torch."),
+                shape=tuple(value.shape),
+                chunks=(bytes(tensor.view(torch.uint8)),),
+            )
         except Exception as exc:
             raise DeclarationError(
                 f"literal constant {name!r} could not be digested: {type(exc).__name__}: {exc}"
             ) from exc
-    return digest.hexdigest()[:32]
+    return digest.hexdigest()
+
+
+def _update_literal_digest(
+    digest: Any,
+    *,
+    name: str,
+    dtype: str,
+    shape: tuple[int, ...],
+    chunks: Iterable[bytes],
+) -> None:
+    """Update a v1 literal digest from canonical facts and bounded byte chunks."""
+
+    digest.update(name.encode("utf-8") + b"\0")
+    digest.update(dtype.encode("ascii") + b"\0")
+    digest.update(json.dumps(shape, separators=(",", ":")).encode("ascii") + b"\0")
+    for chunk in chunks:
+        digest.update(chunk)
 
 
 def _placement(program: object) -> tuple[str, ...]:
@@ -292,16 +329,16 @@ class GraphDeclaration:
             raise DeclarationError("entry and target must be non-empty")
         if "\\" in entry or any(part in ("", ".", "..") for part in entry.split("/")):
             raise DeclarationError(f"unsafe entry name {entry!r}")
-        if len(self.graph) != 16 or any(
+        if len(self.graph) != 64 or any(
             character not in "0123456789abcdef" for character in self.graph
         ):
-            raise DeclarationError("graph digest must be 16 lowercase hexadecimal characters")
+            raise DeclarationError("graph digest must be 64 lowercase hexadecimal characters")
         if self.literal_values and (
-            len(self.literal_values) != 32
+            len(self.literal_values) != 64
             or any(character not in "0123456789abcdef" for character in self.literal_values)
         ):
             raise DeclarationError(
-                "literal-values digest must be 32 lowercase hexadecimal characters"
+                "literal-values digest must be 64 lowercase hexadecimal characters"
             )
         object.__setattr__(self, "entry", entry)
         object.__setattr__(self, "target", target)
@@ -349,25 +386,152 @@ class GraphSpec:
         )
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _command_fingerprint(command: str) -> tuple[str, str, str]:
+    resolved = shutil.which(command)
+    if resolved is None:
+        raise DeclarationError(f"AOTInductor C++ compiler {command!r} is unavailable")
+    try:
+        version = subprocess.run(
+            [resolved, "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        library = subprocess.run(
+            [resolved, "-print-file-name=libstdc++.so.6"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeclarationError(
+            f"cannot fingerprint AOTInductor compiler {resolved}: {exc}"
+        ) from exc
+    library_path = Path(library)
+    if not library_path.is_file():
+        raise DeclarationError(f"compiler did not resolve libstdc++.so.6: {library!r}")
+    return (
+        Path(resolved).name,
+        hashlib.sha256(version.encode("utf-8")).hexdigest(),
+        _sha256_file(library_path),
+    )
+
+
+def _cuda_driver_version() -> str:
+    import ctypes
+
+    try:
+        driver = ctypes.CDLL("libcuda.so.1")
+        version = ctypes.c_int()
+        result = driver.cuDriverGetVersion(ctypes.byref(version))
+    except (AttributeError, OSError) as exc:
+        raise DeclarationError(f"CUDA target requires a readable driver version: {exc}") from exc
+    if result != 0 or version.value <= 0:
+        raise DeclarationError(f"CUDA driver version query failed with status {result}")
+    return str(version.value)
+
+
+@lru_cache(maxsize=8)
+def _detected_toolchain(target: str, deployment_compatibility: str) -> tuple[tuple[str, str], ...]:
+    import torch
+
+    try:
+        import torch._inductor.config as inductor_config
+    except ImportError as exc:
+        raise DeclarationError("PyTorch AOTInductor is required") from exc
+    try:
+        triton_version = version("triton")
+    except PackageNotFoundError as exc:
+        raise DeclarationError("Triton is required") from exc
+    from .compiler import _compiler_options
+
+    abi = sysconfig.get_config_var("SOABI")
+    multiarch = sysconfig.get_config_var("MULTIARCH")
+    libc_name, libc_version = platform.libc_ver()
+    cache_tag = sys.implementation.cache_tag
+    torch_git = getattr(torch.version, "git_version", None)
+    if not all((abi, multiarch, libc_name, libc_version, cache_tag, torch_git)):
+        raise DeclarationError(
+            "runtime cannot derive complete Python, platform, libc, and Torch build facts"
+        )
+
+    configured = getattr(inductor_config.cpp, "cxx", ())
+    candidates = configured if isinstance(configured, (list, tuple)) else (configured,)
+    compiler = next((str(item) for item in candidates if item), "g++")
+    compiler_name, compiler_version, libstdcxx = _command_fingerprint(compiler)
+    facts = {
+        "compile_settings": json.dumps(
+            _compiler_options(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ),
+        "compiler": compiler_name,
+        "compiler_version_sha256": compiler_version,
+        "deployment_compatibility": deployment_compatibility,
+        "inductor": str(torch_git),
+        "libc": f"{libc_name}-{libc_version}",
+        "libstdcxx_sha256": libstdcxx,
+        "machine": platform.machine(),
+        "platform": sys.platform,
+        "python_abi": str(abi),
+        "python_cache_tag": str(cache_tag),
+        "python_multiarch": str(multiarch),
+        "torch": str(torch.__version__),
+        "torch_build_sha256": hashlib.sha256(torch.__config__.show().encode("utf-8")).hexdigest(),
+        "torch_cxx11_abi": str(torch.compiled_with_cxx11_abi()),
+        "triton": triton_version,
+    }
+    if target.startswith("sm_"):
+        cuda_runtime = getattr(torch.version, "cuda", None)
+        if not cuda_runtime or not torch.cuda.is_available():
+            raise DeclarationError("CUDA target requires a compatible visible CUDA device")
+        cuda_capability = torch.cuda.get_device_capability()
+        actual = f"sm_{cuda_capability[0]}{cuda_capability[1]}"
+        if target != actual:
+            raise DeclarationError(f"requested CUDA target {target!r} does not match {actual!r}")
+        facts["cuda_driver"] = _cuda_driver_version()
+        facts["cuda_runtime"] = str(cuda_runtime)
+    else:
+        cpu_capability = torch.backends.cpu.get_cpu_capability()
+        if target != f"cpu-{cpu_capability.lower()}":
+            raise DeclarationError(
+                f"CPU target {target!r} does not match capability {cpu_capability!r}"
+            )
+        facts["cpu_target"] = cpu_capability
+    if any(not value for value in facts.values()):
+        raise DeclarationError("runtime derived an empty compatibility fact")
+    return tuple(sorted(facts.items()))
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class RuntimeCompatibility:
-    """Compiler/runtime facts that determine whether an artifact can execute."""
+    """Library-derived compiler/runtime facts for one current execution target."""
 
     sm: str
     _toolchain: tuple[tuple[str, str], ...]
 
-    def __init__(self, sm: str, toolchain: Mapping[str, str]) -> None:
-        architecture = str(sm).strip()
-        if not architecture:
-            raise DeclarationError("runtime requires a GPU compute capability")
-        if any(
-            not isinstance(key, str) or not isinstance(value, str)
-            for key, value in toolchain.items()
-        ):
-            raise DeclarationError("toolchain names and values must be strings")
-        cleaned = tuple(sorted(toolchain.items()))
-        if not cleaned or any(not key.strip() or not value.strip() for key, value in cleaned):
-            raise DeclarationError("runtime requires non-empty toolchain facts")
+    def __init__(self, target: str, *, deployment_compatibility: str) -> None:
+        requested = str(target).strip().lower()
+        deployment = str(deployment_compatibility).strip()
+        if not deployment:
+            raise DeclarationError("runtime requires an explicit deployment_compatibility axis")
+        if requested == "cpu":
+            import torch
+
+            architecture = f"cpu-{torch.backends.cpu.get_cpu_capability().lower()}"
+        elif re.fullmatch(r"sm_[0-9]+", requested):
+            architecture = requested
+        else:
+            raise DeclarationError("runtime target must be 'cpu' or a concrete 'sm_NN'")
+        cleaned = _detected_toolchain(architecture, deployment)
         object.__setattr__(self, "sm", architecture)
         object.__setattr__(self, "_toolchain", cleaned)
 

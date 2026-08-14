@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+from hashrepo import LocalCAS
 
 from torch_compiled_graphs import (
+    Engine,
     IdentityError,
+    StorageError,
     from_axes,
-    is_compiled_graph_key,
 )
 
 
@@ -14,7 +18,9 @@ def test_key_is_stable_and_has_only_the_three_compilation_axes() -> None:
     assert key.canonical() == (
         b'{"graph":"fedcba9876543210","sm":"sm_89","toolchain":"0123456789abcdef"}'
     )
-    assert str(key) == "cg-key-v1-aefe4c6d52d304f8ef7cc6f9ffae296113b1546defe761e1c12ac2cf"
+    assert str(key) == (
+        "cg-key-v1-aefe4c6d52d304f8ef7cc6f9ffae296113b1546defe761e1c12ac2cf521e8fce"
+    )
 
 
 def test_unknown_or_missing_axes_are_refused() -> None:
@@ -31,14 +37,14 @@ def test_a_key_cannot_be_hashed_as_an_input_fact() -> None:
 
 
 @pytest.mark.parametrize(
-    ("value", "expected"),
+    "value",
     [
-        ("cg-key-v1-" + "a" * 56, True),
-        ("future-scheme-" + "0" * 56, False),
-        ("cg-key-v1-" + "A" * 56, False),
-        ("cg-key-v1-" + "0" * 55, False),
-        ("cg-key-v1-" + "0" * 56 + "\n", False),
+        "future-scheme-" + "0" * 64,
+        "cg-key-v1-" + "A" * 64,
+        "cg-key-v1-" + "0" * 63,
+        "cg-key-v1-" + "0" * 64 + "\n",
     ],
 )
-def test_key_shape_is_scheme_agnostic_and_right_anchored(value: str, expected: bool) -> None:
-    assert is_compiled_graph_key(value) is expected
+def test_public_resolve_refuses_noncanonical_keys(value: str, tmp_path: Path) -> None:
+    with pytest.raises(StorageError, match="cg-key-v1"):
+        Engine(LocalCAS(tmp_path / "cas")).resolve(value, tmp_path / "graph")

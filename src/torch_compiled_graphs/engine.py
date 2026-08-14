@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import tempfile
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
@@ -38,7 +37,7 @@ class EnsureOutcome(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class GraphPlan:
+class _GraphPlan:
     """The one declaration and exact key used by both resolve and mint."""
 
     spec: GraphSpec
@@ -68,14 +67,26 @@ def _write_literals(program: object, constants: tuple[DeclaredConstant, ...], ta
     if not literals:
         return
     try:
-        from safetensors.torch import save_file
+        from safetensors import TensorSpec, serialize_file
     except ImportError as exc:  # pragma: no cover - package dependency
         raise AdmissionError("safetensors is required for literal graph constants") from exc
     tensors = {
         constant.fqn: _literal_value(program, constant).detach().cpu().contiguous()
         for constant in literals
     }
-    save_file(tensors, str(target))
+    try:
+        specs = {
+            name: TensorSpec(
+                dtype=str(tensor.dtype).removeprefix("torch."),
+                shape=list(tensor.shape),
+                data_ptr=tensor.data_ptr(),
+                data_len=tensor.numel() * tensor.element_size(),
+            )
+            for name, tensor in tensors.items()
+        }
+        serialize_file(specs, str(target))
+    except Exception as exc:
+        raise AdmissionError(f"cannot serialize literal graph constants: {exc}") from exc
 
 
 class Engine:
@@ -84,12 +95,13 @@ class Engine:
     def __init__(self, cas: LocalCAS) -> None:
         self._store = _GraphStore(cas)
 
-    def plan(self, spec: GraphSpec, runtime: RuntimeCompatibility) -> GraphPlan:
+    @staticmethod
+    def _plan(spec: GraphSpec, runtime: RuntimeCompatibility) -> _GraphPlan:
         declaration = spec.declare()
-        return GraphPlan(spec, declaration, runtime, runtime.key(declaration))
+        return _GraphPlan(spec, declaration, runtime, runtime.key(declaration))
 
     @staticmethod
-    def _admit(plan: GraphPlan, graph: StoredGraph) -> None:
+    def _admit(plan: _GraphPlan, graph: StoredGraph) -> None:
         metadata = graph.metadata
         entry = metadata.get("entry")
         if not isinstance(entry, Mapping):
@@ -109,33 +121,29 @@ class Engine:
             mismatches.append("sm")
         if metadata.get("toolchain") != plan.runtime.toolchain:
             mismatches.append("toolchain")
-        if metadata.get("cell_key") != str(plan.key):
-            mismatches.append("cell_key")
+        if metadata.get("compiled_graph_key") != str(plan.key):
+            mismatches.append("compiled_graph_key")
         if mismatches:
             raise AdmissionError(
                 "artifact does not satisfy the exact graph plan: " + ", ".join(mismatches)
             )
 
-    def resolve(self, plan: GraphPlan, destination: str | Path) -> StoredGraph | None:
-        graph = self._store.resolve(plan.key, destination)
-        if graph is None:
-            return None
-        try:
-            self._admit(plan, graph)
-        except AdmissionError:
-            shutil.rmtree(graph.directory, ignore_errors=True)
-            self._store.quarantine(plan.key, graph.manifest)
-            raise
-        return graph
+    def resolve(self, key: str | CompiledGraphKey, destination: str | Path) -> StoredGraph | None:
+        """Resolve and verify an exact key without importing Torch or building a program."""
 
-    def mint(
+        return self._store.resolve(key, destination)
+
+    def import_artifact(self, key: str | CompiledGraphKey, artifact: str | Path) -> StoreResult:
+        """Fully verify and attach bytes fetched by HashRepo under one exact key."""
+
+        return self._store.store(key, artifact)
+
+    def _mint(
         self,
-        plan: GraphPlan,
+        plan: _GraphPlan,
         *,
-        options: Mapping[str, object] | None = None,
         compiler: Compiler | None = None,
         packager: Packager | None = None,
-        before_compile: Callable[[], None] | None = None,
         context: AbstractContextManager[None] | None = None,
     ) -> StoreResult:
         """Compile, package, verify, and publish one plan into the local CAS."""
@@ -144,9 +152,7 @@ class Engine:
             workspace = Path(raw)
             files = compile_exported_program(
                 plan.spec.program,
-                options=options,
                 compiler=compiler,
-                before_compile=before_compile,
                 context=context,
             )
             package = package_compiled_files(
@@ -155,6 +161,8 @@ class Engine:
                 workspace / "model.pt2",
                 packager=packager,
             )
+            if plan.spec.declare() != plan.declaration:
+                raise AdmissionError("exported program changed during compilation or packaging")
             constants = declared_constants(package, plan.declaration.entry)
             literals = workspace / "constants.safetensors"
             _write_literals(plan.spec.program, constants, literals)
@@ -181,37 +189,41 @@ class Engine:
 
     def ensure(
         self,
-        spec: GraphSpec,
-        runtime: RuntimeCompatibility,
+        key: str | CompiledGraphKey,
         destination: str | Path,
         *,
-        options: Mapping[str, object] | None = None,
+        target: str,
+        deployment_compatibility: str,
+        recipe: Callable[[], GraphSpec],
         compiler: Compiler | None = None,
         packager: Packager | None = None,
-        before_compile: Callable[[], None] | None = None,
         context: AbstractContextManager[None] | None = None,
     ) -> EnsureResult:
         """Reuse an admitted exact key, compiling only on a miss or quarantine."""
 
-        plan = self.plan(spec, runtime)
+        requested = str(key)
         try:
-            existing = self.resolve(plan, destination)
-        except (AdmissionError, QuarantinedArtifact):
+            existing = self.resolve(requested, destination)
+        except QuarantinedArtifact:
             existing = None
         if existing is not None:
             return EnsureResult(EnsureOutcome.REUSED, existing)
 
-        publication = self.mint(
+        spec = recipe()
+        runtime = RuntimeCompatibility(target, deployment_compatibility=deployment_compatibility)
+        plan = self._plan(spec, runtime)
+        if str(plan.key) != requested:
+            raise AdmissionError(f"lazy recipe derives {plan.key}, not requested key {requested!r}")
+        publication = self._mint(
             plan,
-            options=options,
             compiler=compiler,
             packager=packager,
-            before_compile=before_compile,
             context=context,
         )
-        resolved = self.resolve(plan, destination)
+        resolved = self.resolve(plan.key, destination)
         if resolved is None:
             raise StorageError(f"compiled graph {plan.key} disappeared after publication")
+        self._admit(plan, resolved)
         outcome = (
             EnsureOutcome.REUSED
             if publication.outcome == StoreOutcome.DIVERGENT

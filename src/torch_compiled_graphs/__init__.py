@@ -21,7 +21,6 @@ from .engine import (
     Engine,
     EnsureOutcome,
     EnsureResult,
-    GraphPlan,
 )
 from .identity import (
     CompiledGraphKey,
@@ -54,7 +53,6 @@ __all__ = [
     "EnsureOutcome",
     "EnsureResult",
     "GraphDeclaration",
-    "GraphPlan",
     "GraphSpec",
     "IdentityError",
     "PackageIntrospectionError",

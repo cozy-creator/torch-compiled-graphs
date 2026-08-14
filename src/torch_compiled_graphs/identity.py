@@ -9,7 +9,7 @@ from typing import Any
 
 KEY_SCHEME = "cg-key-v1"
 MAX_KEY_LENGTH = 96
-_DIGEST_HEX = 56
+_DIGEST_HEX = 64
 _REQUIRED_AXES = ("graph", "sm", "toolchain")
 _KEY_RE = re.compile(rf"{KEY_SCHEME}-[0-9a-f]{{{_DIGEST_HEX}}}\Z")
 
@@ -65,9 +65,10 @@ def from_axes(axes: Mapping[str, str]) -> CompiledGraphKey:
         )
     clean: dict[str, str] = {}
     for name in _REQUIRED_AXES:
-        value = str(axes.get(name) or "").strip()
-        if not value:
-            raise IdentityError(f"compiled graph identity requires {name!r}")
+        raw = axes.get(name)
+        if not isinstance(raw, str) or not raw or raw != raw.strip():
+            raise IdentityError(f"compiled graph identity requires canonical string {name!r}")
+        value = raw
         _refuse_key_as_fact(name, value)
         clean[name] = value
     return CompiledGraphKey(tuple(sorted(clean.items())))
@@ -77,7 +78,7 @@ def _facts_digest(facts: Mapping[str, Any]) -> str:
     payload = json.dumps(
         dict(facts), sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
-    return hashlib.sha256(payload).hexdigest()[:16]
+    return hashlib.sha256(payload).hexdigest()
 
 
 def toolchain_axis_digest(block: Mapping[str, Any]) -> str:
@@ -99,6 +100,18 @@ def from_artifact_metadata(metadata: Mapping[str, Any]) -> CompiledGraphKey:
     if not isinstance(graph, str) or not graph.strip():
         raise IdentityError("artifact entry records no class_hash")
     toolchain = metadata.get("toolchain")
-    if not isinstance(toolchain, Mapping) or not toolchain:
+    if (
+        not isinstance(toolchain, Mapping)
+        or not toolchain
+        or any(
+            not isinstance(name, str)
+            or not name
+            or name != name.strip()
+            or not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            for name, value in toolchain.items()
+        )
+    ):
         raise IdentityError("artifact records no toolchain object")
     return from_axes({"graph": graph, "sm": sm, "toolchain": toolchain_axis_digest(toolchain)})

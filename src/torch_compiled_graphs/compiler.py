@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from importlib import import_module
 from pathlib import Path
 from typing import Protocol, cast
 
-_REQUIRED_OPTIONS: dict[str, object] = {
+_COMPILER_OPTIONS: dict[str, object] = {
+    "compile_threads": 1,
     "aot_inductor.package_constants_in_so": False,
     "aot_inductor.use_runtime_constant_folding": True,
     "aot_inductor.package": True,
@@ -32,32 +33,24 @@ class Packager(Protocol):
     def __call__(self, output: str, files: Mapping[str, Sequence[object]]) -> object: ...
 
 
-def compiler_options(options: Mapping[str, object] | None = None) -> dict[str, object]:
-    """Resolve caller tuning while enforcing the v1 correctness settings."""
+def _compiler_options() -> dict[str, object]:
+    """Return the sole compile policy accepted by pre-launch v1."""
 
-    resolved = dict(options or {})
-    resolved.setdefault("compile_threads", 4)
-    resolved.update(_REQUIRED_OPTIONS)
-    return resolved
+    return dict(_COMPILER_OPTIONS)
 
 
 def compile_exported_program(
     program: object,
     *,
-    options: Mapping[str, object] | None = None,
     compiler: Compiler | None = None,
-    before_compile: Callable[[], None] | None = None,
     context: AbstractContextManager[None] | None = None,
 ) -> tuple[object, ...]:
     """Compile one ExportedProgram to the loose files used by `package_aoti`.
 
-    `before_compile` and `context` are narrow seams for worker-specific wrapper
-    preparation and fake/meta tensor handling. They do not alter identity or
-    packaging policy.
+    ``context`` is the one worker seam needed for fake/meta tensor handling.
+    Compile settings are fixed because every setting that can affect generated
+    code must have exactly one v1 identity.
     """
-
-    if before_compile is not None:
-        before_compile()
     if compiler is None:
         try:
             module = import_module("torch._inductor")
@@ -79,7 +72,7 @@ def compile_exported_program(
                 exported_module(check_guards=False),
                 tuple(args),
                 dict(kwargs or {}),
-                options=compiler_options(options),
+                options=_compiler_options(),
             )
     except Exception as exc:
         raise CompileError(f"AOTInductor compile failed: {type(exc).__name__}: {exc}") from exc

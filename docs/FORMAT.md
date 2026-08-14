@@ -5,18 +5,21 @@ formats.
 
 ## Identity
 
-An artifact carries one `cell_key` with this canonical derivation:
+An artifact carries one `compiled_graph_key` with this canonical derivation:
 
 ```text
-cg-key-v1- + first 56 lowercase hex characters of
+cg-key-v1- + full lowercase hexadecimal
 SHA-256(canonical JSON({graph, sm, toolchain}))
 ```
 
 The three axes are exhaustive:
 
-- `graph`: the one entry's traced-computation class hash;
-- `sm`: the target GPU compute capability; and
-- `toolchain`: the digest of compiler components and settings.
+- `graph`: the full SHA-256 class hash of the canonical traced computation,
+  including input tensor shape, stride, layout, dtype, and placement facts;
+- `sm`: the concrete CUDA compute capability or CPU target; and
+- `toolchain`: a full SHA-256 digest of library-derived Torch/Inductor, Triton,
+  Python ABI/platform/arch, CUDA or CPU, compiler, libc/libstdc++, fixed compile
+  settings, and the required deployment-compatibility axis.
 
 Family, checkpoint, weights, declaration-wide coverage, and trace-time model
 libraries are not axes. Facts that alter the trace arrive through `graph`;
@@ -40,7 +43,7 @@ Required top-level metadata includes:
 
 - `compiled_graph_format: 1`;
 - `kind: "aot-inductor"`;
-- `cell_key`, which must be exactly derivable from the recorded facts;
+- `compiled_graph_key`, which must be exactly derivable from the recorded facts;
 - `entry`, with non-empty `name`, `target`, `class_hash`, and `graph`, plus
   `literal_values`, `placement`, and a `constants` array. `class_hash` must be
   recomputable from those declaration facts;
@@ -55,8 +58,10 @@ unexpected archive members and materialize only into a new directory.
 Each constant row has exactly `fqn`, `source`, `dtype`, and `shape`. `source`
 is one of `state_dict`, `computed`, or `literal`; `shape` is an array of
 non-negative integer dimensions. Unknown, incomplete, or duplicate rows are
-refused. A `literal` row requires `constants.safetensors`; the package's own
-AOTInductor wrapper remains the authority for the constant classification.
+refused. A `literal` row requires `constants.safetensors`, and that payload is
+forbidden otherwise. Readers validate its bounded header and exact names,
+dtypes, shapes, byte ranges, and full value digest before admission. The
+package's own AOTInductor wrapper remains the authority for classification.
 
 Package release versions are ordinary SemVer and start at `0.1.0`. They are
 independent from this internal v1. Before launch, this one accepted v1 may be

@@ -18,7 +18,7 @@ class Program:
         return "graph"
 
 
-def test_compile_forces_code_only_and_bindable_options() -> None:
+def test_compile_uses_the_one_fixed_v1_policy() -> None:
     seen: dict[str, object] = {}
 
     def compiler(
@@ -34,15 +34,10 @@ def test_compile_forces_code_only_and_bindable_options() -> None:
     files = compile_exported_program(
         Program(),
         compiler=cast(Compiler, compiler),
-        options={
-            "compile_threads": 2,
-            "aot_inductor.package_constants_in_so": True,
-            "aot_inductor.use_runtime_constant_folding": False,
-        },
     )
     assert files == ("wrapper.cpp", "kernel.so")
     assert seen["options"] == {
-        "compile_threads": 2,
+        "compile_threads": 1,
         "aot_inductor.package_constants_in_so": False,
         "aot_inductor.use_runtime_constant_folding": True,
         "aot_inductor.package": True,

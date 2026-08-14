@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import struct
 import subprocess
 import sys
@@ -17,6 +18,8 @@ from torch_compiled_graphs import (
     EnsureOutcome,
     GraphSpec,
     RuntimeCompatibility,
+    StorageError,
+    from_axes,
 )
 from torch_compiled_graphs.compiler import Compiler
 
@@ -111,33 +114,68 @@ def _spec() -> GraphSpec:
 
 
 def _runtime() -> RuntimeCompatibility:
-    return RuntimeCompatibility("sm_89", {"torch": "2.13", "triton": "3.5"})
+    return RuntimeCompatibility("cpu", deployment_compatibility="test-image-v1")
 
 
 def test_fresh_engine_reuses_local_hashrepo_without_compiling(tmp_path: Path) -> None:
     cas_root = tmp_path / "cas"
+    spec = _spec()
+    key = _runtime().key(spec.declare())
     first = Engine(LocalCAS(cas_root)).ensure(
-        _spec(),
-        _runtime(),
+        key,
         tmp_path / "first",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
         compiler=cast(Compiler, compiler),
         packager=packager,
     )
     assert first.outcome == EnsureOutcome.MINTED
     assert first.graph.package.is_file()
 
-    def must_not_compile(*args: object, **kwargs: object) -> object:
-        raise AssertionError("restart reuse compiled again")
+    def must_not_construct() -> GraphSpec:
+        raise AssertionError("restart reuse invoked the lazy recipe")
 
     second = Engine(LocalCAS(cas_root)).ensure(
-        _spec(),
-        _runtime(),
+        key,
         tmp_path / "second",
-        compiler=cast(Compiler, must_not_compile),
-        packager=packager,
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=must_not_construct,
     )
     assert second.outcome == EnsureOutcome.REUSED
     assert second.graph.package.read_bytes() == first.graph.package.read_bytes()
+
+    cold_destination = tmp_path / "cold-process"
+    cold = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+from pathlib import Path
+from hashrepo import LocalCAS
+from torch_compiled_graphs import Engine, EnsureOutcome
+assert "torch" not in sys.modules
+def forbidden_recipe():
+    raise AssertionError("cache hit invoked recipe")
+result = Engine(LocalCAS(sys.argv[1])).ensure(
+    sys.argv[2], Path(sys.argv[3]), target="cpu",
+    deployment_compatibility="test-image-v1", recipe=forbidden_recipe,
+)
+assert result.outcome == EnsureOutcome.REUSED
+assert "torch" not in sys.modules
+""",
+            str(cas_root),
+            str(key),
+            str(cold_destination),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert cold.returncode == 0
+    assert (cold_destination / "model.pt2").is_file()
 
     process_destination = tmp_path / "process"
     subprocess.run(
@@ -160,10 +198,14 @@ def test_fresh_engine_reuses_local_hashrepo_without_compiling(tmp_path: Path) ->
 
 def test_corrupt_local_object_is_quarantined_and_repaired(tmp_path: Path) -> None:
     cas = LocalCAS(tmp_path / "cas")
+    spec = _spec()
+    key = _runtime().key(spec.declare())
     first = Engine(cas).ensure(
-        _spec(),
-        _runtime(),
+        key,
         tmp_path / "first",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
         compiler=cast(Compiler, compiler),
         packager=packager,
     )
@@ -171,9 +213,11 @@ def test_corrupt_local_object_is_quarantined_and_repaired(tmp_path: Path) -> Non
     cas.object_path(manifest.files[0].digest).write_bytes(b"corrupt")
 
     repaired = Engine(LocalCAS(tmp_path / "cas")).ensure(
-        _spec(),
-        _runtime(),
+        key,
         tmp_path / "repaired",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
         compiler=cast(Compiler, compiler),
         packager=packager,
     )
@@ -190,9 +234,11 @@ def test_named_literal_bytes_survive_hashrepo_reuse(tmp_path: Path) -> None:
         torch.export.export(WithLiteral(), (torch.ones(2),)),
     )
     result = Engine(LocalCAS(tmp_path / "cas")).ensure(
-        spec,
-        _runtime(),
+        _runtime().key(spec.declare()),
         tmp_path / "graph",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
         compiler=cast(Compiler, compiler),
         packager=literal_packager,
     )
@@ -204,32 +250,24 @@ def test_real_aoti_package_survives_restart_reuse(tmp_path: Path) -> None:
     """Exercise torch.export -> AOTInductor -> HashRepo without test doubles."""
 
     spec = _spec()
-    runtime = RuntimeCompatibility(
-        "sm_test",
-        {
-            "torch": str(torch.__version__),
-            "inductor": "runtime-folding",
-        },
-    )
+    runtime = _runtime()
+    key = runtime.key(spec.declare())
     cas_root = tmp_path / "cas"
     minted = Engine(LocalCAS(cas_root)).ensure(
-        spec,
-        runtime,
+        key,
         tmp_path / "minted",
-        options={"compile_threads": 1},
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
     )
     assert minted.outcome == EnsureOutcome.MINTED
 
     reused = Engine(LocalCAS(cas_root)).ensure(
-        _spec(),
-        runtime,
+        key,
         tmp_path / "reused",
-        compiler=cast(
-            Compiler,
-            lambda *args, **kwargs: (_ for _ in ()).throw(
-                AssertionError("restart reuse compiled again")
-            ),
-        ),
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: (_ for _ in ()).throw(AssertionError("restart reuse rebuilt recipe")),
     )
     assert reused.outcome == EnsureOutcome.REUSED
     assert reused.graph.package.read_bytes() == minted.graph.package.read_bytes()
@@ -245,11 +283,142 @@ def test_real_aoti_refuses_a_literal_whose_fqn_the_compiler_erases(tmp_path: Pat
     )
     with pytest.raises(AdmissionError, match="_tensor_constant0"):
         Engine(LocalCAS(tmp_path / "cas")).ensure(
-            spec,
-            RuntimeCompatibility(
-                "sm_test",
-                {"torch": str(torch.__version__), "inductor": "runtime-folding"},
-            ),
+            _runtime().key(spec.declare()),
             tmp_path / "refused",
-            options={"compile_threads": 1},
+            target="cpu",
+            deployment_compatibility="test-image-v1",
+            recipe=lambda: spec,
         )
+
+
+def test_lazy_recipe_must_restate_the_requested_key(tmp_path: Path) -> None:
+    expected = _spec()
+    changed = GraphSpec(
+        "model",
+        "denoiser",
+        torch.export.export(WithLiteral(), (torch.ones(2),)),
+    )
+    key = _runtime().key(expected.declare())
+    with pytest.raises(AdmissionError, match="lazy recipe derives"):
+        Engine(LocalCAS(tmp_path / "cas")).ensure(
+            key,
+            tmp_path / "graph",
+            target="cpu",
+            deployment_compatibility="test-image-v1",
+            recipe=lambda: changed,
+            compiler=cast(Compiler, compiler),
+            packager=packager,
+        )
+
+
+def test_program_mutation_during_compile_is_refused(tmp_path: Path) -> None:
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+
+    def mutating_compiler(*args: object, **kwargs: object) -> object:
+        program = cast(Any, spec.program)
+        placeholder = next(
+            node for node in program.graph_module.graph.nodes if node.op == "placeholder"
+        )
+        placeholder.meta["val"] = torch.ones(3)
+        return compiler(*args, **kwargs)
+
+    with pytest.raises(AdmissionError, match="changed during compilation"):
+        Engine(LocalCAS(tmp_path / "cas")).ensure(
+            key,
+            tmp_path / "graph",
+            target="cpu",
+            deployment_compatibility="test-image-v1",
+            recipe=lambda: spec,
+            compiler=cast(Compiler, mutating_compiler),
+            packager=packager,
+        )
+
+
+def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> None:
+    source_cas = LocalCAS(tmp_path / "source-cas")
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    minted = Engine(source_cas).ensure(
+        key,
+        tmp_path / "minted",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
+        compiler=cast(Compiler, compiler),
+        packager=packager,
+    )
+    manifest = source_cas.load_manifest(minted.graph.manifest)
+    fetched = source_cas.materialize(manifest.files[0], tmp_path / "fetched.tar.gz")
+
+    destination_cas = LocalCAS(tmp_path / "destination-cas")
+    imported = Engine(destination_cas).import_artifact(key, fetched)
+    resolved = Engine(LocalCAS(tmp_path / "destination-cas")).resolve(key, tmp_path / "resolved")
+    assert str(imported.key) == str(key)
+    assert resolved is not None
+    assert resolved.package.is_file()
+
+    wrong = from_axes({"graph": "wrong", "sm": "cpu", "toolchain": "wrong"})
+    with pytest.raises(StorageError, match="expected"):
+        Engine(destination_cas).import_artifact(wrong, fetched)
+
+
+def test_two_process_resolves_converge_on_one_destination(tmp_path: Path) -> None:
+    cas_root = tmp_path / "cas"
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    Engine(LocalCAS(cas_root)).ensure(
+        key,
+        tmp_path / "seed",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
+        compiler=cast(Compiler, compiler),
+        packager=packager,
+    )
+    destination = tmp_path / "shared"
+    command = [
+        sys.executable,
+        "-m",
+        "torch_compiled_graphs",
+        "resolve",
+        "--cas-root",
+        str(cas_root),
+        str(key),
+        str(destination),
+    ]
+    processes = [
+        subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(2)
+    ]
+    results = [process.communicate(timeout=30) for process in processes]
+    assert [process.returncode for process in processes] == [0, 0], results
+    assert (destination / "model.pt2").is_file()
+
+
+def test_destination_io_error_does_not_quarantine_valid_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    Engine(cas).ensure(
+        key,
+        tmp_path / "seed",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
+        compiler=cast(Compiler, compiler),
+        packager=packager,
+    )
+    original = LocalCAS.materialize
+
+    def no_space(*args: object, **kwargs: object) -> object:
+        raise OSError(errno.ENOSPC, "no space")
+
+    monkeypatch.setattr(LocalCAS, "materialize", no_space)
+    with pytest.raises(OSError) as raised:
+        Engine(cas).resolve(key, tmp_path / "failed")
+    assert raised.value.errno == errno.ENOSPC
+    monkeypatch.setattr(LocalCAS, "materialize", original)
+    assert Engine(cas).resolve(key, tmp_path / "healthy") is not None

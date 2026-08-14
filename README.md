@@ -2,7 +2,8 @@
 
 `torch-compiled-graphs` mints and reuses verified PyTorch AOTInductor graphs.
 It is independent of `python-gen-worker`: applications supply one exported
-program plus explicit runtime facts, while HashRepo is the sole local
+program plus an explicit deployment-compatibility axis, while the library
+derives the concrete compiler/runtime fingerprint and HashRepo is the sole local
 content-addressed storage and chunking layer.
 
 ## V1 lifecycle
@@ -11,20 +12,28 @@ content-addressed storage and chunking layer.
 from hashrepo import LocalCAS
 from torch_compiled_graphs import Engine, GraphSpec, RuntimeCompatibility
 
+spec = GraphSpec("denoiser/h=64,w=64", "unet", exported_program)
+runtime = RuntimeCompatibility(
+    "sm_89",
+    deployment_compatibility="worker-image-sha256:...",
+)
+key = runtime.key(spec.declare())
 result = Engine(LocalCAS("/var/cache/graphs")).ensure(
-    GraphSpec("denoiser/h=64,w=64", "unet", exported_program),
-    RuntimeCompatibility(
-        "sm_89",
-        {"torch": torch_version, "triton": triton_version},
-    ),
+    key,
     "/run/graphs/denoiser-h64-w64",
+    target="sm_89",
+    deployment_compatibility="worker-image-sha256:...",
+    recipe=lambda: spec,
 )
 runner_package = result.graph.package
 ```
 
 The same declaration derives the `cg-key-v1` lookup, mint stamp, and
-admission expectation. `ensure` resolves that exact key locally before paying
-for compilation. A miss compiles one code-only graph, packages it as a
+admission expectation. Future workers call `Engine.resolve(key, destination)`
+with the known key: that hit path neither constructs an ExportedProgram nor
+imports Torch. `ensure` also resolves first and invokes its lazy recipe exactly
+once only on a miss. A miss compiles one code-only graph under the sole v1
+compile policy, packages it as a
 verified artifact, stores it through HashRepo, and materializes it. A later
 process pointed at the same HashRepo root reuses it without compiling.
 
@@ -40,8 +49,9 @@ guessing an anonymous constant mapping can silently run the wrong computation.
 
 Tensorhub is the first intended remote service, but no speculative registry or
 plugin interface lives here. Its adapter will obtain byte-operation grants and
-populate the same HashRepo objects/manifests; compilation remains local-first
-and transport-independent.
+populate the same HashRepo objects/manifests, then call
+`Engine.import_artifact(key, path)` for verified attachment; compilation remains
+local-first and transport-independent.
 
 ## CLI
 

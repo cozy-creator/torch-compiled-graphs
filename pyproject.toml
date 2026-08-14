@@ -7,8 +7,8 @@ license = "MIT"
 authors = [{ name = "Paul Fidika", email = "paul@fidika.com" }]
 requires-python = ">=3.10"
 dependencies = [
-    "hashrepo>=0.1,<0.2",
-    "safetensors>=0.4",
+    "hashrepo>=0.1.1,<0.2",
+    "safetensors>=0.8,<0.9",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
