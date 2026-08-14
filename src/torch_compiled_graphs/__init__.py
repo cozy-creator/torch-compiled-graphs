@@ -19,6 +19,13 @@ from .identity import (
     IdentityError,
     is_compiled_graph_key,
 )
+from .ingress import (
+    CallIngress,
+    CallInput,
+    IngressError,
+    build_call_ingress,
+    exported_input_name,
+)
 from .runner import CompiledGraphRunner, ConstantBindingError
 from .storage import (
     QuarantinedArtifact,
@@ -35,6 +42,8 @@ __all__ = [
     "COMPILED_GRAPH_FORMAT",
     "CompiledGraphKey",
     "CompiledGraphRunner",
+    "CallIngress",
+    "CallInput",
     "ConstantBindingError",
     "DeclarationError",
     "Engine",
@@ -43,11 +52,14 @@ __all__ = [
     "GraphClassDeclaration",
     "GraphClassSpec",
     "IdentityError",
+    "IngressError",
     "QuarantinedArtifact",
     "RuntimeCompatibility",
     "StorageError",
     "StoreOutcome",
     "StoreResult",
     "StoredCompiledGraph",
+    "build_call_ingress",
+    "exported_input_name",
     "is_compiled_graph_key",
 ]
