@@ -9,6 +9,7 @@ from .artifact import (
     read_metadata,
     unpack_artifact,
     validate_metadata,
+    verify_package,
 )
 from .compiler import CompileError, compile_exported_program, package_compiled_files
 from .identity import (
@@ -22,6 +23,16 @@ from .identity import (
     is_compiled_graph_key,
     toolchain_axis_digest,
 )
+from .introspection import (
+    DeclaredConstant,
+    PackageIntrospectionError,
+    code_only_violations,
+    constants_in_so,
+    declared_constants,
+    elf_section_sizes,
+    package_entry_names,
+    packaged_so,
+)
 
 __all__ = [
     "ARTIFACT_KIND",
@@ -30,18 +41,27 @@ __all__ = [
     "ArtifactError",
     "CompileError",
     "CompiledGraphKey",
+    "DeclaredConstant",
     "IdentityError",
+    "PackageIntrospectionError",
     "build_metadata",
+    "code_only_violations",
     "compile_exported_program",
+    "constants_in_so",
     "contract_digest",
+    "declared_constants",
+    "elf_section_sizes",
     "facts_digest",
     "from_artifact_metadata",
     "from_axes",
     "is_compiled_graph_key",
     "pack_artifact",
+    "package_entry_names",
     "package_compiled_files",
+    "packaged_so",
     "read_metadata",
     "toolchain_axis_digest",
     "unpack_artifact",
     "validate_metadata",
+    "verify_package",
 ]

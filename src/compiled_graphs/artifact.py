@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any, cast
 
 from .identity import from_artifact_metadata, is_compiled_graph_key
+from .introspection import (
+    PackageIntrospectionError,
+    code_only_violations,
+    declared_constants,
+    package_entry_names,
+)
 
 COMPILED_GRAPH_FORMAT = 1
 COMPILED_GRAPH_FORMAT_KEY = "compiled_graph_format"
@@ -22,6 +28,8 @@ LITERALS_NAME = "constants.safetensors"
 _REQUIRED_MEMBERS = frozenset((METADATA_NAME, PACKAGE_NAME))
 _MEMBERS = _REQUIRED_MEMBERS | {LITERALS_NAME}
 _MAX_METADATA_BYTES = 8 << 20
+_CONSTANT_FIELDS = frozenset(("fqn", "source", "dtype", "shape"))
+_CONSTANT_SOURCES = frozenset(("state_dict", "computed", "literal"))
 
 
 class ArtifactError(ValueError):
@@ -36,16 +44,44 @@ def _fsync_dir(path: Path) -> None:
         os.close(descriptor)
 
 
-def _entry_requires_literals(entry: Mapping[str, Any]) -> bool:
-    constants = entry.get("constants", ())
+def _validated_constants(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
+    constants = entry.get("constants")
     if not isinstance(constants, list):
         raise ArtifactError("entry constants must be an array")
-    for row in constants:
+    checked: list[dict[str, Any]] = []
+    fqns: set[str] = set()
+    for index, row in enumerate(constants):
         if not isinstance(row, Mapping):
             raise ArtifactError("entry constant must be an object")
-        if row.get("source") == "literal":
-            return True
-    return False
+        if set(row) != _CONSTANT_FIELDS:
+            raise ArtifactError(
+                f"entry constant {index} fields must be exactly {sorted(_CONSTANT_FIELDS)!r}"
+            )
+        fqn = row.get("fqn")
+        source = row.get("source")
+        dtype = row.get("dtype")
+        shape = row.get("shape")
+        if not isinstance(fqn, str) or not fqn.strip():
+            raise ArtifactError(f"entry constant {index} fqn must be a non-empty string")
+        if fqn in fqns:
+            raise ArtifactError(f"entry constants contain duplicate fqn {fqn!r}")
+        if source not in _CONSTANT_SOURCES:
+            raise ArtifactError(
+                f"entry constant {index} source must be one of {sorted(_CONSTANT_SOURCES)!r}"
+            )
+        if not isinstance(dtype, str) or not dtype.strip():
+            raise ArtifactError(f"entry constant {index} dtype must be a non-empty string")
+        if not isinstance(shape, list) or not all(
+            type(dimension) is int and dimension >= 0 for dimension in shape
+        ):
+            raise ArtifactError(
+                f"entry constant {index} shape must be an array of non-negative integers"
+            )
+        fqns.add(fqn)
+        checked.append(
+            {"fqn": fqn, "source": source, "dtype": dtype, "shape": list(shape)}
+        )
+    return checked
 
 
 def validate_metadata(
@@ -83,7 +119,9 @@ def validate_metadata(
         raise ArtifactError("cell_key is missing or malformed")
     if stamped != expected:
         raise ArtifactError(f"cell_key {stamped!r} does not restate artifact facts ({expected})")
-    needs_literals = _entry_requires_literals(entry)
+    constants = _validated_constants(entry)
+    entry["constants"] = constants
+    needs_literals = any(row["source"] == "literal" for row in constants)
     if has_literals is False and needs_literals:
         raise ArtifactError("entry declares literal constants but carries no literal payload")
     return metadata
@@ -158,6 +196,7 @@ def pack_artifact(
     if literal_path is not None and not literal_path.is_file():
         raise FileNotFoundError(literal_path)
     checked = validate_metadata(metadata, has_literals=literal_path is not None)
+    verify_package(package_path, checked)
     target = Path(output)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
@@ -185,6 +224,31 @@ def pack_artifact(
         Path(temporary_name).unlink(missing_ok=True)
         raise
     return target
+
+
+def verify_package(package: str | Path, metadata: Mapping[str, Any]) -> None:
+    """Cross-check metadata against one code-only AOTInductor package."""
+
+    package_path = Path(package)
+    checked = validate_metadata(metadata)
+    entry = cast(dict[str, Any], checked["entry"])
+    name = cast(str, entry["name"])
+    try:
+        names = package_entry_names(package_path)
+        if names != (name,):
+            raise ArtifactError(
+                f"package entries {names!r} do not match sole metadata entry {name!r}"
+            )
+        package_constants = [
+            constant.as_manifest_row() for constant in declared_constants(package_path, name)
+        ]
+        if package_constants != entry["constants"]:
+            raise ArtifactError("metadata constants do not match the package constant table")
+        violations = code_only_violations(package_path, name)
+    except PackageIntrospectionError as exc:
+        raise ArtifactError(f"cannot verify AOTInductor package: {exc}") from exc
+    if violations:
+        raise ArtifactError("AOTInductor package is not code-only: " + "; ".join(violations))
 
 
 def _members(artifact: Path) -> tuple[tarfile.TarFile, dict[str, tarfile.TarInfo]]:
@@ -247,6 +311,7 @@ def unpack_artifact(artifact: str | Path, destination: str | Path) -> dict[str, 
                     output.flush()
                     os.fsync(output.fileno())
         metadata = read_metadata(artifact)
+        verify_package(stage / PACKAGE_NAME, metadata)
         os.replace(stage, target)
         _fsync_dir(target.parent)
         return metadata

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import struct
 import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -17,7 +19,11 @@ from compiled_graphs import (
 
 
 def metadata(*, literal: bool = False) -> dict[str, object]:
-    constants = [{"fqn": "table", "source": "literal"}] if literal else []
+    constants = (
+        [{"fqn": "table", "source": "literal", "dtype": "float32", "shape": [2, 2]}]
+        if literal
+        else []
+    )
     return build_metadata(
         entry={
             "name": "denoiser/h=64,w=64",
@@ -31,9 +37,39 @@ def metadata(*, literal: bool = False) -> dict[str, object]:
     )
 
 
+def aoti_package(path: Path, *, baked: bool = False, lrodata: int = 0) -> Path:
+    names = b"\0.shstrtab\0.lrodata\0"
+    section_offset = 64
+    section_size = 64
+    section_count = 3
+    string_offset = section_offset + section_size * section_count
+    payload_offset = string_offset + len(names)
+    shared_object = bytearray(payload_offset + lrodata)
+    shared_object[:4] = b"\x7fELF"
+    shared_object[4:7] = bytes((2, 1, 1))
+    struct.pack_into("<Q", shared_object, 0x28, section_offset)
+    struct.pack_into("<HHH", shared_object, 0x3A, section_size, section_count, 1)
+    struct.pack_into("<II", shared_object, section_offset + section_size, 1, 3)
+    struct.pack_into(
+        "<QQ", shared_object, section_offset + section_size + 0x18, string_offset, len(names)
+    )
+    struct.pack_into("<II", shared_object, section_offset + 2 * section_size, 11, 1)
+    struct.pack_into(
+        "<QQ", shared_object, section_offset + 2 * section_size + 0x18, payload_offset, lrodata
+    )
+    shared_object[string_offset:payload_offset] = names
+    flag = str(baked).lower()
+    wrapper = f"AOTInductorModelBase(1, 1, 0, device_str, std::move(cubin_dir), {flag})"
+    with zipfile.ZipFile(path, "w") as archive:
+        root = "data/aotinductor/denoiser/h=64,w=64"
+        archive.writestr(f"{root}/model.wrapper.cpp", wrapper)
+        archive.writestr(f"{root}/model.so", shared_object)
+    return path
+
+
 def test_artifact_is_deterministic_and_unpacks_atomically(tmp_path: Path) -> None:
     package = tmp_path / "source.pt2"
-    package.write_bytes(b"compiled package")
+    aoti_package(package)
     first = pack_artifact(package, tmp_path / "first.tar.gz", metadata())
     package.touch()
     second = pack_artifact(package, tmp_path / "second.tar.gz", metadata())
@@ -42,21 +78,43 @@ def test_artifact_is_deterministic_and_unpacks_atomically(tmp_path: Path) -> Non
     destination = tmp_path / "materialized"
     unpacked = unpack_artifact(first, destination)
     assert unpacked == metadata()
-    assert (destination / "model.pt2").read_bytes() == b"compiled package"
+    assert (destination / "model.pt2").read_bytes() == package.read_bytes()
     assert read_metadata(first)["compiled_graph_format"] == 1
 
 
 def test_literal_declaration_requires_payload(tmp_path: Path) -> None:
     package = tmp_path / "source.pt2"
-    package.write_bytes(b"compiled package")
+    aoti_package(package)
     with pytest.raises(ArtifactError, match="literal constants"):
         pack_artifact(package, tmp_path / "artifact.tar.gz", metadata(literal=True))
+
+
+def test_pack_refuses_a_package_that_bakes_constants(tmp_path: Path) -> None:
+    package = aoti_package(tmp_path / "source.pt2", baked=True)
+    with pytest.raises(ArtifactError, match="not code-only"):
+        pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
 
 
 def test_stamped_key_must_restate_recorded_facts() -> None:
     raw = metadata()
     raw["sm"] = "sm_90"
     with pytest.raises(ArtifactError, match="does not restate"):
+        validate_metadata(raw)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {},
+        {"fqn": "weight", "source": "state_dict", "dtype": "float32"},
+        {"fqn": "weight", "source": "unknown", "dtype": "float32", "shape": [1]},
+        {"fqn": "weight", "source": "state_dict", "dtype": "float32", "shape": [True]},
+    ],
+)
+def test_constant_manifest_rows_fail_closed(row: dict[str, object]) -> None:
+    raw = metadata()
+    raw["entry"]["constants"] = [row]  # type: ignore[index]
+    with pytest.raises(ArtifactError, match="entry constant"):
         validate_metadata(raw)
 
 

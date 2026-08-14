@@ -20,9 +20,9 @@ concerns in `python-gen-worker` and Tensorhub.
 ## Status
 
 This is the first pre-release extraction slice. It establishes and tests the
-format-v1 identity, compilation seam, and deterministic package boundary. The
-`chunked-cas` adapter and the migrations that delete the old worker copies are
-dependency-ordered follow-ups.
+format-v1 identity, compilation seam, deterministic package boundary, and
+fail-closed AOTInductor package introspection. The `chunked-cas` adapter and the
+migrations that delete the old worker copies are dependency-ordered follow-ups.
 
 The repository is private during package and license review.
 

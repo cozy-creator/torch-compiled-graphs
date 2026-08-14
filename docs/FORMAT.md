@@ -50,3 +50,9 @@ Required top-level metadata includes:
 The generic `format` field and plural `entries` bundle are retired and refused.
 Readers reject missing, duplicate, non-file, or unexpected archive members and
 materialize only into a new directory.
+
+Each constant row has exactly `fqn`, `source`, `dtype`, and `shape`. `source`
+is one of `state_dict`, `computed`, or `literal`; `shape` is an array of
+non-negative integer dimensions. Unknown, incomplete, or duplicate rows are
+refused. A `literal` row requires `constants.safetensors`; the package's own
+AOTInductor wrapper remains the authority for the constant classification.
