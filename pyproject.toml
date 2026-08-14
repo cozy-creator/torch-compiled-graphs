@@ -54,6 +54,7 @@ include = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["real_aoti: exercise the installed PyTorch AOTInductor implementation"]
 
 [tool.mypy]
 python_version = "3.10"

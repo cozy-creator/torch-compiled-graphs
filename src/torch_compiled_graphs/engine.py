@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import tempfile
 from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -13,7 +12,7 @@ from typing import Any
 from hashrepo import LocalCAS
 
 from .artifact import build_metadata, pack_artifact
-from .compiler import Compiler, Packager, compile_exported_program, package_compiled_files
+from .compiler import compile_exported_program, package_compiled_files
 from .declaration import GraphDeclaration, GraphSpec, RuntimeCompatibility
 from .identity import CompiledGraphKey
 from .introspection import DeclaredConstant, declared_constants
@@ -89,6 +88,15 @@ def _write_literals(program: object, constants: tuple[DeclaredConstant, ...], ta
         raise AdmissionError(f"cannot serialize literal graph constants: {exc}") from exc
 
 
+def _compile_package(plan: _GraphPlan, workspace: Path) -> Path:
+    files = compile_exported_program(plan.spec.program)
+    return package_compiled_files(
+        plan.declaration.entry,
+        files,
+        workspace / "model.pt2",
+    )
+
+
 class Engine:
     """One local compiled-graph engine backed exclusively by HashRepo."""
 
@@ -133,34 +141,43 @@ class Engine:
 
         return self._store.resolve(key, destination)
 
+    @staticmethod
+    def _admit_request(graph: StoredGraph, *, target: str, deployment_compatibility: str) -> None:
+        requested_target = str(target).strip().lower()
+        requested_deployment = str(deployment_compatibility).strip()
+        if not requested_target or not requested_deployment:
+            raise AdmissionError("ensure requires target and deployment_compatibility")
+        stored_target = graph.metadata.get("sm")
+        target_matches = stored_target == requested_target or (
+            requested_target == "cpu"
+            and isinstance(stored_target, str)
+            and stored_target.startswith("cpu-")
+        )
+        if not target_matches:
+            raise AdmissionError(
+                f"stored target {stored_target!r} does not match requested {requested_target!r}"
+            )
+        toolchain = graph.metadata.get("toolchain")
+        stored_deployment = (
+            toolchain.get("deployment_compatibility") if isinstance(toolchain, Mapping) else None
+        )
+        if stored_deployment != requested_deployment:
+            raise AdmissionError(
+                "stored deployment_compatibility "
+                f"{stored_deployment!r} does not match requested {requested_deployment!r}"
+            )
+
     def import_artifact(self, key: str | CompiledGraphKey, artifact: str | Path) -> StoreResult:
         """Fully verify and attach bytes fetched by HashRepo under one exact key."""
 
         return self._store.store(key, artifact)
 
-    def _mint(
-        self,
-        plan: _GraphPlan,
-        *,
-        compiler: Compiler | None = None,
-        packager: Packager | None = None,
-        context: AbstractContextManager[None] | None = None,
-    ) -> StoreResult:
+    def _mint(self, plan: _GraphPlan) -> StoreResult:
         """Compile, package, verify, and publish one plan into the local CAS."""
 
         with tempfile.TemporaryDirectory(prefix="torch-compiled-graphs-mint-") as raw:
             workspace = Path(raw)
-            files = compile_exported_program(
-                plan.spec.program,
-                compiler=compiler,
-                context=context,
-            )
-            package = package_compiled_files(
-                plan.declaration.entry,
-                files,
-                workspace / "model.pt2",
-                packager=packager,
-            )
+            package = _compile_package(plan, workspace)
             if plan.spec.declare() != plan.declaration:
                 raise AdmissionError("exported program changed during compilation or packaging")
             constants = declared_constants(package, plan.declaration.entry)
@@ -195,9 +212,6 @@ class Engine:
         target: str,
         deployment_compatibility: str,
         recipe: Callable[[], GraphSpec],
-        compiler: Compiler | None = None,
-        packager: Packager | None = None,
-        context: AbstractContextManager[None] | None = None,
     ) -> EnsureResult:
         """Reuse an admitted exact key, compiling only on a miss or quarantine."""
 
@@ -207,6 +221,11 @@ class Engine:
         except QuarantinedArtifact:
             existing = None
         if existing is not None:
+            self._admit_request(
+                existing,
+                target=target,
+                deployment_compatibility=deployment_compatibility,
+            )
             return EnsureResult(EnsureOutcome.REUSED, existing)
 
         spec = recipe()
@@ -214,12 +233,7 @@ class Engine:
         plan = self._plan(spec, runtime)
         if str(plan.key) != requested:
             raise AdmissionError(f"lazy recipe derives {plan.key}, not requested key {requested!r}")
-        publication = self._mint(
-            plan,
-            compiler=compiler,
-            packager=packager,
-            context=context,
-        )
+        publication = self._mint(plan)
         resolved = self.resolve(plan.key, destination)
         if resolved is None:
             raise StorageError(f"compiled graph {plan.key} disappeared after publication")
