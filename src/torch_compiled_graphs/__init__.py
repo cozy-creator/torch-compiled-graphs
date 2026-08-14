@@ -19,6 +19,7 @@ from .identity import (
     IdentityError,
     is_compiled_graph_key,
 )
+from .runner import CompiledGraphRunner, ConstantBindingError
 from .storage import (
     QuarantinedArtifact,
     StorageError,
@@ -33,6 +34,8 @@ __all__ = [
     "CompileError",
     "COMPILED_GRAPH_FORMAT",
     "CompiledGraphKey",
+    "CompiledGraphRunner",
+    "ConstantBindingError",
     "DeclarationError",
     "Engine",
     "EnsureOutcome",

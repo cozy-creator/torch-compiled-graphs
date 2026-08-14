@@ -125,6 +125,7 @@ def metadata(*, literal: bytes | None = None) -> dict[str, object]:
             "strict": True,
             "lora_bucket": 0,
             "literal_values": declaration.literal_values,
+            "literal_payload_values": digest,
             "placement": list(declaration.placement),
             "constants": constants,
         },
@@ -253,7 +254,7 @@ def test_literal_declaration_requires_payload(tmp_path: Path) -> None:
         ("extra_name", "names do not match"),
         ("dtype", "dtype does not match"),
         ("shape", "shape does not match"),
-        ("value", "literal_values"),
+        ("value", "literal_payload_values"),
     ],
 )
 def test_literal_payload_is_exactly_verified(case: str, pattern: str, tmp_path: Path) -> None:
@@ -291,6 +292,21 @@ def test_payload_is_forbidden_without_declared_literals(tmp_path: Path) -> None:
         pack_artifact(package, tmp_path / "artifact.tar.gz", metadata(), literals=literals)
 
 
+def test_full_literal_identity_is_allowed_when_the_package_eliminated_every_literal() -> None:
+    raw = metadata(literal=struct.pack("<4f", 1.0, 2.0, 3.0, 4.0))
+    graph_class = raw["graph_class"]
+    assert isinstance(graph_class, dict)
+    graph_class["constants"] = []
+    graph_class["literal_payload_values"] = ""
+
+    checked = validate_metadata(raw, has_literals=False)
+
+    checked_graph_class = checked["graph_class"]
+    assert isinstance(checked_graph_class, dict)
+    assert checked_graph_class["literal_values"]
+    assert checked_graph_class["literal_payload_values"] == ""
+
+
 def test_unpack_rejects_corrupted_literal_bytes(tmp_path: Path) -> None:
     expected = struct.pack("<4f", 1.0, 2.0, 3.0, 4.0)
     package = aoti_package(tmp_path / "source.pt2", literal=True)
@@ -315,7 +331,7 @@ def test_unpack_rejects_corrupted_literal_bytes(tmp_path: Path) -> None:
             info.size = len(data)
             output.addfile(info, io.BytesIO(data))
     destination = tmp_path / "materialized"
-    with pytest.raises(ArtifactError, match="literal_values"):
+    with pytest.raises(ArtifactError, match="literal_payload_values"):
         unpack_artifact(artifact, destination)
     assert not destination.exists()
 

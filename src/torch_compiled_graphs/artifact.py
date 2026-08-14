@@ -102,6 +102,7 @@ _GRAPH_CLASS_FIELDS = frozenset(
         "strict",
         "lora_bucket",
         "literal_values",
+        "literal_payload_values",
         "placement",
         "constants",
     )
@@ -301,8 +302,10 @@ def _verify_literals(path: Path | None, metadata: Mapping[str, Any]) -> None:
                     shape=shape,
                     chunks=_bounded_chunks(source, data_start + start, end - start),
                 )
-            if digest.hexdigest()[:32] != graph_class["literal_values"]:
-                raise ArtifactError("safetensors values do not match graph_class literal_values")
+            if digest.hexdigest()[:32] != graph_class["literal_payload_values"]:
+                raise ArtifactError(
+                    "safetensors values do not match graph_class literal_payload_values"
+                )
     except OSError:
         raise
 
@@ -370,6 +373,7 @@ def validate_metadata(
     if not isinstance(graph, dict) or not graph:
         raise ArtifactError("graph_class graph must be a non-empty object")
     literal_values = graph_class.get("literal_values")
+    literal_payload_values = graph_class.get("literal_payload_values")
     placement = graph_class.get("placement")
     fork = graph_class.get("fork")
     class_dims = graph_class.get("class_dims")
@@ -377,6 +381,17 @@ def validate_metadata(
     lora_bucket = graph_class.get("lora_bucket")
     if not isinstance(literal_values, str):
         raise ArtifactError("graph_class literal_values must be a string")
+    if not isinstance(literal_payload_values, str) or (
+        literal_payload_values
+        and (
+            len(literal_payload_values) != 32
+            or any(character not in "0123456789abcdef" for character in literal_payload_values)
+        )
+    ):
+        raise ArtifactError(
+            "graph_class literal_payload_values must be empty or 32 lowercase "
+            "hexadecimal characters"
+        )
     if not isinstance(placement, list) or not all(
         isinstance(device, str) and device and device == device.strip() for device in placement
     ):
@@ -439,8 +454,14 @@ def validate_metadata(
     needs_literals = any(row["source"] == "literal" for row in constants)
     if needs_literals and not literal_values:
         raise ArtifactError("graph_class literal constants require a literal_values digest")
-    if not needs_literals and literal_values:
-        raise ArtifactError("graph_class literal_values requires declared literal constants")
+    if needs_literals and not literal_payload_values:
+        raise ArtifactError(
+            "graph_class literal constants require a literal_payload_values digest"
+        )
+    if not needs_literals and literal_payload_values:
+        raise ArtifactError(
+            "graph_class literal_payload_values requires declared literal constants"
+        )
     if has_literals is not None and has_literals != needs_literals:
         if needs_literals:
             raise ArtifactError(

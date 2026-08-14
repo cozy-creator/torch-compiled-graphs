@@ -22,6 +22,7 @@ import torch_compiled_graphs.engine as engine_module
 import torch_compiled_graphs.host_isa as host_isa_module
 from torch_compiled_graphs import (
     AdmissionError,
+    ConstantBindingError,
     Engine,
     EnsureOutcome,
     GraphClassSpec,
@@ -49,6 +50,25 @@ class WithLiteral(torch.nn.Module):  # type: ignore[misc]
 
     def forward(self, value: Any) -> Any:
         return value * self.table
+
+
+class WithBuffer(torch.nn.Module):  # type: ignore[misc]
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer("scale", torch.tensor([2.0, 3.0]))
+
+    def forward(self, value: Any) -> Any:
+        return value * self.scale
+
+
+class WithTwoLiterals(torch.nn.Module):  # type: ignore[misc]
+    def __init__(self) -> None:
+        super().__init__()
+        self.first = torch.tensor([2.0])
+        self.second = torch.tensor([3.0])
+
+    def forward(self, value: Any) -> Any:
+        return value * self.first + self.second
 
 
 def _elf() -> bytes:
@@ -104,6 +124,56 @@ def literal_packager(output: str, files: Mapping[str, Sequence[object]]) -> obje
             "    torch::aot_inductor::ConstantType::TensorConstant);",
             "constants_info_[0].dtype = cached_torch_dtype_float32;",
             "constants_info_[0].shape = {2};",
+        )
+    )
+    with zipfile.ZipFile(output, "w") as archive:
+        for info, data in (
+            _zip_entry(f"data/aotinductor/{entry}/model.wrapper.cpp", wrapper),
+            _zip_entry(f"data/aotinductor/{entry}/model.so", _elf()),
+        ):
+            archive.writestr(info, data)
+    return output
+
+
+def computed_packager(output: str, files: Mapping[str, Sequence[object]]) -> object:
+    assert len(files) == 1
+    entry = next(iter(files))
+    wrapper = "\n".join(
+        (
+            "AOTInductorModelBase(1, 1, 1, device_str, std::move(cubin_dir), false)",
+            'constants_info_[0].name = "folded";',
+            'constants_info_[0].original_fqn = "folded";',
+            "constants_info_[0].data_size = 8;",
+            "constants_info_[0].from_folded = true;",
+            "constants_info_[0].type = static_cast<int32_t>(",
+            "    torch::aot_inductor::ConstantType::FoldedConstant);",
+            "constants_info_[0].dtype = cached_torch_dtype_float32;",
+            "constants_info_[0].shape = {2};",
+        )
+    )
+    with zipfile.ZipFile(output, "w") as archive:
+        for info, data in (
+            _zip_entry(f"data/aotinductor/{entry}/model.wrapper.cpp", wrapper),
+            _zip_entry(f"data/aotinductor/{entry}/model.so", _elf()),
+        ):
+            archive.writestr(info, data)
+    return output
+
+
+def first_literal_packager(output: str, files: Mapping[str, Sequence[object]]) -> object:
+    assert len(files) == 1
+    entry = next(iter(files))
+    wrapper = "\n".join(
+        (
+            "AOTInductorModelBase(1, 1, 1, device_str, std::move(cubin_dir), false)",
+            'constants_info_[0].name = "first";',
+            'constants_info_[0].original_fqn = "first";',
+            "constants_info_[0].data_size = 4;",
+            "constants_info_[0].from_folded = false;",
+            "constants_info_[0].type = static_cast<int32_t>(",
+            "    torch::aot_inductor::ConstantType::TensorConstant);",
+            "constants_info_[0].dtype = cached_torch_dtype_float32;",
+            "constants_info_[0].shape = {1};",
         )
     )
     with zipfile.ZipFile(output, "w") as archive:
@@ -502,6 +572,102 @@ def test_named_literal_bytes_survive_hashrepo_reuse(
     assert load_file(result.compiled_graph.literals)["table"].tolist() == [2.0, 3.0]
 
 
+def test_compile_derives_its_own_key_and_reuses_without_recompiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec()
+    runtime = _runtime()
+    calls = 0
+
+    def compile_once(plan: object, workspace: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        return _fake_compile_package(packager)(plan, workspace)
+
+    monkeypatch.setattr(engine_module, "_compile_package", compile_once)
+    engine = Engine(LocalCAS(tmp_path / "cas"))
+    minted = engine.compile(spec, runtime, tmp_path / "minted")
+    reused = engine.compile(spec, runtime, tmp_path / "reused")
+    assert minted.outcome == EnsureOutcome.MINTED
+    assert reused.outcome == EnsureOutcome.REUSED
+    assert minted.compiled_graph.key == str(runtime.key(spec.declare()))
+    assert reused.compiled_graph.manifest == minted.compiled_graph.manifest
+    assert calls == 1
+
+
+def test_compile_refuses_a_state_dict_constant_eliminated_by_the_package(
+    tmp_path: Path,
+) -> None:
+    program = torch.export.export(WithBuffer(), (torch.ones(2),))
+    spec = _spec_for(program)
+
+    with pytest.raises(AdmissionError, match="eliminated.*state-dict.*scale"):
+        Engine(LocalCAS(tmp_path / "cas")).compile(spec, _runtime(), tmp_path / "refused")
+
+    assert not (tmp_path / "refused").exists()
+
+
+def test_compile_refuses_a_package_constant_the_program_never_lifted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_module, "_compile_package", _fake_compile_package(literal_packager))
+
+    with pytest.raises(AdmissionError, match="declares.*never lifted.*table"):
+        Engine(LocalCAS(tmp_path / "cas")).compile(_spec(), _runtime(), tmp_path / "refused")
+
+
+def test_compile_allows_an_eliminated_literal_whose_value_is_keyed(tmp_path: Path) -> None:
+    spec = _spec_for(torch.export.export(WithLiteral(), (torch.ones(2),)))
+
+    result = Engine(LocalCAS(tmp_path / "cas")).compile(
+        spec, _runtime(), tmp_path / "compiled"
+    )
+
+    graph_class = result.compiled_graph.metadata["graph_class"]
+    assert isinstance(graph_class, dict)
+    assert graph_class["literal_values"] == spec.declare().literal_values
+    assert graph_class["literal_payload_values"] == ""
+    assert graph_class["constants"] == []
+    assert result.compiled_graph.literals is None
+
+
+def test_compile_authenticates_only_the_surviving_literal_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from safetensors.torch import load_file
+
+    spec = _spec_for(torch.export.export(WithTwoLiterals(), (torch.ones(1),)))
+    monkeypatch.setattr(
+        engine_module, "_compile_package", _fake_compile_package(first_literal_packager)
+    )
+
+    result = Engine(LocalCAS(tmp_path / "cas")).compile(
+        spec, _runtime(), tmp_path / "compiled"
+    )
+
+    graph_class = result.compiled_graph.metadata["graph_class"]
+    assert isinstance(graph_class, dict)
+    assert graph_class["literal_values"] == spec.declare().literal_values
+    assert graph_class["literal_payload_values"]
+    assert graph_class["literal_payload_values"] != graph_class["literal_values"]
+    assert result.compiled_graph.literals is not None
+    assert set(load_file(result.compiled_graph.literals)) == {"first"}
+
+
+def test_compile_allows_package_only_computed_constants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_module, "_compile_package", _fake_compile_package(computed_packager))
+
+    result = Engine(LocalCAS(tmp_path / "cas")).compile(_spec(), _runtime(), tmp_path / "compiled")
+
+    graph_class = result.compiled_graph.metadata["graph_class"]
+    assert isinstance(graph_class, dict)
+    assert graph_class["constants"] == [
+        {"fqn": "folded", "source": "computed", "dtype": "float32", "shape": [2]}
+    ]
+
+
 @pytest.mark.real_aoti
 def test_real_aoti_package_survives_restart_reuse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -521,25 +687,18 @@ def test_real_aoti_package_survives_restart_reuse(
     runtime = _runtime()
     key = runtime.key(spec.declare())
     cas_root = tmp_path / "cas"
-    minted = Engine(LocalCAS(cas_root)).ensure(
-        key,
-        tmp_path / "minted",
-        target="cpu",
-        toolchain=_toolchain(),
-        recipe=lambda: spec,
-    )
+    minted = Engine(LocalCAS(cas_root)).compile(spec, runtime, tmp_path / "minted")
     assert minted.outcome == EnsureOutcome.MINTED
 
-    reused = Engine(LocalCAS(cas_root)).ensure(
-        key,
-        tmp_path / "reused",
-        target="cpu",
-        toolchain=_toolchain(),
-        recipe=lambda: (_ for _ in ()).throw(AssertionError("restart reuse rebuilt recipe")),
-    )
+    restarted = Engine(LocalCAS(cas_root))
+    reused = restarted.compile(spec, runtime, tmp_path / "reused")
     assert reused.outcome == EnsureOutcome.REUSED
     assert reused.compiled_graph.package.read_bytes() == minted.compiled_graph.package.read_bytes()
-    loaded = torch._inductor.aoti_load_package(str(reused.compiled_graph.package))
+    loaded = restarted.runner(key, tmp_path / "loaded")
+    assert loaded is not None
+    with pytest.raises(ConstantBindingError, match="before complete binding"):
+        loaded(torch.ones(4096))
+    loaded.bind({}, device="cpu")
     representative = torch.linspace(-3.0, 3.0, 4096)
     actual = loaded(representative)
     expected = Double()(representative)
@@ -567,6 +726,58 @@ def test_real_aoti_package_survives_restart_reuse(
                     prefix in {"c4", "c5"} for prefix in prefixes
                 )
         assert saw_vex_vector, "vectorizing graph emitted no VEX instruction evidence"
+
+
+@pytest.mark.real_aoti
+def test_real_aoti_runner_binds_named_state_by_reference(tmp_path: Path) -> None:
+    module = WithBuffer()
+    program = torch.export.export(module, (torch.ones(2),))
+    spec = _spec_for(program)
+    runtime = _runtime()
+    engine = Engine(LocalCAS(tmp_path / "cas"))
+    result = engine.compile(spec, runtime, tmp_path / "compiled")
+    runner = engine.runner(result.compiled_graph.key, tmp_path / "loaded")
+    assert runner is not None
+    runner.bind({"scale": module.scale}, device="cpu")
+    representative = torch.tensor([4.0, 5.0])
+    torch.testing.assert_close(runner(representative), module(representative))
+    assert runner.bound_fqns == ("scale",)
+
+
+@pytest.mark.real_aoti
+def test_real_aoti_named_buffer_runs_after_interpreter_restart(tmp_path: Path) -> None:
+    module = WithBuffer()
+    spec = _spec_for(torch.export.export(module, (torch.ones(2),)))
+    runtime = _runtime()
+    cas_root = tmp_path / "cas"
+    result = Engine(LocalCAS(cas_root)).compile(spec, runtime, tmp_path / "compiled")
+    code = """
+import sys
+from pathlib import Path
+
+import torch
+from hashrepo import LocalCAS
+from torch_compiled_graphs import Engine
+
+runner = Engine(LocalCAS(Path(sys.argv[1]))).runner(sys.argv[2], Path(sys.argv[3]))
+assert runner is not None
+runner.bind({"scale": torch.tensor([7.0, 11.0])}, device="cpu")
+actual = runner(torch.tensor([4.0, 5.0]))
+torch.testing.assert_close(actual, torch.tensor([28.0, 55.0]))
+"""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            str(cas_root),
+            result.compiled_graph.key,
+            str(tmp_path / "restarted"),
+        ],
+        check=True,
+        cwd=Path.cwd(),
+        env={**os.environ, "TORCHINDUCTOR_CACHE_DIR": str(tmp_path / "subprocess-cache")},
+    )
 
 
 @pytest.mark.real_aoti
@@ -621,6 +832,27 @@ def test_program_mutation_during_compile_is_refused(
             toolchain=_toolchain(),
             recipe=lambda: spec,
         )
+
+
+def test_literal_mutation_during_payload_serialization_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec_for(torch.export.export(WithLiteral(), (torch.ones(2),)))
+    monkeypatch.setattr(
+        engine_module, "_compile_package", _fake_compile_package(literal_packager)
+    )
+    write_literals = engine_module._write_literals
+
+    def mutate_before_write(
+        program: object, constants: tuple[object, ...], target: Path
+    ) -> str:
+        cast(Any, program).constants["table"].add_(1)
+        return write_literals(program, cast(Any, constants), target)
+
+    monkeypatch.setattr(engine_module, "_write_literals", mutate_before_write)
+
+    with pytest.raises(AdmissionError, match="literal serialization"):
+        Engine(LocalCAS(tmp_path / "cas")).compile(spec, _runtime(), tmp_path / "refused")
 
 
 def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> None:

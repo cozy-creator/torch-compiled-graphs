@@ -13,10 +13,16 @@ from hashrepo import LocalCAS
 
 from .artifact import build_metadata, pack_artifact, read_metadata
 from .compiler import _compile_exported_program, _package_compiled_files
-from .declaration import GraphClassDeclaration, GraphClassSpec, RuntimeCompatibility
+from .declaration import (
+    GraphClassDeclaration,
+    GraphClassSpec,
+    RuntimeCompatibility,
+    _literal_digest_for,
+)
 from .host_isa import HostISAError, _admit_host
 from .identity import CompiledGraphKey, toolchain_axis_digest
 from .introspection import DeclaredConstant, declared_constants
+from .runner import CompiledGraphRunner
 from .storage import (
     QuarantinedArtifact,
     StorageError,
@@ -62,10 +68,15 @@ def _literal_value(program: object, constant: DeclaredConstant) -> Any:
     raise AdmissionError(f"declared literal constant {constant.fqn!r} has no exported value")
 
 
-def _write_literals(program: object, constants: tuple[DeclaredConstant, ...], target: Path) -> None:
-    literals = [constant for constant in constants if constant.source == "literal"]
+def _write_literals(
+    program: object, constants: tuple[DeclaredConstant, ...], target: Path
+) -> str:
+    literals = sorted(
+        (constant for constant in constants if constant.source == "literal"),
+        key=lambda constant: constant.fqn,
+    )
     if not literals:
-        return
+        return ""
     try:
         from safetensors import TensorSpec, serialize_file
     except ImportError as exc:  # pragma: no cover - package dependency
@@ -87,6 +98,7 @@ def _write_literals(program: object, constants: tuple[DeclaredConstant, ...], ta
         serialize_file(specs, str(target))
     except Exception as exc:
         raise AdmissionError(f"cannot serialize literal graph constants: {exc}") from exc
+    return _literal_digest_for(program, (constant.fqn for constant in literals))
 
 
 def _compile_package(plan: _GraphClassPlan, workspace: Path) -> Path:
@@ -96,6 +108,38 @@ def _compile_package(plan: _GraphClassPlan, workspace: Path) -> Path:
         files,
         workspace / "model.pt2",
     )
+
+
+def _program_state_dict_fqns(program: object) -> set[str]:
+    signature = getattr(program, "graph_signature", None)
+    return {
+        str(name)
+        for field in ("parameters", "buffers")
+        for name in (getattr(signature, field, ()) or ())
+    }
+
+
+def _admit_constant_table(plan: _GraphClassPlan, constants: tuple[DeclaredConstant, ...]) -> None:
+    """Prove the package did not invent a constant or compile in a weight."""
+
+    stated = plan.declaration.graph.get("constant_fqns")
+    if not isinstance(stated, list) or not all(isinstance(name, str) for name in stated):
+        raise AdmissionError("graph declaration has no canonical constant FQN table")
+    program = set(stated)
+    package = {constant.fqn for constant in constants}
+    bindable = {constant.fqn for constant in constants if constant.source != "computed"}
+    package_only = sorted(bindable - program)
+    if package_only:
+        raise AdmissionError(
+            f"compiled package declares {len(package_only)} constant(s) the exported "
+            f"program never lifted: {package_only[:6]!r}"
+        )
+    folded_weights = sorted(_program_state_dict_fqns(plan.spec.program) - package)
+    if folded_weights:
+        raise AdmissionError(
+            f"compiled package eliminated {len(folded_weights)} state-dict constant(s): "
+            f"{folded_weights[:6]!r}; their checkpoint values may be compiled into code"
+        )
 
 
 class Engine:
@@ -177,12 +221,14 @@ class Engine:
         toolchain: Mapping[str, str],
     ) -> None:
         requested_target = str(target).strip().lower()
-        requested_toolchain = {
-            str(name): str(value) for name, value in toolchain.items()
-        }
-        if not requested_target or not requested_toolchain or any(
-            not name or name != name.strip() or not value or value != value.strip()
-            for name, value in requested_toolchain.items()
+        requested_toolchain = {str(name): str(value) for name, value in toolchain.items()}
+        if (
+            not requested_target
+            or not requested_toolchain
+            or any(
+                not name or name != name.strip() or not value or value != value.strip()
+                for name, value in requested_toolchain.items()
+            )
         ):
             raise AdmissionError("ensure requires target and a recorded toolchain block")
         stored_target = compiled_graph.metadata.get("sm")
@@ -214,17 +260,29 @@ class Engine:
 
         return self._store.export_artifact(key, destination)
 
+    def runner(
+        self, key: str | CompiledGraphKey, destination: str | Path
+    ) -> CompiledGraphRunner | None:
+        """Resolve the exact selected artifact and load its gated AOTI runner."""
+
+        graph = self.resolve(key, destination)
+        return None if graph is None else CompiledGraphRunner._from_verified_graph(graph)
+
     def _mint(self, plan: _GraphClassPlan) -> StoreResult:
         """Compile, package, verify, and publish one plan into the local CAS."""
 
         with tempfile.TemporaryDirectory(prefix="torch-compiled-graphs-mint-") as raw:
             workspace = Path(raw)
             package = _compile_package(plan, workspace)
-            if plan.spec.declare() != plan.declaration:
-                raise AdmissionError("exported program changed during compilation or packaging")
             constants = declared_constants(package, plan.declaration.graph_class)
+            _admit_constant_table(plan, constants)
             literals = workspace / "constants.safetensors"
-            _write_literals(plan.spec.program, constants, literals)
+            literal_payload_values = _write_literals(plan.spec.program, constants, literals)
+            if plan.spec.declare() != plan.declaration:
+                raise AdmissionError(
+                    "exported program changed during compilation, packaging, "
+                    "or literal serialization"
+                )
             metadata = build_metadata(
                 graph_class={
                     "name": plan.declaration.graph_class,
@@ -234,12 +292,11 @@ class Engine:
                     "graph_witness": plan.declaration.graph_witness,
                     "range_digest": plan.declaration.range_digest,
                     "fork": [[name, value] for name, value in plan.declaration.fork],
-                    "class_dims": [
-                        [name, value] for name, value in plan.declaration.class_dims
-                    ],
+                    "class_dims": [[name, value] for name, value in plan.declaration.class_dims],
                     "strict": plan.declaration.strict,
                     "lora_bucket": plan.declaration.lora_bucket,
                     "literal_values": plan.declaration.literal_values,
+                    "literal_payload_values": literal_payload_values,
                     "placement": list(plan.declaration.placement),
                     "constants": [constant.as_manifest_row() for constant in constants],
                 },
@@ -254,6 +311,35 @@ class Engine:
                 literals=literals if literals.is_file() else None,
             )
             return self._store.store(plan.key, artifact)
+
+    def compile(
+        self,
+        spec: GraphClassSpec,
+        runtime: RuntimeCompatibility,
+        destination: str | Path,
+    ) -> EnsureResult:
+        """Compile or reuse one self-derived graph class under sealed policy."""
+
+        plan = self._plan(spec, runtime)
+        try:
+            existing = self.resolve(plan.key, destination)
+        except QuarantinedArtifact:
+            existing = None
+        if existing is not None:
+            self._admit(plan, existing)
+            return EnsureResult(EnsureOutcome.REUSED, existing)
+
+        publication = self._mint(plan)
+        resolved = self.resolve(plan.key, destination)
+        if resolved is None:
+            raise StorageError(f"compiled graph {plan.key} disappeared after publication")
+        self._admit(plan, resolved)
+        outcome = (
+            EnsureOutcome.REUSED
+            if publication.outcome == StoreOutcome.DIVERGENT
+            else EnsureOutcome.MINTED
+        )
+        return EnsureResult(outcome, resolved, publication.outcome)
 
     def ensure(
         self,

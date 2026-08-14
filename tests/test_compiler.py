@@ -85,6 +85,8 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "CompileError",
         "COMPILED_GRAPH_FORMAT",
         "CompiledGraphKey",
+        "CompiledGraphRunner",
+        "ConstantBindingError",
         "DeclarationError",
         "Engine",
         "EnsureOutcome",
