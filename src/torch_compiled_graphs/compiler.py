@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 _COMPILER_OPTIONS: dict[str, object] = {
     "compile_threads": 1,
@@ -39,17 +39,67 @@ def _compiler_options() -> dict[str, object]:
     return dict(_COMPILER_OPTIONS)
 
 
+def _fake_mode(program: object) -> object | None:
+    for holder in ("state_dict", "constants"):
+        values = getattr(program, holder, None)
+        if not isinstance(values, Mapping):
+            continue
+        for tensor in values.values():
+            mode = getattr(tensor, "fake_mode", None)
+            if mode is not None:
+                return cast(object, mode)
+    return None
+
+
+def _shape_env(program: object) -> object | None:
+    graph_module = getattr(program, "graph_module", None)
+    graph = getattr(graph_module, "graph", None)
+    for node in getattr(graph, "nodes", ()):
+        value = getattr(node, "meta", {}).get("val")
+        for dimension in getattr(value, "shape", ()) or ():
+            environment = getattr(getattr(dimension, "node", None), "shape_env", None)
+            if environment is not None:
+                return cast(object, environment)
+    return None
+
+
+@contextmanager
+def _compiling_under_export_context(program: object) -> Iterator[None]:
+    """Restore the FakeTensor tracing context carried by one exported program."""
+
+    mode = _fake_mode(program)
+    if mode is None:
+        yield
+        return
+    try:
+        guards = import_module("torch._guards")
+        tracing_context = vars(guards)["TracingContext"]
+        tracing = vars(guards)["tracing"]
+    except (ImportError, KeyError) as exc:
+        raise CompileError("PyTorch FakeTensor tracing support is unavailable") from exc
+
+    environment = _shape_env(program)
+    previous = getattr(mode, "shape_env", None)
+    if environment is not None:
+        cast(Any, mode).shape_env = environment
+    try:
+        with cast(Any, tracing)(cast(Any, tracing_context)(mode)):
+            yield
+    finally:
+        if environment is not None:
+            cast(Any, mode).shape_env = previous
+
+
 def compile_exported_program(
     program: object,
     *,
     compiler: Compiler | None = None,
-    context: AbstractContextManager[None] | None = None,
 ) -> tuple[object, ...]:
     """Compile one ExportedProgram to the loose files used by `package_aoti`.
 
-    ``context`` is the one worker seam needed for fake/meta tensor handling.
-    Compile settings are fixed because every setting that can affect generated
-    code must have exactly one v1 identity.
+    FakeTensor and ShapeEnv state is derived only from ``program``. Compile
+    settings are fixed because every setting that can affect generated code
+    must have exactly one v1 identity.
     """
     if compiler is None:
         try:
@@ -67,7 +117,7 @@ def compile_exported_program(
         raise CompileError("program has no (args, kwargs) example_inputs") from exc
 
     try:
-        with context if context is not None else nullcontext():
+        with _compiling_under_export_context(program):
             result = compiler(
                 exported_module(check_guards=False),
                 tuple(args),

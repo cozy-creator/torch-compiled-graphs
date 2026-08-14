@@ -27,6 +27,7 @@ from .identity import (
     IdentityError,
     from_artifact_metadata,
     from_axes,
+    is_compiled_graph_key,
 )
 from .introspection import (
     DeclaredConstant,
@@ -68,6 +69,7 @@ __all__ = [
     "declared_constants",
     "from_artifact_metadata",
     "from_axes",
+    "is_compiled_graph_key",
     "pack_artifact",
     "package_compiled_files",
     "read_metadata",

@@ -87,6 +87,15 @@ Package releases use SemVer, beginning with `0.1.0`; the first release tag is
 launch an internal v1 may be replaced in place: there are no dual readers,
 compatibility aliases, or migration paths for abandoned pre-launch formats.
 
+### 0.1.1 public API
+
+- `compile_exported_program` no longer accepts an arbitrary context manager;
+  it derives the FakeTensor, ShapeEnv, and tracing context from its
+  `ExportedProgram`.
+- `is_compiled_graph_key` is public for validating digest-only boundary values.
+- `Engine.export_artifact(key, destination)` exports a fully verified artifact
+  envelope without exposing HashRepo ref layout.
+
 The release workflow is exactly `.github/workflows/publish.yaml`. It requires
 a `v<project version>` tag on `main`, rebuilds and smoke-tests the wheel, uses
 PyPI Trusted Publishing through the `pypi` environment, and verifies the exact
