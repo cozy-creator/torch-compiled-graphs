@@ -1,0 +1,586 @@
+from __future__ import annotations
+
+import gzip
+import hashlib
+import io
+import json
+import os
+import shutil
+import struct
+import tarfile
+import tempfile
+from collections.abc import Iterator, Mapping
+from pathlib import Path
+from typing import Any, BinaryIO, cast
+
+from .declaration import DeclarationError, GraphDeclaration, _update_literal_digest
+from .identity import from_artifact_metadata, is_compiled_graph_key
+from .introspection import (
+    PackageIntrospectionError,
+    _package_entry_names,
+    code_only_violations,
+    declared_constants,
+)
+
+COMPILED_GRAPH_FORMAT = 1
+COMPILED_GRAPH_FORMAT_KEY = "compiled_graph_format"
+ARTIFACT_KIND = "aot-inductor"
+METADATA_NAME = "metadata.json"
+PACKAGE_NAME = "model.pt2"
+LITERALS_NAME = "constants.safetensors"
+_REQUIRED_MEMBERS = frozenset((METADATA_NAME, PACKAGE_NAME))
+_MEMBERS = _REQUIRED_MEMBERS | {LITERALS_NAME}
+_MAX_METADATA_BYTES = 8 << 20
+_MAX_SAFETENSORS_HEADER_BYTES = 8 << 20
+_CONSTANT_FIELDS = frozenset(("fqn", "source", "dtype", "shape"))
+_CONSTANT_SOURCES = frozenset(("state_dict", "computed", "literal"))
+_TOP_LEVEL_FIELDS = frozenset(
+    (
+        COMPILED_GRAPH_FORMAT_KEY,
+        "kind",
+        "compiled_graph_key",
+        "entry",
+        "sm",
+        "toolchain",
+        "package_constants_in_so",
+        "constant_folding_fenced",
+    )
+)
+
+_SAFETENSORS_DTYPES: dict[str, tuple[str, int]] = {
+    "BOOL": ("bool", 1),
+    "U8": ("uint8", 1),
+    "I8": ("int8", 1),
+    "I16": ("int16", 2),
+    "U16": ("uint16", 2),
+    "I32": ("int32", 4),
+    "U32": ("uint32", 4),
+    "I64": ("int64", 8),
+    "U64": ("uint64", 8),
+    "F16": ("float16", 2),
+    "BF16": ("bfloat16", 2),
+    "F32": ("float32", 4),
+    "F64": ("float64", 8),
+    "C64": ("complex64", 8),
+    "C128": ("complex128", 16),
+    "F8_E4M3": ("float8_e4m3fn", 1),
+    "F8_E4M3FNUZ": ("float8_e4m3fnuz", 1),
+    "F8_E5M2": ("float8_e5m2", 1),
+    "F8_E5M2FNUZ": ("float8_e5m2fnuz", 1),
+    "F8_E8M0": ("float8_e8m0fnu", 1),
+}
+_ENTRY_FIELDS = frozenset(
+    (
+        "name",
+        "target",
+        "class_hash",
+        "graph",
+        "literal_values",
+        "placement",
+        "constants",
+    )
+)
+
+
+class ArtifactError(ValueError):
+    """A compiled-graph envelope is malformed or internally inconsistent."""
+
+
+def _fsync_dir(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _validated_constants(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
+    constants = entry.get("constants")
+    if not isinstance(constants, list):
+        raise ArtifactError("entry constants must be an array")
+    checked: list[dict[str, Any]] = []
+    fqns: set[str] = set()
+    for index, row in enumerate(constants):
+        if not isinstance(row, Mapping):
+            raise ArtifactError("entry constant must be an object")
+        if set(row) != _CONSTANT_FIELDS:
+            raise ArtifactError(
+                f"entry constant {index} fields must be exactly {sorted(_CONSTANT_FIELDS)!r}"
+            )
+        fqn = row.get("fqn")
+        source = row.get("source")
+        dtype = row.get("dtype")
+        shape = row.get("shape")
+        if not isinstance(fqn, str) or not fqn or fqn != fqn.strip():
+            raise ArtifactError(f"entry constant {index} fqn must be a non-empty string")
+        if fqn in fqns:
+            raise ArtifactError(f"entry constants contain duplicate fqn {fqn!r}")
+        if source not in _CONSTANT_SOURCES:
+            raise ArtifactError(
+                f"entry constant {index} source must be one of {sorted(_CONSTANT_SOURCES)!r}"
+            )
+        if not isinstance(dtype, str) or not dtype or dtype != dtype.strip():
+            raise ArtifactError(f"entry constant {index} dtype must be a non-empty string")
+        if not isinstance(shape, list) or not all(
+            type(dimension) is int and dimension >= 0 for dimension in shape
+        ):
+            raise ArtifactError(
+                f"entry constant {index} shape must be an array of non-negative integers"
+            )
+        fqns.add(fqn)
+        checked.append({"fqn": fqn, "source": source, "dtype": dtype, "shape": list(shape)})
+    return checked
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise ArtifactError(f"safetensors header declares {name!r} twice")
+        result[name] = value
+    return result
+
+
+def _bounded_chunks(source: BinaryIO, offset: int, size: int) -> Iterator[bytes]:
+    source.seek(offset)
+    remaining = size
+    while remaining:
+        chunk = source.read(min(1 << 20, remaining))
+        if not chunk:
+            raise ArtifactError("safetensors tensor data is truncated")
+        remaining -= len(chunk)
+        yield chunk
+
+
+def _verify_literals(path: Path | None, metadata: Mapping[str, Any]) -> None:
+    entry = cast(Mapping[str, Any], metadata["entry"])
+    literal_rows = {
+        cast(str, row["fqn"]): row
+        for row in cast(list[dict[str, Any]], entry["constants"])
+        if row["source"] == "literal"
+    }
+    if not literal_rows:
+        if path is not None:
+            raise ArtifactError("artifact carries a literal payload but declares no literals")
+        return
+    if path is None:
+        raise ArtifactError("entry declares literal constants but carries no literal payload")
+
+    try:
+        total_size = path.stat().st_size
+        with path.open("rb") as source:
+            prefix = source.read(8)
+            if len(prefix) != 8:
+                raise ArtifactError("safetensors payload has no complete header length")
+            header_size = struct.unpack("<Q", prefix)[0]
+            if (
+                header_size == 0
+                or header_size % 8 != 0
+                or header_size > _MAX_SAFETENSORS_HEADER_BYTES
+                or header_size > total_size - 8
+            ):
+                raise ArtifactError("safetensors payload has an invalid header length")
+            encoded = source.read(header_size)
+            if len(encoded) != header_size:
+                raise ArtifactError("safetensors payload has a truncated header")
+            try:
+                decoded = json.loads(encoded, object_pairs_hook=_unique_object)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ArtifactError(f"safetensors payload has invalid JSON: {exc}") from exc
+            if not isinstance(decoded, dict):
+                raise ArtifactError("safetensors header must be an object")
+            metadata_row = decoded.pop("__metadata__", None)
+            if metadata_row is not None and (
+                not isinstance(metadata_row, dict)
+                or any(
+                    not isinstance(key, str) or not isinstance(value, str)
+                    for key, value in metadata_row.items()
+                )
+            ):
+                raise ArtifactError("safetensors __metadata__ must contain only strings")
+            if set(decoded) != set(literal_rows):
+                missing = sorted(set(literal_rows) - set(decoded))
+                extra = sorted(set(decoded) - set(literal_rows))
+                raise ArtifactError(
+                    "safetensors names do not match declared literals "
+                    f"(missing {missing}, extra {extra})"
+                )
+
+            data_start = 8 + header_size
+            data_size = total_size - data_start
+            tensors: dict[str, tuple[str, tuple[int, ...], int, int]] = {}
+            ranges: list[tuple[int, int, str]] = []
+            for name, raw in decoded.items():
+                if not isinstance(raw, dict) or set(raw) != {"dtype", "shape", "data_offsets"}:
+                    raise ArtifactError(f"safetensors tensor {name!r} has invalid fields")
+                raw_dtype = raw["dtype"]
+                raw_shape = raw["shape"]
+                raw_offsets = raw["data_offsets"]
+                dtype_info = (
+                    _SAFETENSORS_DTYPES.get(raw_dtype) if isinstance(raw_dtype, str) else None
+                )
+                if dtype_info is None:
+                    raise ArtifactError(f"safetensors tensor {name!r} has unsupported dtype")
+                if not isinstance(raw_shape, list) or not all(
+                    type(dimension) is int and dimension >= 0 for dimension in raw_shape
+                ):
+                    raise ArtifactError(f"safetensors tensor {name!r} has invalid shape")
+                if (
+                    not isinstance(raw_offsets, list)
+                    or len(raw_offsets) != 2
+                    or not all(type(offset) is int and offset >= 0 for offset in raw_offsets)
+                ):
+                    raise ArtifactError(f"safetensors tensor {name!r} has invalid data offsets")
+                start, end = raw_offsets
+                shape = tuple(raw_shape)
+                elements = 1
+                for dimension in shape:
+                    elements *= dimension
+                if end < start or end - start != elements * dtype_info[1] or end > data_size:
+                    raise ArtifactError(f"safetensors tensor {name!r} has an invalid byte range")
+                declared = literal_rows[name]
+                if declared["dtype"] != dtype_info[0]:
+                    raise ArtifactError(
+                        f"safetensors tensor {name!r} dtype does not match declaration"
+                    )
+                if tuple(declared["shape"]) != shape:
+                    raise ArtifactError(
+                        f"safetensors tensor {name!r} shape does not match declaration"
+                    )
+                tensors[name] = (dtype_info[0], shape, start, end)
+                ranges.append((start, end, name))
+
+            expected_offset = 0
+            for start, end, name in sorted(ranges):
+                if start != expected_offset:
+                    raise ArtifactError(
+                        f"safetensors tensor {name!r} has overlapping or non-contiguous data"
+                    )
+                expected_offset = end
+            if expected_offset != data_size:
+                raise ArtifactError("safetensors payload has unclaimed trailing data")
+
+            digest = hashlib.sha256()
+            for name in sorted(tensors):
+                canonical_dtype, shape, start, end = tensors[name]
+                _update_literal_digest(
+                    digest,
+                    name=name,
+                    dtype=canonical_dtype,
+                    shape=shape,
+                    chunks=_bounded_chunks(source, data_start + start, end - start),
+                )
+            if digest.hexdigest() != entry["literal_values"]:
+                raise ArtifactError("safetensors values do not match entry literal_values")
+    except OSError:
+        raise
+
+
+def validate_metadata(
+    raw: Mapping[str, Any], *, has_literals: bool | None = None
+) -> dict[str, Any]:
+    """Validate, detach, and return the sole v1 metadata representation."""
+
+    try:
+        decoded: object = json.loads(json.dumps(dict(raw), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ArtifactError(f"metadata is not finite JSON: {exc}") from exc
+    if not isinstance(decoded, dict):
+        raise ArtifactError("metadata root must be an object")
+    metadata = cast(dict[str, Any], decoded)
+    if set(metadata) != _TOP_LEVEL_FIELDS:
+        raise ArtifactError(f"metadata fields must be exactly {sorted(_TOP_LEVEL_FIELDS)!r}")
+    if metadata.get(COMPILED_GRAPH_FORMAT_KEY) != COMPILED_GRAPH_FORMAT:
+        raise ArtifactError(f"{COMPILED_GRAPH_FORMAT_KEY} must be {COMPILED_GRAPH_FORMAT}")
+    if metadata.get("kind") != ARTIFACT_KIND:
+        raise ArtifactError(f"kind must be {ARTIFACT_KIND!r}")
+    if metadata.get("package_constants_in_so") is not False:
+        raise ArtifactError("package_constants_in_so must be false")
+    if metadata.get("constant_folding_fenced") is not True:
+        raise ArtifactError("constant_folding_fenced must be true")
+    sm = metadata.get("sm")
+    if not isinstance(sm, str) or not sm or sm != sm.strip():
+        raise ArtifactError("sm must be a non-empty string")
+    toolchain = metadata.get("toolchain")
+    if (
+        not isinstance(toolchain, dict)
+        or not toolchain
+        or any(
+            not isinstance(name, str)
+            or not name
+            or name != name.strip()
+            or not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            for name, value in toolchain.items()
+        )
+    ):
+        raise ArtifactError("toolchain must contain non-empty string facts")
+    entry = metadata.get("entry")
+    if not isinstance(entry, dict):
+        raise ArtifactError("metadata must contain one entry object")
+    if set(entry) != _ENTRY_FIELDS:
+        raise ArtifactError(f"entry fields must be exactly {sorted(_ENTRY_FIELDS)!r}")
+    for field in ("name", "target", "class_hash", "graph"):
+        if not isinstance(entry.get(field), str) or not entry[field].strip():
+            raise ArtifactError(f"entry {field!r} must be a non-empty string")
+    literal_values = entry.get("literal_values")
+    placement = entry.get("placement")
+    if not isinstance(literal_values, str):
+        raise ArtifactError("entry literal_values must be a string")
+    if not isinstance(placement, list) or not all(
+        isinstance(device, str) and device and device == device.strip() for device in placement
+    ):
+        raise ArtifactError("entry placement must be an array of non-empty strings")
+    try:
+        declaration = GraphDeclaration(
+            entry["name"],
+            entry["target"],
+            entry["graph"],
+            literal_values=literal_values,
+            placement=tuple(placement),
+        )
+    except DeclarationError as exc:
+        raise ArtifactError(f"entry declaration is invalid: {exc}") from exc
+    if entry["name"] != declaration.entry or entry["target"] != declaration.target:
+        raise ArtifactError("entry name and target must be canonical")
+    if placement != list(declaration.placement):
+        raise ArtifactError("entry placement must be sorted and unique")
+    if entry["class_hash"] != declaration.class_hash:
+        raise ArtifactError("entry class_hash does not restate its declaration facts")
+    expected = from_artifact_metadata(metadata).value
+    stamped = metadata.get("compiled_graph_key")
+    if not isinstance(stamped, str) or not is_compiled_graph_key(stamped):
+        raise ArtifactError("compiled_graph_key is missing or malformed")
+    if stamped != expected:
+        raise ArtifactError(
+            f"compiled_graph_key {stamped!r} does not restate artifact facts ({expected})"
+        )
+    constants = _validated_constants(entry)
+    entry["constants"] = constants
+    needs_literals = any(row["source"] == "literal" for row in constants)
+    if needs_literals and not literal_values:
+        raise ArtifactError("entry literal constants require a literal_values digest")
+    if not needs_literals and literal_values:
+        raise ArtifactError("entry literal_values requires declared literal constants")
+    if has_literals is not None and has_literals != needs_literals:
+        if needs_literals:
+            raise ArtifactError("entry declares literal constants but carries no literal payload")
+        raise ArtifactError("artifact carries a literal payload but declares no literals")
+    return metadata
+
+
+def build_metadata(
+    *,
+    entry: Mapping[str, Any],
+    sm: str,
+    toolchain: Mapping[str, str],
+) -> dict[str, Any]:
+    """Build metadata from recorded facts and stamp the key derived from them."""
+
+    metadata: dict[str, Any] = {
+        COMPILED_GRAPH_FORMAT_KEY: COMPILED_GRAPH_FORMAT,
+        "kind": ARTIFACT_KIND,
+        "entry": dict(entry),
+        "sm": str(sm),
+        "toolchain": dict(toolchain),
+        "package_constants_in_so": False,
+        "constant_folding_fenced": True,
+    }
+    metadata["compiled_graph_key"] = from_artifact_metadata(metadata).value
+    return validate_metadata(metadata)
+
+
+def _metadata_bytes(metadata: Mapping[str, Any]) -> bytes:
+    checked = validate_metadata(metadata)
+    return json.dumps(
+        checked, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+    ).encode("ascii")
+
+
+def _tarinfo(name: str, size: int) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.size = size
+    info.mode = 0o644
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
+    info.mtime = 0
+    return info
+
+
+def pack_artifact(
+    package: str | Path,
+    output: str | Path,
+    metadata: Mapping[str, Any],
+    *,
+    literals: str | Path | None = None,
+) -> Path:
+    """Create the deterministic v1 tar+gzip envelope."""
+
+    package_path = Path(package)
+    if not package_path.is_file():
+        raise FileNotFoundError(package_path)
+    literal_path = Path(literals) if literals is not None else None
+    if literal_path is not None and not literal_path.is_file():
+        raise FileNotFoundError(literal_path)
+    checked = validate_metadata(metadata, has_literals=literal_path is not None)
+    _verify_literals(literal_path, checked)
+    verify_package(package_path, checked)
+    target = Path(output)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    try:
+        with os.fdopen(fd, "wb") as raw:
+            with gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as compressed:
+                with tarfile.open(
+                    fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT
+                ) as archive:
+                    encoded = _metadata_bytes(checked)
+                    archive.addfile(_tarinfo(METADATA_NAME, len(encoded)), io.BytesIO(encoded))
+                    for name, source in (
+                        (PACKAGE_NAME, package_path),
+                        (LITERALS_NAME, literal_path),
+                    ):
+                        if source is None:
+                            continue
+                        with source.open("rb") as handle:
+                            archive.addfile(_tarinfo(name, source.stat().st_size), handle)
+            raw.flush()
+            os.fsync(raw.fileno())
+        with tempfile.TemporaryDirectory(
+            prefix=f".{target.name}.verify-", dir=target.parent
+        ) as raw_verified:
+            unpack_artifact(temporary_name, Path(raw_verified) / "artifact")
+        os.replace(temporary_name, target)
+        _fsync_dir(target.parent)
+    except BaseException:
+        Path(temporary_name).unlink(missing_ok=True)
+        raise
+    return target
+
+
+def verify_package(package: str | Path, metadata: Mapping[str, Any]) -> None:
+    """Cross-check metadata against one code-only AOTInductor package."""
+
+    package_path = Path(package)
+    checked = validate_metadata(metadata)
+    entry = cast(dict[str, Any], checked["entry"])
+    name = cast(str, entry["name"])
+    try:
+        names = _package_entry_names(package_path)
+        if names != (name,):
+            raise ArtifactError(
+                f"package entries {names!r} do not match sole metadata entry {name!r}"
+            )
+        package_constants = [
+            constant.as_manifest_row() for constant in declared_constants(package_path, name)
+        ]
+        if package_constants != entry["constants"]:
+            raise ArtifactError("metadata constants do not match the package constant table")
+        violations = code_only_violations(package_path, name)
+    except PackageIntrospectionError as exc:
+        raise ArtifactError(f"cannot verify AOTInductor package: {exc}") from exc
+    if violations:
+        raise ArtifactError("AOTInductor package is not code-only: " + "; ".join(violations))
+
+
+def _members(artifact: Path) -> tuple[tarfile.TarFile, dict[str, tarfile.TarInfo]]:
+    try:
+        archive = tarfile.open(artifact, mode="r:*")
+        rows = archive.getmembers()
+    except (OSError, tarfile.TarError) as exc:
+        raise ArtifactError(f"cannot read artifact {artifact}: {exc}") from exc
+    members: dict[str, tarfile.TarInfo] = {}
+    for row in rows:
+        if row.name not in _MEMBERS or not row.isfile() or row.name in members:
+            archive.close()
+            raise ArtifactError(f"unexpected or duplicate artifact member {row.name!r}")
+        members[row.name] = row
+    missing = _REQUIRED_MEMBERS - set(members)
+    if missing:
+        archive.close()
+        raise ArtifactError(f"artifact is missing {sorted(missing)!r}")
+    return archive, members
+
+
+def read_metadata(artifact: str | Path) -> dict[str, Any]:
+    path = Path(artifact)
+    archive, members = _members(path)
+    try:
+        info = members[METADATA_NAME]
+        if info.size > _MAX_METADATA_BYTES:
+            raise ArtifactError(f"metadata exceeds {_MAX_METADATA_BYTES} bytes")
+        handle = archive.extractfile(info)
+        if handle is None:
+            raise ArtifactError("metadata member is unreadable")
+        try:
+            raw = json.load(handle)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ArtifactError(f"metadata is not valid JSON: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise ArtifactError("metadata root must be an object")
+        return validate_metadata(raw, has_literals=LITERALS_NAME in members)
+    finally:
+        archive.close()
+
+
+def _verify_materialized(directory: Path) -> dict[str, Any]:
+    if directory.is_symlink() or not directory.is_dir():
+        raise ArtifactError(f"materialized artifact is not a regular directory: {directory}")
+    try:
+        rows = list(directory.iterdir())
+    except OSError:
+        raise
+    names: set[str] = set()
+    for row in rows:
+        if row.name not in _MEMBERS or row.is_symlink() or not row.is_file() or row.name in names:
+            raise ArtifactError(f"unexpected materialized artifact member {row.name!r}")
+        names.add(row.name)
+    missing = _REQUIRED_MEMBERS - names
+    if missing:
+        raise ArtifactError(f"materialized artifact is missing {sorted(missing)!r}")
+    metadata_path = directory / METADATA_NAME
+    if metadata_path.stat().st_size > _MAX_METADATA_BYTES:
+        raise ArtifactError(f"metadata exceeds {_MAX_METADATA_BYTES} bytes")
+    try:
+        raw = json.loads(metadata_path.read_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ArtifactError(f"metadata is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ArtifactError("metadata root must be an object")
+    checked = validate_metadata(raw, has_literals=LITERALS_NAME in names)
+    verify_package(directory / PACKAGE_NAME, checked)
+    literal_path = directory / LITERALS_NAME if LITERALS_NAME in names else None
+    _verify_literals(literal_path, checked)
+    return checked
+
+
+def unpack_artifact(artifact: str | Path, destination: str | Path) -> dict[str, Any]:
+    """Validate and atomically materialize an artifact into a new directory."""
+
+    target = Path(destination)
+    if target.exists():
+        raise FileExistsError(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    archive, members = _members(Path(artifact))
+    stage = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=target.parent))
+    try:
+        for name, info in members.items():
+            extracted = archive.extractfile(info)
+            if extracted is None:
+                raise ArtifactError(f"artifact member {name!r} is unreadable")
+            with extracted as source:
+                with (stage / name).open("wb") as output:
+                    shutil.copyfileobj(source, output, length=1 << 20)
+                    output.flush()
+                    os.fsync(output.fileno())
+        metadata = _verify_materialized(stage)
+        _fsync_dir(stage)
+        os.replace(stage, target)
+        _fsync_dir(target.parent)
+        return metadata
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+    finally:
+        archive.close()
