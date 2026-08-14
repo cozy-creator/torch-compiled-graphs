@@ -185,8 +185,9 @@ compatibility aliases, or migration paths for abandoned pre-launch formats.
   chokepoints; the graph-class display name does not key.
 - `CallIngress` is the closed v1 identity for one exported call. Its builder
   preserves mapping insertion order, flattened sequence positions (including
-  non-tensor gaps), parameter paths, exported placeholder names, finite symbol
-  bounds, and excluded inputs. It is stamped at `graph.pytree.ingress`; its
+  non-tensor gaps), the ordered parameter axis (including zero-leaf arguments),
+  parameter paths, exported placeholder names, finite symbol bounds, and
+  excluded inputs. It is stamped at `graph.pytree.ingress`; its
   digest is derived and verified by `GraphClassDeclaration`.
 - Literal identity is the worker's exact 32-hex v1 value digest and rides
   inside the graph-interface block. Weight values remain excluded. Toolchain

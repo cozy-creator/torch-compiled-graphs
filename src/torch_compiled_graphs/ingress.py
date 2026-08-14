@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from typing import Any
 
 PathStep = int | str
-_INGRESS_FIELDS = frozenset(("v", "flat_arity", "inputs", "symbols", "excluded_inputs"))
+_INGRESS_FIELDS = frozenset(
+    ("v", "parameters", "flat_arity", "inputs", "symbols", "excluded_inputs")
+)
 _INPUT_FIELDS = frozenset(
     ("name", "position", "param", "param_position", "path", "exported_name", "dtype", "shape")
 )
@@ -122,12 +124,20 @@ class CallInput:
 class CallIngress:
     """The closed, identity-hashed call contract consumed by graph runners."""
 
+    parameters: tuple[str, ...]
     flat_arity: int
     inputs: tuple[CallInput, ...]
     symbols: tuple[tuple[str, tuple[int, int]], ...] = ()
     excluded_inputs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.parameters, tuple) or not self.parameters or any(
+            not isinstance(name, str) or not name or name != name.strip()
+            for name in self.parameters
+        ):
+            raise IngressError("ingress_invalid", "parameters must be canonical strings")
+        if len(self.parameters) != len(set(self.parameters)):
+            raise IngressError("ingress_invalid", "parameters must be unique")
         if type(self.flat_arity) is not int or self.flat_arity <= 0:
             raise IngressError("ingress_invalid", "flat_arity must be a positive integer")
         if not isinstance(self.inputs, tuple) or not self.inputs:
@@ -137,6 +147,21 @@ class CallIngress:
             raise IngressError("ingress_invalid", "input positions must be strictly increasing")
         if positions[-1] >= self.flat_arity:
             raise IngressError("ingress_invalid", "input position exceeds flat_arity")
+        param_positions = tuple(row.param_position for row in self.inputs)
+        if param_positions != tuple(sorted(param_positions)):
+            raise IngressError(
+                "ingress_invalid", "input param_position values must be nondecreasing"
+            )
+        for row in self.inputs:
+            if row.param_position >= len(self.parameters):
+                raise IngressError(
+                    "ingress_invalid", f"input {row.name!r} param_position is out of range"
+                )
+            if self.parameters[row.param_position] != row.param:
+                raise IngressError(
+                    "ingress_invalid",
+                    f"input {row.name!r} param does not match parameters[param_position]",
+                )
         for attribute, values in (
             ("name", tuple(row.name for row in self.inputs)),
             ("exported_name", tuple(row.exported_name for row in self.inputs)),
@@ -195,6 +220,7 @@ class CallIngress:
     def as_dict(self) -> dict[str, Any]:
         return {
             "v": 1,
+            "parameters": list(self.parameters),
             "flat_arity": self.flat_arity,
             "inputs": [row.as_dict() for row in self.inputs],
             "symbols": {name: list(bounds) for name, bounds in self.symbols},
@@ -214,8 +240,11 @@ class CallIngress:
                 "ingress_invalid",
                 f"call ingress fields must be exactly {sorted(_INGRESS_FIELDS)!r}",
             )
-        if raw.get("v") != 1:
+        if type(raw.get("v")) is not int or raw.get("v") != 1:
             raise IngressError("ingress_invalid", "call ingress v must be 1")
+        parameters = raw.get("parameters")
+        if not isinstance(parameters, list):
+            raise IngressError("ingress_invalid", "call ingress parameters must be an array")
         rows = raw.get("inputs")
         if not isinstance(rows, list):
             raise IngressError("ingress_invalid", "call ingress inputs must be an array")
@@ -254,6 +283,7 @@ class CallIngress:
         if not isinstance(excluded, list):
             raise IngressError("ingress_invalid", "excluded_inputs must be an array")
         return cls(
+            parameters=tuple(parameters),
             flat_arity=raw["flat_arity"],
             inputs=tuple(inputs),
             symbols=tuple(symbols),
@@ -445,6 +475,7 @@ def build_call_ingress(
             )
         )
     return CallIngress(
+        parameters=tuple(param_names),
         flat_arity=len(leaves),
         inputs=tuple(rows),
         symbols=tuple(sorted(used_symbols.items())),

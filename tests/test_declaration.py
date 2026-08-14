@@ -64,6 +64,7 @@ GRAPH_INTERFACE: dict[str, Any] = {
         "in": "leaf",
         "out": "leaf",
         "ingress": CallIngress(
+            parameters=("value",),
             flat_arity=1,
             inputs=(CallInput("value", 0, "value", 0, (), "value", "float32", (2,)),),
         ).as_dict(),
@@ -98,6 +99,7 @@ def test_call_ingress_is_required_rekeys_and_owns_range_digest() -> None:
     changed_graph = copy.deepcopy(GRAPH_INTERFACE)
     changed_ingress = CallIngress.decode(changed_graph["pytree"]["ingress"])
     changed_graph["pytree"]["ingress"] = CallIngress(
+        parameters=changed_ingress.parameters,
         flat_arity=changed_ingress.flat_arity,
         inputs=(
             CallInput("value", 0, "value", 0, (), "value", "float32", (3,)),
@@ -113,6 +115,11 @@ def test_call_ingress_is_required_rekeys_and_owns_range_digest() -> None:
     del missing["pytree"]["ingress"]
     with pytest.raises(DeclarationError, match="declares no call ingress"):
         GraphClassSpec("model", "denoiser", program, missing).declare()
+
+    numeric_alias = copy.deepcopy(GRAPH_INTERFACE)
+    numeric_alias["v"] = 3.0
+    with pytest.raises(DeclarationError, match="graph interface v must be 3"):
+        GraphClassSpec("model", "denoiser", program, numeric_alias).declare()
 
 
 def test_lifted_literal_values_ride_inside_graph_interface_and_rekey() -> None:

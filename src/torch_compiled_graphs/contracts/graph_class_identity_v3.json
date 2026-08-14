@@ -40,6 +40,9 @@
               ]
             }
           ],
+          "parameters": [
+            "value"
+          ],
           "symbols": {},
           "v": 1
         },
@@ -53,10 +56,10 @@
       "cuda:0",
       "cuda:1"
     ],
-    "range_digest": "349b8bbfe05b1443a84cabd4ffc360d3",
+    "range_digest": "b389f4904367ba113ba552b7076fc2ff",
     "target": "denoiser"
   },
-  "class_hash": "2774cd23dda0dbbd",
+  "class_hash": "16509ab34e95cfc7",
   "lora_bucket": 8,
   "strict": true
 }

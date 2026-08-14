@@ -38,6 +38,12 @@ class VectorGraph(torch.nn.Module):  # type: ignore[misc]
         return value.sin()
 
 
+class EmptyLeadingParameter(torch.nn.Module):  # type: ignore[misc]
+    def forward(self, empty: dict[str, Any], value: Any) -> Any:
+        assert not empty
+        return value.sin()
+
+
 def _exported() -> tuple[Any, tuple[Any, ...], dict[str, Any]]:
     args = (
         torch.ones(2, 3),
@@ -71,6 +77,13 @@ def test_builder_matches_torch_export_order_and_preserves_constant_positions() -
     ]
     assert [row.position for row in ingress.inputs] == [0, 1, 2, 6]
     assert ingress.flat_arity == 7
+    assert ingress.parameters == (
+        "sample",
+        "conditioning",
+        "shape",
+        "return_dict",
+        "tail",
+    )
     assert ingress.inputs[-1].param == "tail"
     assert ingress.inputs[-1].param_position == 4
     assert ingress.inputs[-1].path == ()
@@ -105,6 +118,65 @@ def test_decoder_round_trips_only_the_closed_canonical_shape() -> None:
     noncanonical["inputs"] = list(reversed(noncanonical["inputs"]))
     with pytest.raises(IngressError, match="strictly increasing"):
         CallIngress.decode(noncanonical)
+
+    for numeric_alias in (True, 1.0):
+        wrong_version = copy.deepcopy(encoded)
+        wrong_version["v"] = numeric_alias
+        with pytest.raises(IngressError, match="call ingress v must be 1"):
+            CallIngress.decode(wrong_version)
+
+
+def test_parameter_axis_closes_positions_even_when_an_empty_arg_has_no_leaf() -> None:
+    args: tuple[Any, ...] = ({}, torch.ones(2, 3))
+    program = torch.export.export(EmptyLeadingParameter(), args, {}, strict=True)
+    ingress = build_call_ingress(program, ("empty", "value"), args, {})
+
+    assert ingress.flat_arity == 1
+    assert ingress.parameters == ("empty", "value")
+    assert ingress.inputs[0].position == 0
+    assert ingress.inputs[0].param_position == 1
+
+    out_of_range = ingress.as_dict()
+    out_of_range["inputs"][0]["param_position"] = 999
+    with pytest.raises(IngressError, match="param_position is out of range"):
+        CallIngress.decode(out_of_range)
+
+    mismatched = ingress.as_dict()
+    mismatched["inputs"][0]["param_position"] = 0
+    with pytest.raises(IngressError, match="does not match parameters"):
+        CallIngress.decode(mismatched)
+
+    descending = {
+        "v": 1,
+        "parameters": ["first", "second"],
+        "flat_arity": 2,
+        "inputs": [
+            {
+                "name": "second",
+                "position": 0,
+                "param": "second",
+                "param_position": 1,
+                "path": [],
+                "exported_name": "second",
+                "dtype": "float32",
+                "shape": [2],
+            },
+            {
+                "name": "first",
+                "position": 1,
+                "param": "first",
+                "param_position": 0,
+                "path": [],
+                "exported_name": "first",
+                "dtype": "float32",
+                "shape": [2],
+            },
+        ],
+        "symbols": {},
+        "excluded_inputs": [],
+    }
+    with pytest.raises(IngressError, match="param_position values must be nondecreasing"):
+        CallIngress.decode(descending)
 
 
 def test_bind_replays_the_recorded_paths_without_searching() -> None:

@@ -1,6 +1,6 @@
 {
   "authority": "torch-compiled-graphs CallIngress v1",
-  "digest": "349b8bbfe05b1443a84cabd4ffc360d3",
+  "digest": "b389f4904367ba113ba552b7076fc2ff",
   "ingress": {
     "excluded_inputs": [],
     "flat_arity": 1,
@@ -18,6 +18,9 @@
           3
         ]
       }
+    ],
+    "parameters": [
+      "value"
     ],
     "symbols": {},
     "v": 1

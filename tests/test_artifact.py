@@ -102,6 +102,7 @@ def metadata(*, literal: bytes | None = None) -> dict[str, object]:
     )
     digest = literal_digest(literal) if literal is not None else ""
     ingress = CallIngress(
+        parameters=("value",),
         flat_arity=1,
         inputs=(CallInput("value", 0, "value", 0, (), "value", "float32", (2,)),),
     )
@@ -369,6 +370,23 @@ def test_one_format_symbol_controls_stamp_and_validation(
     retired["compiled_graph_format"] = 1
     with pytest.raises(ArtifactError, match="compiled_graph_format must be 7"):
         validate_metadata(retired)
+
+
+@pytest.mark.parametrize("numeric_alias", [True, 1.0])
+def test_archive_refuses_noninteger_compiled_graph_format(
+    numeric_alias: object, tmp_path: Path
+) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    valid = pack_artifact(package, tmp_path / "valid.tar.gz", metadata())
+    raw = read_metadata(valid)
+    raw["compiled_graph_format"] = numeric_alias
+    artifact = replace_metadata(
+        valid,
+        tmp_path / "numeric-alias.tar.gz",
+        json.dumps(raw, sort_keys=True, separators=(",", ":")).encode("ascii"),
+    )
+    with pytest.raises(ArtifactError, match="compiled_graph_format must be 1"):
+        read_metadata(artifact)
 
 
 def test_unstamped_host_isa_is_refused() -> None:

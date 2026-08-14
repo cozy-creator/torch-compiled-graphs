@@ -365,7 +365,7 @@ class GraphClassDeclaration:
                 "graph_class graph interface fields must be exactly "
                 f"{sorted(_GRAPH_INTERFACE_FIELDS)!r}, with literal_values only when present"
             )
-        if canonical_graph.get("v") != 3:
+        if type(canonical_graph.get("v")) is not int or canonical_graph.get("v") != 3:
             raise DeclarationError("graph_class graph interface v must be 3")
         for field in ("constant_fqns", "lifted_inputs"):
             values = canonical_graph.get(field)
