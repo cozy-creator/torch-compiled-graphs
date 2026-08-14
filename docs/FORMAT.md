@@ -15,7 +15,8 @@ SHA-256(canonical JSON({graph, sm, toolchain}))
 The three axes are exhaustive:
 
 - `graph`: the 16-hex graph-class hash of the current facts-v3 fold. It binds
-  target, fork, class dimensions, ingress-range digest, graph-interface facts,
+  target, fork, class dimensions, the derived call-ingress digest,
+  graph-interface facts,
   the 16-hex canonical body witness, strictness, LoRA bucket, and multi-device
   placement when present. The display graph-class name does not key;
 - `sm`: the concrete CUDA compute capability or CPU target; and
@@ -49,7 +50,8 @@ Required top-level metadata includes:
 - `kind: "aot-inductor"`;
 - `compiled_graph_key`, which must be exactly derivable from the recorded facts;
 - `graph_class`, with non-empty `name`, `target`, `class_hash`,
-  `graph_witness`, and `range_digest`; a non-empty `graph` interface object;
+  `graph_witness`, and `range_digest`; a non-empty `graph` interface object
+  whose `pytree.ingress` is the exact closed CallIngress v1 value;
   canonical `fork`, `class_dims`, `strict`, `lora_bucket`, and `placement`
   facts; plus `literal_values` and a `constants` array. `class_hash` must be
   recomputable from the exact facts-v3 fold;

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any
 
 import pytest
 
 from torch_compiled_graphs import CallIngress, IngressError, build_call_ingress
+from torch_compiled_graphs.contracts import read_contract
 
 torch: Any = pytest.importorskip("torch")
 
@@ -29,6 +31,11 @@ class NestedCall(torch.nn.Module):  # type: ignore[misc]
             + float(height + width)
             + int(return_dict)
         )
+
+
+class VectorGraph(torch.nn.Module):  # type: ignore[misc]
+    def forward(self, value: Any) -> Any:
+        return value.sin()
 
 
 def _exported() -> tuple[Any, tuple[Any, ...], dict[str, Any]]:
@@ -130,3 +137,12 @@ def test_decoder_refuses_unbounded_or_unreferenced_symbols() -> None:
     encoded["inputs"][0]["shape"][0] = "missing"
     with pytest.raises(IngressError, match="no declared bounds"):
         CallIngress.decode(encoded)
+
+
+def test_importable_call_ingress_vector_is_exact() -> None:
+    vector = json.loads(read_contract("call_ingress_v1.json"))
+    ingress = CallIngress.decode(vector["ingress"])
+    assert ingress.digest() == vector["digest"]
+    program = torch.export.export(VectorGraph(), (torch.ones(2, 3),), strict=True)
+    built = build_call_ingress(program, ("value",), (torch.ones(2, 3),), {})
+    assert built.as_dict() == vector["ingress"]

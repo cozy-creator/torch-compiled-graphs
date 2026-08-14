@@ -1,5 +1,5 @@
 {
-  "authority": "python-gen-worker gen_worker.aot_serve.class_hash at 0a2c33970bd963d3f940d7664a1e96d705af0655",
+  "authority": "torch-compiled-graphs GraphClassDeclaration with CallIngress v1",
   "block": {
     "class_dims": [
       [
@@ -22,6 +22,27 @@
       "lifted_inputs": [],
       "pytree": {
         "in": "[1, {\"type\": null, \"context\": null, \"children_spec\": [{\"type\": null, \"context\": null, \"children_spec\": []}]}]",
+        "ingress": {
+          "excluded_inputs": [],
+          "flat_arity": 1,
+          "inputs": [
+            {
+              "dtype": "float32",
+              "exported_name": "value",
+              "name": "value",
+              "param": "value",
+              "param_position": 0,
+              "path": [],
+              "position": 0,
+              "shape": [
+                2,
+                3
+              ]
+            }
+          ],
+          "symbols": {},
+          "v": 1
+        },
         "out": "[1, {\"type\": null, \"context\": null, \"children_spec\": [{\"type\": null, \"context\": null, \"children_spec\": []}]}]"
       },
       "specialization": {},
@@ -32,10 +53,10 @@
       "cuda:0",
       "cuda:1"
     ],
-    "range_digest": "0123456789abcdef0123456789abcdef",
+    "range_digest": "349b8bbfe05b1443a84cabd4ffc360d3",
     "target": "denoiser"
   },
-  "class_hash": "c59210f4ddf6b420",
+  "class_hash": "2774cd23dda0dbbd",
   "lora_bucket": 8,
   "strict": true
 }

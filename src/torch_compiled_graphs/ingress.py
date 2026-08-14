@@ -317,10 +317,9 @@ def _walk(
 ) -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
-            name = str(key)
-            if not name or name != name.strip():
+            if not isinstance(key, str) or not key or key != key.strip():
                 raise IngressError("call_invalid", "mapping input key is not canonical")
-            _walk(param, param_position, path + (name,), item, output)
+            _walk(param, param_position, path + (key,), item, output)
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _walk(param, param_position, path + (index,), item, output)
@@ -331,8 +330,10 @@ def _walk(
 def _flatten_call(
     param_names: Sequence[str], args: Sequence[object], kwargs: Mapping[str, object]
 ) -> tuple[_Leaf, ...]:
-    names = tuple(str(name) for name in param_names)
-    if any(not name or name != name.strip() for name in names) or len(names) != len(set(names)):
+    names = tuple(param_names)
+    if any(
+        not isinstance(name, str) or not name or name != name.strip() for name in names
+    ) or len(names) != len(set(names)):
         raise IngressError("call_invalid", "call parameter names must be canonical and unique")
     if len(args) > len(names):
         raise IngressError("call_invalid", "call has more positional values than parameters")
@@ -447,7 +448,7 @@ def build_call_ingress(
         flat_arity=len(leaves),
         inputs=tuple(rows),
         symbols=tuple(sorted(used_symbols.items())),
-        excluded_inputs=tuple(sorted(str(name) for name in excluded_inputs)),
+        excluded_inputs=tuple(sorted(excluded_inputs)),
     )
 
 

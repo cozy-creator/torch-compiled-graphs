@@ -9,14 +9,26 @@ sole local content-addressed storage and chunking layer.
 
 ```python
 from hashrepo import LocalCAS
-from torch_compiled_graphs import Engine, GraphClassSpec, RuntimeCompatibility
+from torch_compiled_graphs import (
+    Engine,
+    GraphClassSpec,
+    RuntimeCompatibility,
+    build_call_ingress,
+)
+
+ingress = build_call_ingress(
+    exported_program,
+    call_parameter_names,
+    example_args,
+    example_kwargs,
+)
+graph_interface["pytree"]["ingress"] = ingress.as_dict()
 
 spec = GraphClassSpec(
     "denoiser/h=64,w=64",
     "unet",
     exported_program,
     graph=graph_interface,
-    range_digest=declared_ingress_range_digest,
 )
 runtime = RuntimeCompatibility(
     "sm_89",
@@ -34,8 +46,10 @@ runner.bind(resident_constants, device="cuda")
 outputs = runner(*positional_inputs)
 ```
 
-`graph_interface` and `declared_ingress_range_digest` are the current v3
-graph-class facts produced by the declaration adapter. The same declaration
+`graph_interface` carries the current v3 graph-class facts. Its required
+`pytree.ingress` value is built and decoded only by this package; its digest is
+the graph class's ingress-range digest rather than a caller-supplied second
+identity. The same declaration
 derives the `cg-key-v1` lookup, mint stamp, and
 admission expectation. Future workers call `Engine.resolve(key, destination)`
 with the known key: that hit path neither constructs an ExportedProgram nor
@@ -156,7 +170,7 @@ Package releases use SemVer, beginning with `0.1.0`; the first release tag is
 launch an internal v1 may be replaced in place: there are no dual readers,
 compatibility aliases, or migration paths for abandoned pre-launch formats.
 
-### 0.3.0 public API
+### 0.4.0 public API
 
 - Compilation is owned by `Engine`; no public compiler, packager, context, or
   options callback can replace the fixed output-producing path. The engine
@@ -169,6 +183,11 @@ compatibility aliases, or migration paths for abandoned pre-launch formats.
 - Graph-class declarations use the current worker facts-v3 fold. The 16-hex
   canonical body witness and 16-hex class hash are paired collision
   chokepoints; the graph-class display name does not key.
+- `CallIngress` is the closed v1 identity for one exported call. Its builder
+  preserves mapping insertion order, flattened sequence positions (including
+  non-tensor gaps), parameter paths, exported placeholder names, finite symbol
+  bounds, and excluded inputs. It is stamped at `graph.pytree.ingress`; its
+  digest is derived and verified by `GraphClassDeclaration`.
 - Literal identity is the worker's exact 32-hex v1 value digest and rides
   inside the graph-interface block. Weight values remain excluded. Toolchain
   identity accepts the worker-recorded content block through an explicit
@@ -187,8 +206,8 @@ compatibility aliases, or migration paths for abandoned pre-launch formats.
   declaration and key itself, admits an exact prior record, and otherwise runs
   the sole sealed compiler/package/store path.
 - `Engine.runner` returns a gated `CompiledGraphRunner`; exact constant-table
-  binding and by-reference lifetime are library-owned, while ingress routing
-  and fallback remain worker-owned.
+  binding, by-reference lifetime, and one-class call binding are library-owned,
+  while multi-class selection and eager fallback remain worker policy.
 - `torch_compiled_graphs.spans` owns the compile attribution vocabulary and
   closure invariant used across the worker child boundary.
 

@@ -13,7 +13,13 @@ from typing import cast
 import pytest
 
 import torch_compiled_graphs.artifact as artifact_module
-from torch_compiled_graphs import COMPILED_GRAPH_FORMAT, ArtifactError, GraphClassDeclaration
+from torch_compiled_graphs import (
+    COMPILED_GRAPH_FORMAT,
+    ArtifactError,
+    CallIngress,
+    CallInput,
+    GraphClassDeclaration,
+)
 from torch_compiled_graphs.artifact import (
     _verify_materialized,
     build_metadata,
@@ -95,11 +101,15 @@ def metadata(*, literal: bytes | None = None) -> dict[str, object]:
         else []
     )
     digest = literal_digest(literal) if literal is not None else ""
+    ingress = CallIngress(
+        flat_arity=1,
+        inputs=(CallInput("value", 0, "value", 0, (), "value", "float32", (2,)),),
+    )
     graph: dict[str, object] = {
         "v": 3,
         "constant_fqns": ["table"] if literal is not None else [],
         "lifted_inputs": [],
-        "pytree": {"in": "leaf", "out": "leaf"},
+        "pytree": {"in": "leaf", "out": "leaf", "ingress": ingress.as_dict()},
         "specialization": {},
     }
     if digest:
@@ -109,7 +119,7 @@ def metadata(*, literal: bytes | None = None) -> dict[str, object]:
         target="unet",
         graph=graph,
         graph_witness="fedcba9876543210",
-        range_digest="0123456789abcdef" * 2,
+        range_digest=ingress.digest(),
         literal_values=digest,
     )
     return build_metadata(

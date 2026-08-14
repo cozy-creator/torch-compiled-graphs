@@ -30,6 +30,7 @@ from torch_compiled_graphs import (
     RuntimeCompatibility,
     StorageError,
     StoreOutcome,
+    build_call_ingress,
 )
 from torch_compiled_graphs.artifact import pack_artifact, read_metadata, unpack_artifact
 from torch_compiled_graphs.identity import from_axes
@@ -69,6 +70,25 @@ class WithTwoLiterals(torch.nn.Module):  # type: ignore[misc]
 
     def forward(self, value: Any) -> Any:
         return value * self.first + self.second
+
+
+class NestedRuntime(torch.nn.Module):  # type: ignore[misc]
+    def forward(
+        self,
+        sample: Any,
+        conditioning: dict[str, Any],
+        shape: list[Any],
+        return_dict: bool,
+        tail: Any,
+    ) -> Any:
+        return (
+            sample
+            + conditioning["zeta"]
+            + conditioning["alpha"]
+            + tail
+            + float(shape[0][0] + shape[0][1])
+            + int(return_dict)
+        )
 
 
 def _elf() -> bytes:
@@ -222,6 +242,8 @@ def _default_fake_compile_package(
 
 
 def _spec_for(program: object) -> GraphClassSpec:
+    example_args, example_kwargs = program.example_inputs  # type: ignore[attr-defined]
+    ingress = build_call_ingress(program, ("value",), example_args, example_kwargs)
     return GraphClassSpec(
         "model",
         "denoiser",
@@ -229,10 +251,9 @@ def _spec_for(program: object) -> GraphClassSpec:
         {
             "v": 3,
             "lifted_inputs": [],
-            "pytree": {"in": "leaf", "out": "leaf"},
+            "pytree": {"in": "leaf", "out": "leaf", "ingress": ingress.as_dict()},
             "specialization": {},
         },
-        "0" * 32,
     )
 
 
@@ -777,6 +798,72 @@ torch.testing.assert_close(actual, torch.tensor([28.0, 55.0]))
         check=True,
         cwd=Path.cwd(),
         env={**os.environ, "TORCHINDUCTOR_CACHE_DIR": str(tmp_path / "subprocess-cache")},
+    )
+
+
+@pytest.mark.real_aoti
+def test_real_nested_call_ingress_runs_after_interpreter_restart(tmp_path: Path) -> None:
+    args = (
+        torch.ones(2, 3),
+        {"zeta": torch.full((2, 3), 2.0), "alpha": torch.full((2, 3), 3.0)},
+        [[2, 3]],
+        False,
+        torch.full((2, 3), 4.0),
+    )
+    params = ("sample", "conditioning", "shape", "return_dict", "tail")
+    program = torch.export.export(NestedRuntime(), args, {}, strict=True)
+    ingress = build_call_ingress(program, params, args, {})
+    graph = {
+        "v": 3,
+        "lifted_inputs": [],
+        "pytree": {"in": "nested", "out": "leaf", "ingress": ingress.as_dict()},
+        "specialization": {},
+    }
+    spec = GraphClassSpec("nested", "denoiser", program, graph)
+    cas_root = tmp_path / "cas"
+    result = Engine(LocalCAS(cas_root)).compile(spec, _runtime(), tmp_path / "compiled")
+
+    code = """
+import sys
+from pathlib import Path
+
+import torch
+from hashrepo import LocalCAS
+from torch_compiled_graphs import CallIngress, Engine
+
+engine = Engine(LocalCAS(Path(sys.argv[1])))
+resolved = engine.resolve(sys.argv[2], Path(sys.argv[3]) / "resolved")
+assert resolved is not None
+graph_class = resolved.metadata["graph_class"]
+assert isinstance(graph_class, dict)
+graph = graph_class["graph"]
+assert isinstance(graph, dict)
+ingress = CallIngress.from_graph(graph)
+runner = engine.runner(sys.argv[2], Path(sys.argv[3]) / "runner")
+assert runner is not None
+runner.bind({}, device="cpu")
+args = (
+    torch.ones(2, 3),
+    {"zeta": torch.full((2, 3), 2.0), "alpha": torch.full((2, 3), 3.0)},
+    [[2, 3]],
+    False,
+    torch.full((2, 3), 4.0),
+)
+actual = runner(*ingress.feeds(args, {}))
+torch.testing.assert_close(actual, torch.full((2, 3), 15.0))
+"""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            str(cas_root),
+            result.compiled_graph.key,
+            str(tmp_path / "restarted-nested"),
+        ],
+        check=True,
+        cwd=Path.cwd(),
+        env={**os.environ, "TORCHINDUCTOR_CACHE_DIR": str(tmp_path / "nested-cache")},
     )
 
 
