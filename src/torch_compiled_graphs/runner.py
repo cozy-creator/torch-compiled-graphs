@@ -97,7 +97,24 @@ class CompiledGraphRunner:
     the lifetime of every by-reference value.
     """
 
-    def __init__(self, graph: StoredCompiledGraph) -> None:
+    key: str
+    graph_class: str
+    calls: int
+    _graph: StoredCompiledGraph
+    _constants: tuple[_Constant, ...]
+    _package: Any
+    _bound_values: dict[str, Any]
+    _bound: bool
+    _failed: bool
+
+    def __init__(self) -> None:
+        raise TypeError("compiled-graph runners are created only by Engine.runner")
+
+    @classmethod
+    def _from_verified_graph(cls, graph: StoredCompiledGraph) -> CompiledGraphRunner:
+        """Load one graph after Engine has resolved and admitted its exact bytes."""
+
+        self = object.__new__(cls)
         graph_class = graph.metadata["graph_class"]
         assert isinstance(graph_class, Mapping)
         self.key = graph.key
@@ -105,10 +122,11 @@ class CompiledGraphRunner:
         self._graph = graph
         self._constants = _constants(graph)
         self._package = _load_package(graph.package, self.graph_class)
-        self._bound_values: dict[str, Any] = {}
+        self._bound_values = {}
         self._bound = False
         self._failed = False
         self.calls = 0
+        return self
 
     @property
     def bound(self) -> bool:
@@ -180,12 +198,11 @@ class CompiledGraphRunner:
             )
 
         try:
-            if values:
-                self._package.load_constants(
-                    values,
-                    check_full_update=True,
-                    user_managed=True,
-                )
+            self._package.load_constants(
+                values,
+                check_full_update=True,
+                user_managed=True,
+            )
         except Exception as exc:
             self._failed = True
             oom = _oom_in_chain(exc)

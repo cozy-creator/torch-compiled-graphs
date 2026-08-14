@@ -223,7 +223,7 @@ class Engine:
         """Resolve the exact selected artifact and load its gated AOTI runner."""
 
         graph = self.resolve(key, destination)
-        return None if graph is None else CompiledGraphRunner(graph)
+        return None if graph is None else CompiledGraphRunner._from_verified_graph(graph)
 
     def _mint(self, plan: _GraphClassPlan) -> StoreResult:
         """Compile, package, verify, and publish one plan into the local CAS."""

@@ -56,7 +56,7 @@ def test_runner_refuses_call_until_exact_complete_bind(
         tmp_path,
         [{"fqn": "weight", "source": "state_dict", "dtype": "float32", "shape": [1]}],
     )
-    runner = CompiledGraphRunner(graph)
+    runner = CompiledGraphRunner._from_verified_graph(graph)
     with pytest.raises(ConstantBindingError) as caught:
         runner("input")
     assert caught.value.reason == "constants_unbound"
@@ -75,7 +75,7 @@ def test_runner_refuses_manifest_package_constant_drift(
 ) -> None:
     package = FakePackage(("other",))
     monkeypatch.setattr(runner_module, "_load_package", lambda path, name: package)
-    runner = CompiledGraphRunner(
+    runner = CompiledGraphRunner._from_verified_graph(
         _graph(
             tmp_path,
             [{"fqn": "weight", "source": "state_dict", "dtype": "float32", "shape": [1]}],
@@ -101,7 +101,7 @@ def test_failed_partial_bind_is_not_retried_on_the_same_runner(
 
     package.load_constants = fail  # type: ignore[method-assign]
     monkeypatch.setattr(runner_module, "_load_package", lambda path, name: package)
-    runner = CompiledGraphRunner(
+    runner = CompiledGraphRunner._from_verified_graph(
         _graph(
             tmp_path,
             [{"fqn": "weight", "source": "state_dict", "dtype": "float32", "shape": [1]}],
@@ -121,7 +121,7 @@ def test_unresolved_constants_fail_before_package_mutation(
 ) -> None:
     package = FakePackage(("weight",))
     monkeypatch.setattr(runner_module, "_load_package", lambda path, name: package)
-    runner = CompiledGraphRunner(
+    runner = CompiledGraphRunner._from_verified_graph(
         _graph(
             tmp_path,
             [{"fqn": "weight", "source": "state_dict", "dtype": "float32", "shape": [1]}],
@@ -131,3 +131,21 @@ def test_unresolved_constants_fail_before_package_mutation(
         runner.bind({}, device="cpu")
     assert caught.value.reason == "constant_unresolved"
     assert package.loaded is None
+
+
+def test_runner_cannot_be_constructed_around_unverified_bytes() -> None:
+    with pytest.raises(TypeError, match="only by Engine.runner"):
+        CompiledGraphRunner()
+
+
+def test_empty_update_still_runs_the_package_full_update_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = FakePackage(())
+    monkeypatch.setattr(runner_module, "_load_package", lambda path, name: package)
+    runner = CompiledGraphRunner._from_verified_graph(_graph(tmp_path, []))
+
+    runner.bind({}, device="cpu")
+
+    assert package.loaded == {}
+    assert runner.bound
