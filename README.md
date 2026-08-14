@@ -1,30 +1,60 @@
-# compiled-graphs
+# torch-compiled-graphs
 
-`compiled-graphs` is the worker-independent core for minting, identifying,
-packing, verifying, storing, and reusing PyTorch AOTInductor graphs.
+`torch-compiled-graphs` mints and reuses verified PyTorch AOTInductor graphs.
+It is independent of `python-gen-worker`: applications supply one exported
+program plus explicit runtime facts, while HashRepo is the sole local
+content-addressed storage and chunking layer.
 
-The v1 boundary is deliberately narrow:
+## V1 lifecycle
 
-- one `torch.export.ExportedProgram` graph class per artifact;
-- one `cg-key-v1` identity derived only from graph, GPU architecture, and
-  compiler-toolchain facts;
-- one deterministic artifact envelope containing `metadata.json`, `model.pt2`,
-  and an optional literal-constant payload;
-- code-only AOTI compilation with weight folding kept bindable; and
-- storage behind `hashrepo`, with Tensorhub as the first remote adapter.
+```python
+from hashrepo import LocalCAS
+from torch_compiled_graphs import Engine, GraphSpec, RuntimeCompatibility
 
-This repository does not own endpoint composition, model loading, GPU
-scheduling, worker telemetry, or Tensorhub policy. Those remain application
-concerns in `python-gen-worker` and Tensorhub.
+result = Engine(LocalCAS("/var/cache/graphs")).ensure(
+    GraphSpec("denoiser/h=64,w=64", "unet", exported_program),
+    RuntimeCompatibility(
+        "sm_89",
+        {"torch": torch_version, "triton": triton_version},
+    ),
+    "/run/graphs/denoiser-h64-w64",
+)
+runner_package = result.graph.package
+```
 
-## Status
+The same declaration derives the `cg-key-v1` lookup, mint stamp, and
+admission expectation. `ensure` resolves that exact key locally before paying
+for compilation. A miss compiles one code-only graph, packages it as a
+verified artifact, stores it through HashRepo, and materializes it. A later
+process pointed at the same HashRepo root reuses it without compiling.
 
-This is the first pre-release extraction slice. It establishes and tests the
-format-v1 identity, compilation seam, deterministic package boundary, and
-fail-closed AOTInductor package introspection. The `hashrepo` adapter and the
-migrations that delete the old worker copies are dependency-ordered follow-ups.
+HashRepo owns immutable objects, chunk manifests, durability, GC reachability,
+and transfer primitives. This package owns only graph declaration, compilation,
+artifact policy, exact-key refs, admission, and quarantine. A divergent second
+artifact never overwrites an admitted key. A corrupt or inadmissible manifest
+is quarantined and can be repaired only by a newly verified mint.
 
-The repository is private during package and license review.
+A literal whose AOTI wrapper erases its exported FQN is refused rather than
+matched by tensor order or shape. Register durable module tensors as buffers;
+guessing an anonymous constant mapping can silently run the wrong computation.
+
+Tensorhub is the first intended remote service, but no speculative registry or
+plugin interface lives here. Its adapter will obtain byte-operation grants and
+populate the same HashRepo objects/manifests; compilation remains local-first
+and transport-independent.
+
+## CLI
+
+```bash
+torch-compiled-graphs inspect graph.tar.gz
+torch-compiled-graphs verify graph.tar.gz
+torch-compiled-graphs resolve --cas-root /var/cache/graphs CG_KEY DESTINATION
+```
+
+`inspect` validates and prints metadata. `verify` additionally checks the
+artifact envelope, generated AOTI wrapper, ELF structure, constant manifest,
+and code-only policy. `resolve` fully verifies a local exact-key artifact while
+materializing it.
 
 ## Development
 
@@ -35,21 +65,22 @@ uv run mypy
 uv run pytest
 ```
 
-PyTorch is imported only when the default compiler or packager is invoked.
-Unit tests inject those two callables, so the format and policy core stays
-cheap to test without CUDA or a multi-gigabyte torch installation.
+PyTorch is an optional install extra because production workers control their
+exact compiler build. The default compiler imports it only when minting. CI
+installs all extras and runs a real CPU `torch.export` to AOTInductor to
+HashRepo to restart-reuse test.
 
-## Releasing
+## Versioning and release
 
-Set the intended version in `pyproject.toml`, refresh `uv.lock`, and merge that
-release commit to `main`. Tag that exact commit as `v<version>` and push the
-tag. The `Publish to PyPI` workflow reruns the package gates, builds and
-smoke-tests the wheel, publishes the tested wheel and sdist through PyPI
-Trusted Publishing, and verifies the exact version endpoint. Tags whose name
-does not match `pyproject.toml`, or whose commit is not on `main`, are refused.
+Package releases use SemVer, beginning with `0.1.0`; the first release tag is
+`v0.1.0`. Internal artifact/key formats are independently named v1. Before
+launch an internal v1 may be replaced in place: there are no dual readers,
+compatibility aliases, or migration paths for abandoned pre-launch formats.
 
-No PyPI token is stored in GitHub. The repository's `pypi` environment and the
-PyPI publisher must both identify `.github/workflows/publish.yml`.
+The release workflow is exactly `.github/workflows/publish.yaml`. It requires
+a `v<project version>` tag on `main`, rebuilds and smoke-tests the wheel, uses
+PyPI Trusted Publishing through the `pypi` environment, and verifies the exact
+`torch-compiled-graphs` version endpoint.
 
 ## License
 

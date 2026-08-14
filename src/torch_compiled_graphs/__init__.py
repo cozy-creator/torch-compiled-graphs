@@ -1,8 +1,6 @@
-"""Worker-independent PyTorch AOTInductor compiled-graph primitives."""
+"""Mint and reuse verified PyTorch AOTInductor graphs through HashRepo."""
 
 from .artifact import (
-    ARTIFACT_KIND,
-    COMPILED_GRAPH_FORMAT,
     ArtifactError,
     build_metadata,
     pack_artifact,
@@ -12,55 +10,69 @@ from .artifact import (
     verify_package,
 )
 from .compiler import CompileError, compile_exported_program, package_compiled_files
+from .declaration import (
+    DeclarationError,
+    GraphDeclaration,
+    GraphSpec,
+    RuntimeCompatibility,
+)
+from .engine import (
+    AdmissionError,
+    Engine,
+    EnsureOutcome,
+    EnsureResult,
+    GraphPlan,
+)
 from .identity import (
-    KEY_SCHEME,
     CompiledGraphKey,
     IdentityError,
-    contract_digest,
-    facts_digest,
     from_artifact_metadata,
     from_axes,
-    is_compiled_graph_key,
-    toolchain_axis_digest,
 )
 from .introspection import (
     DeclaredConstant,
     PackageIntrospectionError,
     code_only_violations,
-    constants_in_so,
     declared_constants,
-    elf_section_sizes,
-    package_entry_names,
-    packaged_so,
+)
+from .storage import (
+    QuarantinedArtifact,
+    StorageError,
+    StoredGraph,
+    StoreOutcome,
+    StoreResult,
 )
 
 __all__ = [
-    "ARTIFACT_KIND",
-    "COMPILED_GRAPH_FORMAT",
-    "KEY_SCHEME",
+    "AdmissionError",
     "ArtifactError",
     "CompileError",
     "CompiledGraphKey",
+    "DeclarationError",
     "DeclaredConstant",
+    "Engine",
+    "EnsureOutcome",
+    "EnsureResult",
+    "GraphDeclaration",
+    "GraphPlan",
+    "GraphSpec",
     "IdentityError",
     "PackageIntrospectionError",
+    "QuarantinedArtifact",
+    "RuntimeCompatibility",
+    "StorageError",
+    "StoreOutcome",
+    "StoreResult",
+    "StoredGraph",
     "build_metadata",
     "code_only_violations",
     "compile_exported_program",
-    "constants_in_so",
-    "contract_digest",
     "declared_constants",
-    "elf_section_sizes",
-    "facts_digest",
     "from_artifact_metadata",
     "from_axes",
-    "is_compiled_graph_key",
     "pack_artifact",
-    "package_entry_names",
     "package_compiled_files",
-    "packaged_so",
     "read_metadata",
-    "toolchain_axis_digest",
     "unpack_artifact",
     "validate_metadata",
     "verify_package",

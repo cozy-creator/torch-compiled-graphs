@@ -41,18 +41,23 @@ Required top-level metadata includes:
 - `compiled_graph_format: 1`;
 - `kind: "aot-inductor"`;
 - `cell_key`, which must be exactly derivable from the recorded facts;
-- `entry`, with non-empty `name`, `target`, `class_hash`, and a `constants`
-  array;
+- `entry`, with non-empty `name`, `target`, `class_hash`, and `graph`, plus
+  `literal_values`, `placement`, and a `constants` array. `class_hash` must be
+  recomputable from those declaration facts;
 - non-empty `sm` and `toolchain` facts;
 - `package_constants_in_so: false`; and
 - `constant_folding_fenced: true`.
 
-The generic `format` field and plural `entries` bundle are retired and refused.
-Readers reject missing, duplicate, non-file, or unexpected archive members and
-materialize only into a new directory.
+Those are the exact v1 top-level and entry fields; extensions and abandoned
+pre-launch shapes are refused. Readers reject missing, duplicate, non-file, or
+unexpected archive members and materialize only into a new directory.
 
 Each constant row has exactly `fqn`, `source`, `dtype`, and `shape`. `source`
 is one of `state_dict`, `computed`, or `literal`; `shape` is an array of
 non-negative integer dimensions. Unknown, incomplete, or duplicate rows are
 refused. A `literal` row requires `constants.safetensors`; the package's own
 AOTInductor wrapper remains the authority for the constant classification.
+
+Package release versions are ordinary SemVer and start at `0.1.0`. They are
+independent from this internal v1. Before launch, this one accepted v1 may be
+replaced in place; the package does not carry dual readers or writers.

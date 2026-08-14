@@ -8,14 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from compiled_graphs import (
+from torch_compiled_graphs import (
     ArtifactError,
+    GraphDeclaration,
     build_metadata,
     pack_artifact,
     read_metadata,
     unpack_artifact,
     validate_metadata,
 )
+from torch_compiled_graphs.cli import main
 
 
 def metadata(*, literal: bool = False) -> dict[str, object]:
@@ -24,16 +26,24 @@ def metadata(*, literal: bool = False) -> dict[str, object]:
         if literal
         else []
     )
+    declaration = GraphDeclaration(
+        "denoiser/h=64,w=64",
+        "unet",
+        "fedcba9876543210",
+        literal_values="a" * 32 if literal else "",
+    )
     return build_metadata(
         entry={
-            "name": "denoiser/h=64,w=64",
-            "target": "unet",
-            "class_hash": "0123456789abcdef",
+            "name": declaration.entry,
+            "target": declaration.target,
+            "class_hash": declaration.class_hash,
+            "graph": declaration.graph,
+            "literal_values": declaration.literal_values,
+            "placement": list(declaration.placement),
             "constants": constants,
         },
         sm="sm_89",
-        toolchain={"torch": "record-digest", "diffusers": "trace-time-only"},
-        extra={"family": "sdxl"},
+        toolchain={"torch": "record-digest", "triton": "compiler-digest"},
     )
 
 
@@ -81,6 +91,8 @@ def test_artifact_is_deterministic_and_unpacks_atomically(tmp_path: Path) -> Non
     assert (destination / "model.pt2").read_bytes() == package.read_bytes()
     assert read_metadata(first)["compiled_graph_format"] == 1
 
+    assert main(["verify", str(first)]) == 0
+
 
 def test_literal_declaration_requires_payload(tmp_path: Path) -> None:
     package = tmp_path / "source.pt2"
@@ -99,6 +111,13 @@ def test_stamped_key_must_restate_recorded_facts() -> None:
     raw = metadata()
     raw["sm"] = "sm_90"
     with pytest.raises(ArtifactError, match="does not restate"):
+        validate_metadata(raw)
+
+
+def test_class_hash_must_restate_declaration_facts() -> None:
+    raw = metadata()
+    raw["entry"]["graph"] = "0" * 16  # type: ignore[index]
+    with pytest.raises(ArtifactError, match="class_hash does not restate"):
         validate_metadata(raw)
 
 
@@ -122,7 +141,7 @@ def test_constant_manifest_rows_fail_closed(row: dict[str, object]) -> None:
 def test_v1_refuses_retired_artifact_shapes(retired: str) -> None:
     raw = metadata()
     raw[retired] = 3 if retired == "format" else {}
-    with pytest.raises(ArtifactError, match="retired artifact fields"):
+    with pytest.raises(ArtifactError, match="metadata fields must be exactly"):
         validate_metadata(raw)
 
 

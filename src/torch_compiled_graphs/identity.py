@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,8 +11,7 @@ KEY_SCHEME = "cg-key-v1"
 MAX_KEY_LENGTH = 96
 _DIGEST_HEX = 56
 _REQUIRED_AXES = ("graph", "sm", "toolchain")
-_KEY_RE = re.compile(rf"[a-z0-9][a-z0-9._-]*-[0-9a-f]{{{_DIGEST_HEX}}}\Z")
-_NOT_TOOLCHAIN = frozenset(("diffusers", "transformers", "peft"))
+_KEY_RE = re.compile(rf"{KEY_SCHEME}-[0-9a-f]{{{_DIGEST_HEX}}}\Z")
 
 
 class IdentityError(ValueError):
@@ -45,10 +44,8 @@ class CompiledGraphKey:
 def is_compiled_graph_key(value: object) -> bool:
     """Return whether a boundary value has the versioned key shape.
 
-    The scheme is intentionally not pinned: readers recognize the structural
-    category, then compatibility gates decide whether its recorded facts are
-    executable. The digest is always parsed from the right because schemes may
-    contain hyphens.
+    Pre-launch v1 has one accepted key representation and no compatibility
+    reader for abandoned or future schemes.
     """
 
     text = str(value or "")
@@ -76,23 +73,17 @@ def from_axes(axes: Mapping[str, str]) -> CompiledGraphKey:
     return CompiledGraphKey(tuple(sorted(clean.items())))
 
 
-def facts_digest(facts: Mapping[str, Any]) -> str:
+def _facts_digest(facts: Mapping[str, Any]) -> str:
     payload = json.dumps(
         dict(facts), sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
-def toolchain_facts(block: Mapping[str, Any]) -> dict[str, str]:
-    """Return compiler components only; trace-time model libraries are graph facts."""
-
-    return {
-        str(name): str(value) for name, value in block.items() if str(name) not in _NOT_TOOLCHAIN
-    }
-
-
 def toolchain_axis_digest(block: Mapping[str, Any]) -> str:
-    return facts_digest(toolchain_facts(block))
+    """Digest explicit compiler components/settings; callers supply no model facts."""
+
+    return _facts_digest({str(name): str(value) for name, value in block.items()})
 
 
 def from_artifact_metadata(metadata: Mapping[str, Any]) -> CompiledGraphKey:
@@ -111,17 +102,3 @@ def from_artifact_metadata(metadata: Mapping[str, Any]) -> CompiledGraphKey:
     if not isinstance(toolchain, Mapping) or not toolchain:
         raise IdentityError("artifact records no toolchain object")
     return from_axes({"graph": graph, "sm": sm, "toolchain": toolchain_axis_digest(toolchain)})
-
-
-def contract_digest(class_hashes: Iterable[str]) -> str:
-    """Coverage label for a declaration; this is not an artifact address."""
-
-    rows: list[str] = []
-    for raw in class_hashes:
-        value = str(raw).strip()
-        if not value:
-            raise IdentityError("contract contains an empty class hash")
-        _refuse_key_as_fact("class_hash", value)
-        rows.append(value)
-    payload = "\n".join(sorted(rows)).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()[:16]

@@ -180,7 +180,7 @@ def _wrapper_source(package: Path, entry: str = "") -> str:
         ) from exc
 
 
-def package_entry_names(package: Path) -> tuple[str, ...]:
+def _package_entry_names(package: Path) -> tuple[str, ...]:
     """Return named graph entries discovered from wrapper paths."""
 
     return tuple(
@@ -237,7 +237,7 @@ def _declared_constant_count(source: str) -> int:
     return int(argument)
 
 
-def constants_in_so(package: Path, entry: str = "") -> bool:
+def _constants_in_so(package: Path, entry: str = "") -> bool:
     """Return the package's declared ``load_constants_from_blob`` value."""
 
     package = Path(package)
@@ -367,14 +367,6 @@ def declared_constants(package: Path, entry: str = "") -> tuple[DeclaredConstant
     return tuple(constants)
 
 
-def packaged_so(package: Path, entry: str = "") -> tuple[str, bytes]:
-    """Return the archive name and bytes of one entry's shared object."""
-
-    package = Path(package)
-    name = _one_member(package, ".so", entry)
-    return name, _read_member(package, name)
-
-
 def _read_at(source: BinaryIO, offset: int, size: int, total_size: int, what: str) -> bytes:
     if offset < 0 or size < 0 or offset + size > total_size:
         raise PackageIntrospectionError(f"packaged .so has an invalid {what} range")
@@ -462,7 +454,7 @@ def _elf_section_sizes(source: BinaryIO, total_size: int) -> dict[str, int]:
     return sizes
 
 
-def elf_section_sizes(blob: bytes) -> dict[str, int]:
+def _elf_section_sizes_from_bytes(blob: bytes) -> dict[str, int]:
     """Read section sizes from a 64-bit little-endian ELF image."""
 
     return _elf_section_sizes(io.BytesIO(blob), len(blob))
@@ -476,7 +468,7 @@ def code_only_violations(package: Path, entry: str = "") -> list[str]:
     declared_bytes = sum(constant.data_size for constant in constants)
     reasons: list[str] = []
 
-    if constants_in_so(package, entry):
+    if _constants_in_so(package, entry):
         largest = sorted(constants, key=lambda constant: -constant.data_size)[:5]
         details = ", ".join(f"{constant.fqn} ({constant.data_size}B)" for constant in largest)
         suffix = f"; largest: {details}" if details else ""

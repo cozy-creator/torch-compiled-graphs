@@ -11,12 +11,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
+from .declaration import DeclarationError, GraphDeclaration
 from .identity import from_artifact_metadata, is_compiled_graph_key
 from .introspection import (
     PackageIntrospectionError,
+    _package_entry_names,
     code_only_violations,
     declared_constants,
-    package_entry_names,
 )
 
 COMPILED_GRAPH_FORMAT = 1
@@ -30,6 +31,29 @@ _MEMBERS = _REQUIRED_MEMBERS | {LITERALS_NAME}
 _MAX_METADATA_BYTES = 8 << 20
 _CONSTANT_FIELDS = frozenset(("fqn", "source", "dtype", "shape"))
 _CONSTANT_SOURCES = frozenset(("state_dict", "computed", "literal"))
+_TOP_LEVEL_FIELDS = frozenset(
+    (
+        COMPILED_GRAPH_FORMAT_KEY,
+        "kind",
+        "cell_key",
+        "entry",
+        "sm",
+        "toolchain",
+        "package_constants_in_so",
+        "constant_folding_fenced",
+    )
+)
+_ENTRY_FIELDS = frozenset(
+    (
+        "name",
+        "target",
+        "class_hash",
+        "graph",
+        "literal_values",
+        "placement",
+        "constants",
+    )
+)
 
 
 class ArtifactError(ValueError):
@@ -78,9 +102,7 @@ def _validated_constants(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
                 f"entry constant {index} shape must be an array of non-negative integers"
             )
         fqns.add(fqn)
-        checked.append(
-            {"fqn": fqn, "source": source, "dtype": dtype, "shape": list(shape)}
-        )
+        checked.append({"fqn": fqn, "source": source, "dtype": dtype, "shape": list(shape)})
     return checked
 
 
@@ -96,23 +118,62 @@ def validate_metadata(
     if not isinstance(decoded, dict):
         raise ArtifactError("metadata root must be an object")
     metadata = cast(dict[str, Any], decoded)
+    if set(metadata) != _TOP_LEVEL_FIELDS:
+        raise ArtifactError(f"metadata fields must be exactly {sorted(_TOP_LEVEL_FIELDS)!r}")
     if metadata.get(COMPILED_GRAPH_FORMAT_KEY) != COMPILED_GRAPH_FORMAT:
         raise ArtifactError(f"{COMPILED_GRAPH_FORMAT_KEY} must be {COMPILED_GRAPH_FORMAT}")
-    retired = sorted(set(metadata) & {"format", "entries"})
-    if retired:
-        raise ArtifactError(f"retired artifact fields are not valid in v1: {retired!r}")
     if metadata.get("kind") != ARTIFACT_KIND:
         raise ArtifactError(f"kind must be {ARTIFACT_KIND!r}")
     if metadata.get("package_constants_in_so") is not False:
         raise ArtifactError("package_constants_in_so must be false")
     if metadata.get("constant_folding_fenced") is not True:
         raise ArtifactError("constant_folding_fenced must be true")
+    sm = metadata.get("sm")
+    if not isinstance(sm, str) or not sm.strip():
+        raise ArtifactError("sm must be a non-empty string")
+    toolchain = metadata.get("toolchain")
+    if (
+        not isinstance(toolchain, dict)
+        or not toolchain
+        or any(
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(value, str)
+            or not value.strip()
+            for name, value in toolchain.items()
+        )
+    ):
+        raise ArtifactError("toolchain must contain non-empty string facts")
     entry = metadata.get("entry")
     if not isinstance(entry, dict):
         raise ArtifactError("metadata must contain one entry object")
-    for field in ("name", "target", "class_hash"):
+    if set(entry) != _ENTRY_FIELDS:
+        raise ArtifactError(f"entry fields must be exactly {sorted(_ENTRY_FIELDS)!r}")
+    for field in ("name", "target", "class_hash", "graph"):
         if not isinstance(entry.get(field), str) or not entry[field].strip():
             raise ArtifactError(f"entry {field!r} must be a non-empty string")
+    literal_values = entry.get("literal_values")
+    placement = entry.get("placement")
+    if not isinstance(literal_values, str):
+        raise ArtifactError("entry literal_values must be a string")
+    if not isinstance(placement, list) or not all(
+        isinstance(device, str) and device for device in placement
+    ):
+        raise ArtifactError("entry placement must be an array of non-empty strings")
+    try:
+        declaration = GraphDeclaration(
+            entry["name"],
+            entry["target"],
+            entry["graph"],
+            literal_values=literal_values,
+            placement=tuple(placement),
+        )
+    except DeclarationError as exc:
+        raise ArtifactError(f"entry declaration is invalid: {exc}") from exc
+    if placement != list(declaration.placement):
+        raise ArtifactError("entry placement must be sorted and unique")
+    if entry["class_hash"] != declaration.class_hash:
+        raise ArtifactError("entry class_hash does not restate its declaration facts")
     expected = from_artifact_metadata(metadata).value
     stamped = metadata.get("cell_key")
     if not isinstance(stamped, str) or not is_compiled_graph_key(stamped):
@@ -122,6 +183,8 @@ def validate_metadata(
     constants = _validated_constants(entry)
     entry["constants"] = constants
     needs_literals = any(row["source"] == "literal" for row in constants)
+    if needs_literals and not literal_values:
+        raise ArtifactError("entry literal constants require a literal_values digest")
     if has_literals is False and needs_literals:
         raise ArtifactError("entry declares literal constants but carries no literal payload")
     return metadata
@@ -131,24 +194,10 @@ def build_metadata(
     *,
     entry: Mapping[str, Any],
     sm: str,
-    toolchain: Mapping[str, Any],
-    extra: Mapping[str, Any] | None = None,
+    toolchain: Mapping[str, str],
 ) -> dict[str, Any]:
     """Build metadata from recorded facts and stamp the key derived from them."""
 
-    reserved = {
-        COMPILED_GRAPH_FORMAT_KEY,
-        "kind",
-        "cell_key",
-        "entry",
-        "sm",
-        "toolchain",
-        "package_constants_in_so",
-        "constant_folding_fenced",
-    }
-    collision = sorted(set(extra or {}) & reserved)
-    if collision:
-        raise ArtifactError(f"extra metadata cannot override reserved fields {collision!r}")
     metadata: dict[str, Any] = {
         COMPILED_GRAPH_FORMAT_KEY: COMPILED_GRAPH_FORMAT,
         "kind": ARTIFACT_KIND,
@@ -157,7 +206,6 @@ def build_metadata(
         "toolchain": dict(toolchain),
         "package_constants_in_so": False,
         "constant_folding_fenced": True,
-        **dict(extra or {}),
     }
     metadata["cell_key"] = from_artifact_metadata(metadata).value
     return validate_metadata(metadata)
@@ -234,7 +282,7 @@ def verify_package(package: str | Path, metadata: Mapping[str, Any]) -> None:
     entry = cast(dict[str, Any], checked["entry"])
     name = cast(str, entry["name"])
     try:
-        names = package_entry_names(package_path)
+        names = _package_entry_names(package_path)
         if names != (name,):
             raise ArtifactError(
                 f"package entries {names!r} do not match sole metadata entry {name!r}"

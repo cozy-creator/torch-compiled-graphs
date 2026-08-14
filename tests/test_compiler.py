@@ -6,8 +6,8 @@ from typing import cast
 
 import pytest
 
-from compiled_graphs import CompileError, compile_exported_program, package_compiled_files
-from compiled_graphs.compiler import Compiler
+from torch_compiled_graphs import CompileError, compile_exported_program, package_compiled_files
+from torch_compiled_graphs.compiler import Compiler
 
 
 class Program:
