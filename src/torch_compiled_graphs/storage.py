@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
@@ -171,6 +173,40 @@ class _GraphStore:
                 f"artifact states key {metadata.get('compiled_graph_key')!r}, expected {key!r}"
             )
 
+    @staticmethod
+    def _require_exact_file(target: Path, expected: FileEntry) -> None:
+        """Accept an occupied destination only when it is the selected CAS file."""
+
+        try:
+            if target.is_symlink():
+                raise FileExistsError(f"destination {target} is a symbolic link")
+            digest = hashlib.sha256()
+            with target.open("rb") as source:
+                before = os.fstat(source.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    raise FileExistsError(f"destination {target} is not a regular file")
+                while chunk := source.read(1 << 20):
+                    digest.update(chunk)
+                after = os.fstat(source.fileno())
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            raise FileExistsError(f"cannot verify occupied destination {target}: {exc}") from exc
+        stable = (
+            before.st_dev == after.st_dev
+            and before.st_ino == after.st_ino
+            and before.st_size == after.st_size
+            and before.st_mtime_ns == after.st_mtime_ns
+        )
+        if (
+            not stable
+            or after.st_size != expected.size_bytes
+            or digest.hexdigest() != expected.digest.digest
+        ):
+            raise FileExistsError(
+                f"destination {target} is not the selected compiled-graph artifact"
+            )
+
     def export_artifact(self, key: str | CompiledGraphKey, destination: str | Path) -> Path:
         """Export one exact CAS record as a fully verified artifact envelope."""
 
@@ -182,11 +218,6 @@ class _GraphStore:
             raise QuarantinedArtifact(f"compiled graph {value} is quarantined")
 
         target = Path(destination)
-        if target.exists():
-            if not target.is_file():
-                raise FileExistsError(f"destination {target} is not a regular file")
-            self._verify_archive(target, value)
-            return target
         target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
         os.close(descriptor)
@@ -194,7 +225,8 @@ class _GraphStore:
         try:
             try:
                 manifest = self.cas.load_manifest(manifest_ref)
-                self.cas.materialize(self._file(manifest), temporary)
+                file = self._file(manifest)
+                self.cas.materialize(file, temporary)
                 self._verify_archive(temporary, value)
             except (
                 ArtifactError,
@@ -210,9 +242,7 @@ class _GraphStore:
             try:
                 os.link(temporary, target)
             except FileExistsError:
-                if not target.is_file():
-                    raise
-                self._verify_archive(target, value)
+                self._require_exact_file(target, file)
             _fsync_dir(target.parent)
             return target
         finally:

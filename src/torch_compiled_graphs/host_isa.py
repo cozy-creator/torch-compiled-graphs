@@ -27,6 +27,7 @@ _RANK = {name: index for index, (name, _) in enumerate(_LEVELS)}
 _HOST_FACTS = frozenset(
     {"machine", "host_isa_level", "host_isa_features", "cpp_march", "cpp_simdlen"}
 )
+_POLICY_LOCK = threading.RLock()
 
 
 class HostISAError(RuntimeError):
@@ -137,32 +138,33 @@ def _fresh_thread_value(function: Any) -> object:
 def _impose_host_policy() -> dict[str, str]:
     """Impose the closed host-code policy process-wide and return its key facts."""
 
-    requirement = _host_requirement()
-    try:
-        import torch._inductor.config as config
-    except ImportError as exc:
-        raise HostISAError("PyTorch AOTInductor is required to impose host ISA") from exc
+    with _POLICY_LOCK:
+        requirement = _host_requirement()
+        try:
+            import torch._inductor.config as config
+        except ImportError as exc:
+            raise HostISAError("PyTorch AOTInductor is required to impose host ISA") from exc
 
-    x86 = requirement.machine == _X86_64
-    march = requirement.march if x86 else None
-    simdlen = int(requirement.simdlen) if x86 else None
-    expected: dict[str, object] = {"cpp.march": march, "cpp.simdlen": simdlen}
-    entries = cast(Mapping[str, Any], getattr(config, "_config", {}))
-    for name, value in expected.items():
-        entry = entries.get(name)
-        if entry is None:
-            raise HostISAError(f"PyTorch config has no process-wide {name!r} default")
-        entry.default = value
-    config.cpp.march = march
-    config.cpp.simdlen = simdlen
-    current = (config.cpp.march, config.cpp.simdlen)
-    wanted = (march, simdlen)
-    if current != wanted:
-        raise HostISAError(f"host ISA clamp reads {current!r}, expected {wanted!r}")
-    foreign = _fresh_thread_value(lambda: (config.cpp.march, config.cpp.simdlen))
-    if foreign != wanted:
-        raise HostISAError(f"host ISA clamp is thread-local: fresh thread reads {foreign!r}")
-    return requirement.facts()
+        x86 = requirement.machine == _X86_64
+        march = requirement.march if x86 else None
+        simdlen = int(requirement.simdlen) if x86 else None
+        expected: dict[str, object] = {"cpp.march": march, "cpp.simdlen": simdlen}
+        entries = cast(Mapping[str, Any], getattr(config, "_config", {}))
+        for name, value in expected.items():
+            entry = entries.get(name)
+            if entry is None:
+                raise HostISAError(f"PyTorch config has no process-wide {name!r} default")
+            entry.default = value
+        config.cpp.march = march
+        config.cpp.simdlen = simdlen
+        current = (config.cpp.march, config.cpp.simdlen)
+        wanted = (march, simdlen)
+        if current != wanted:
+            raise HostISAError(f"host ISA clamp reads {current!r}, expected {wanted!r}")
+        foreign = _fresh_thread_value(lambda: (config.cpp.march, config.cpp.simdlen))
+        if foreign != wanted:
+            raise HostISAError(f"host ISA clamp is thread-local: fresh thread reads {foreign!r}")
+        return requirement.facts()
 
 
 def _validate_host_facts(toolchain: Mapping[str, str]) -> _Requirement:

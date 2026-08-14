@@ -11,9 +11,8 @@ from typing import cast
 
 import pytest
 
-from torch_compiled_graphs import (
-    ArtifactError,
-    GraphDeclaration,
+from torch_compiled_graphs import ArtifactError, GraphDeclaration
+from torch_compiled_graphs.artifact import (
     build_metadata,
     pack_artifact,
     read_metadata,

@@ -12,7 +12,7 @@ from typing import Any, cast
 from hashrepo import LocalCAS
 
 from .artifact import build_metadata, pack_artifact, read_metadata
-from .compiler import compile_exported_program, package_compiled_files
+from .compiler import _compile_exported_program, _package_compiled_files
 from .declaration import GraphDeclaration, GraphSpec, RuntimeCompatibility
 from .host_isa import HostISAError, _admit_host
 from .identity import CompiledGraphKey
@@ -90,8 +90,8 @@ def _write_literals(program: object, constants: tuple[DeclaredConstant, ...], ta
 
 
 def _compile_package(plan: _GraphPlan, workspace: Path) -> Path:
-    files = compile_exported_program(plan.spec.program)
-    return package_compiled_files(
+    files = _compile_exported_program(plan.spec.program)
+    return _package_compiled_files(
         plan.declaration.entry,
         files,
         workspace / "model.pt2",

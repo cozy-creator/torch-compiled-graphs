@@ -39,10 +39,11 @@ compile policy, packages it as a
 verified artifact, stores it through HashRepo, and materializes it. A later
 process pointed at the same HashRepo root reuses it without compiling.
 
-`Engine.export_artifact(key, path)` emits the verified artifact envelope for a
-remote adapter. `Engine.import_artifact(key, path)` validates its metadata and
-host requirement before attaching the fully verified bytes to the local CAS.
-Neither operation exposes the package's private HashRepo ref layout.
+`Engine.export_artifact(key, path)` emits the exact verified artifact envelope
+selected by the local HashRepo manifest for a remote adapter.
+`Engine.import_artifact(key, path)` validates its metadata and host requirement
+before attaching the fully verified bytes to the local CAS. Neither operation
+exposes the package's private HashRepo ref layout.
 
 HashRepo owns immutable objects, chunk manifests, durability, GC reachability,
 and transfer primitives. This package owns only graph declaration, compilation,
@@ -96,15 +97,24 @@ compatibility aliases, or migration paths for abandoned pre-launch formats.
 
 ### 0.1.1 public API
 
-- `compile_exported_program` no longer accepts an arbitrary context manager;
-  it derives the FakeTensor, ShapeEnv, and tracing context from its
-  `ExportedProgram`.
+- Compilation is owned by `Engine`; no public compiler, packager, context, or
+  options callback can replace the fixed output-producing path. The engine
+  derives the sole FakeTensorMode, ShapeEnv, and tracing context recursively
+  from the `ExportedProgram` graph metadata and refuses incomplete or
+  conflicting context.
 - `is_compiled_graph_key` is public for validating digest-only boundary values.
 - `Engine.export_artifact(key, destination)` exports a fully verified artifact
-  envelope without exposing HashRepo ref layout.
+  envelope without exposing HashRepo ref layout. An occupied or racing
+  destination is accepted only when its size and full SHA-256 match the exact
+  selected manifest file; it is never overwritten.
 - Host ISA facts now cover every CPU and CUDA artifact. x86-64 compilation is
   process-wide capped at `x86-64-v3`; other architectures carry a conservative
   native feature requirement. Unstamped or unsupported artifacts fail closed.
+
+The package root exposes only the engine lifecycle, its declarations,
+result/value types, error types, and `is_compiled_graph_key`. Format and
+introspection implementation helpers remain in their owning modules rather
+than being re-exported as a second facade.
 
 The release workflow is exactly `.github/workflows/publish.yaml`. It requires
 a `v<project version>` tag on `main`, rebuilds and smoke-tests the wheel, uses

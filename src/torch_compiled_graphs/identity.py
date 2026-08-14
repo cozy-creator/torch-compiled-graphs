@@ -24,6 +24,21 @@ class CompiledGraphKey:
 
     axes: tuple[tuple[str, str], ...]
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.axes, tuple) or any(
+            not isinstance(axis, tuple) or len(axis) != 2 for axis in self.axes
+        ):
+            raise IdentityError("compiled graph key axes must be canonical name/value tuples")
+        if tuple(name for name, _ in self.axes) != _REQUIRED_AXES:
+            raise IdentityError(
+                f"compiled graph key axes must be exactly {list(_REQUIRED_AXES)!r}"
+            )
+        for name, value in self.axes:
+            if not isinstance(value, str) or not value or value != value.strip():
+                raise IdentityError(f"compiled graph key requires canonical string {name!r}")
+            if is_compiled_graph_key(value):
+                raise IdentityError(f"{name} is a compiled-graph key, not an identity fact")
+
     def as_dict(self) -> dict[str, str]:
         return dict(self.axes)
 
@@ -48,8 +63,11 @@ def is_compiled_graph_key(value: object) -> bool:
     reader for abandoned or future schemes.
     """
 
-    text = str(value or "")
-    return len(text) <= MAX_KEY_LENGTH and _KEY_RE.fullmatch(text) is not None
+    return (
+        isinstance(value, str)
+        and len(value) <= MAX_KEY_LENGTH
+        and _KEY_RE.fullmatch(value) is not None
+    )
 
 
 def _refuse_key_as_fact(name: str, value: str) -> None:

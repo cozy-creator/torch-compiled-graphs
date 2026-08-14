@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import inspect
+import os
 import platform
 import re
 import shutil
@@ -20,14 +21,14 @@ import torch_compiled_graphs.engine as engine_module
 import torch_compiled_graphs.host_isa as host_isa_module
 from torch_compiled_graphs import (
     AdmissionError,
-    ArtifactError,
     Engine,
     EnsureOutcome,
     GraphSpec,
     RuntimeCompatibility,
     StorageError,
-    from_axes,
 )
+from torch_compiled_graphs.artifact import pack_artifact, read_metadata
+from torch_compiled_graphs.identity import from_axes
 
 torch: Any = pytest.importorskip("torch")
 
@@ -127,6 +128,17 @@ def _fake_compile_package(
     return compile_package
 
 
+def _alternate_artifact(package: Path, source_artifact: Path, output: Path) -> Path:
+    alternate_package = output.with_suffix(".pt2")
+    with zipfile.ZipFile(package) as source, zipfile.ZipFile(alternate_package, "w") as target:
+        for info in source.infolist():
+            data = source.read(info)
+            if info.filename.endswith(".so"):
+                data += b"different but valid package bytes"
+            target.writestr(info, data)
+    return pack_artifact(alternate_package, output, read_metadata(source_artifact))
+
+
 @pytest.fixture(autouse=True)
 def _default_fake_compile_package(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
@@ -136,8 +148,23 @@ def _default_fake_compile_package(
 
 
 def _spec() -> GraphSpec:
-    program = torch.export.export(Double(), (torch.ones(2),))
+    program = torch.export.export(Double(), (torch.ones(4096),))
     return GraphSpec("model", "denoiser", program)
+
+
+def _instruction_prefixes(disassembly: str) -> tuple[str, ...]:
+    return tuple(
+        match.group(1)
+        for match in re.finditer(r"^\s*[0-9a-f]+:\s+([0-9a-f]{2})(?:\s|$)", disassembly, re.M)
+    )
+
+
+def test_disassembly_prefix_classifier_distinguishes_vex_and_evex() -> None:
+    disassembly = """
+       0: c5 fc 58 c1           vaddps %ymm1,%ymm0,%ymm0
+       4: 62 f1 7c 48 58 c1     vaddps %zmm1,%zmm0,%zmm0
+    """
+    assert _instruction_prefixes(disassembly) == ("c5", "62")
 
 
 def _runtime() -> RuntimeCompatibility:
@@ -340,7 +367,7 @@ def test_real_aoti_package_survives_restart_reuse(tmp_path: Path) -> None:
     assert torch._inductor.aoti_load_package(str(reused.graph.package)) is not None
 
     if platform.machine() == "x86_64" and shutil.which("objdump") is not None:
-        above_v3 = re.compile(r"%zmm|%k[0-7]\b|vpternlog|vgather|vscatter")
+        saw_vex_vector = False
         with zipfile.ZipFile(reused.graph.package) as archive:
             objects = [name for name in archive.namelist() if name.endswith(".so")]
             assert objects
@@ -352,7 +379,12 @@ def test_real_aoti_package_survives_restart_reuse(tmp_path: Path) -> None:
                     capture_output=True,
                     text=True,
                 ).stdout
-                assert above_v3.search(disassembly) is None
+                prefixes = _instruction_prefixes(disassembly)
+                assert "62" not in prefixes, "generated host code contains an EVEX instruction"
+                saw_vex_vector = saw_vex_vector or any(
+                    prefix in {"c4", "c5"} for prefix in prefixes
+                )
+        assert saw_vex_vector, "vectorizing graph emitted no VEX instruction evidence"
 
 
 @pytest.mark.real_aoti
@@ -422,7 +454,7 @@ def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> 
     source_engine = Engine(source_cas)
     spec = _spec()
     key = _runtime().key(spec.declare())
-    source_engine.ensure(
+    minted = source_engine.ensure(
         key,
         tmp_path / "minted",
         target="cpu",
@@ -433,9 +465,19 @@ def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> 
     assert source_engine.export_artifact(key, fetched) == fetched
     occupied = tmp_path / "occupied.tar.gz"
     occupied.write_bytes(b"do not overwrite")
-    with pytest.raises(ArtifactError, match="cannot read artifact"):
+    with pytest.raises(FileExistsError, match="not the selected"):
         source_engine.export_artifact(key, occupied)
     assert occupied.read_bytes() == b"do not overwrite"
+
+    divergent = _alternate_artifact(
+        minted.graph.package,
+        fetched,
+        tmp_path / "divergent.tar.gz",
+    )
+    divergent_bytes = divergent.read_bytes()
+    with pytest.raises(FileExistsError, match="not the selected"):
+        source_engine.export_artifact(key, divergent)
+    assert divergent.read_bytes() == divergent_bytes
 
     destination_cas = LocalCAS(tmp_path / "destination-cas")
     imported = Engine(destination_cas).import_artifact(key, fetched)
@@ -466,6 +508,39 @@ def test_export_refuses_a_corrupt_cas_object(tmp_path: Path) -> None:
     with pytest.raises(StorageError, match="export verification"):
         engine.export_artifact(key, tmp_path / "corrupt.tar.gz")
     assert not (tmp_path / "corrupt.tar.gz").exists()
+
+
+def test_export_race_refuses_a_different_same_key_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    engine = Engine(cas)
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    minted = engine.ensure(
+        key,
+        tmp_path / "minted",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
+    )
+    selected = engine.export_artifact(key, tmp_path / "selected.tar.gz")
+    divergent = _alternate_artifact(
+        minted.graph.package,
+        selected,
+        tmp_path / "divergent.tar.gz",
+    )
+    destination = tmp_path / "racing.tar.gz"
+    divergent_bytes = divergent.read_bytes()
+
+    def lose_race(source: object, target: object) -> None:
+        destination.write_bytes(divergent_bytes)
+        raise FileExistsError(errno.EEXIST, "simulated winner", target)
+
+    monkeypatch.setattr(os, "link", lose_race)
+    with pytest.raises(FileExistsError, match="not the selected"):
+        engine.export_artifact(key, destination)
+    assert destination.read_bytes() == divergent_bytes
 
 
 def test_host_isa_admission_refuses_cross_machine_and_missing_features(

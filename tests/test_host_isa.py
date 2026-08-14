@@ -33,8 +33,27 @@ def test_real_host_policy_is_capped_and_process_wide() -> None:
     thread.join()
     assert "error" not in result, result.get("error")
     flags = result.get("flags")
-    assert isinstance(flags, list)
-    assert "march=native" not in flags
+    assert flags == [f"march={facts['cpp_march']}"]
+
+
+def test_concurrent_policy_calls_converge_on_one_process_default() -> None:
+    results: list[dict[str, str]] = []
+    errors: list[BaseException] = []
+
+    def impose() -> None:
+        try:
+            results.append(host_isa._impose_host_policy())
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=impose) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    assert len(results) == len(threads)
+    assert all(result == results[0] for result in results)
 
 
 def test_non_x86_policy_is_native_but_feature_bound(monkeypatch: pytest.MonkeyPatch) -> None:
