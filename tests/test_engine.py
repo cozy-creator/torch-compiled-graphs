@@ -22,6 +22,7 @@ import torch_compiled_graphs.engine as engine_module
 import torch_compiled_graphs.host_isa as host_isa_module
 from torch_compiled_graphs import (
     AdmissionError,
+    ConstantBindingError,
     Engine,
     EnsureOutcome,
     GraphClassSpec,
@@ -49,6 +50,15 @@ class WithLiteral(torch.nn.Module):  # type: ignore[misc]
 
     def forward(self, value: Any) -> Any:
         return value * self.table
+
+
+class WithBuffer(torch.nn.Module):  # type: ignore[misc]
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer("scale", torch.tensor([2.0, 3.0]))
+
+    def forward(self, value: Any) -> Any:
+        return value * self.scale
 
 
 def _elf() -> bytes:
@@ -502,6 +512,29 @@ def test_named_literal_bytes_survive_hashrepo_reuse(
     assert load_file(result.compiled_graph.literals)["table"].tolist() == [2.0, 3.0]
 
 
+def test_compile_derives_its_own_key_and_reuses_without_recompiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec()
+    runtime = _runtime()
+    calls = 0
+
+    def compile_once(plan: object, workspace: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        return _fake_compile_package(packager)(plan, workspace)
+
+    monkeypatch.setattr(engine_module, "_compile_package", compile_once)
+    engine = Engine(LocalCAS(tmp_path / "cas"))
+    minted = engine.compile(spec, runtime, tmp_path / "minted")
+    reused = engine.compile(spec, runtime, tmp_path / "reused")
+    assert minted.outcome == EnsureOutcome.MINTED
+    assert reused.outcome == EnsureOutcome.REUSED
+    assert minted.compiled_graph.key == str(runtime.key(spec.declare()))
+    assert reused.compiled_graph.manifest == minted.compiled_graph.manifest
+    assert calls == 1
+
+
 @pytest.mark.real_aoti
 def test_real_aoti_package_survives_restart_reuse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -521,25 +554,18 @@ def test_real_aoti_package_survives_restart_reuse(
     runtime = _runtime()
     key = runtime.key(spec.declare())
     cas_root = tmp_path / "cas"
-    minted = Engine(LocalCAS(cas_root)).ensure(
-        key,
-        tmp_path / "minted",
-        target="cpu",
-        toolchain=_toolchain(),
-        recipe=lambda: spec,
-    )
+    minted = Engine(LocalCAS(cas_root)).compile(spec, runtime, tmp_path / "minted")
     assert minted.outcome == EnsureOutcome.MINTED
 
-    reused = Engine(LocalCAS(cas_root)).ensure(
-        key,
-        tmp_path / "reused",
-        target="cpu",
-        toolchain=_toolchain(),
-        recipe=lambda: (_ for _ in ()).throw(AssertionError("restart reuse rebuilt recipe")),
-    )
+    restarted = Engine(LocalCAS(cas_root))
+    reused = restarted.compile(spec, runtime, tmp_path / "reused")
     assert reused.outcome == EnsureOutcome.REUSED
     assert reused.compiled_graph.package.read_bytes() == minted.compiled_graph.package.read_bytes()
-    loaded = torch._inductor.aoti_load_package(str(reused.compiled_graph.package))
+    loaded = restarted.runner(key, tmp_path / "loaded")
+    assert loaded is not None
+    with pytest.raises(ConstantBindingError, match="before complete binding"):
+        loaded(torch.ones(4096))
+    loaded.bind({}, device="cpu")
     representative = torch.linspace(-3.0, 3.0, 4096)
     actual = loaded(representative)
     expected = Double()(representative)
@@ -567,6 +593,22 @@ def test_real_aoti_package_survives_restart_reuse(
                     prefix in {"c4", "c5"} for prefix in prefixes
                 )
         assert saw_vex_vector, "vectorizing graph emitted no VEX instruction evidence"
+
+
+@pytest.mark.real_aoti
+def test_real_aoti_runner_binds_named_state_by_reference(tmp_path: Path) -> None:
+    module = WithBuffer()
+    program = torch.export.export(module, (torch.ones(2),))
+    spec = _spec_for(program)
+    runtime = _runtime()
+    engine = Engine(LocalCAS(tmp_path / "cas"))
+    result = engine.compile(spec, runtime, tmp_path / "compiled")
+    runner = engine.runner(result.compiled_graph.key, tmp_path / "loaded")
+    assert runner is not None
+    runner.bind({"scale": module.scale}, device="cpu")
+    representative = torch.tensor([4.0, 5.0])
+    torch.testing.assert_close(runner(representative), module(representative))
+    assert runner.bound_fqns == ("scale",)
 
 
 @pytest.mark.real_aoti

@@ -22,15 +22,16 @@ runtime = RuntimeCompatibility(
     "sm_89",
     toolchain=recorded_toolchain,
 )
-key = runtime.key(spec.declare())
-result = Engine(LocalCAS("/var/cache/graphs")).ensure(
-    key,
+engine = Engine(LocalCAS("/var/cache/graphs"))
+result = engine.compile(
+    spec,
+    runtime,
     "/run/graphs/denoiser-h64-w64",
-    target="sm_89",
-    toolchain=recorded_toolchain,
-    recipe=lambda: spec,
 )
-runner_package = result.compiled_graph.package
+runner = engine.runner(result.compiled_graph.key, "/run/graphs/loaded")
+assert runner is not None
+runner.bind(resident_constants, device="cuda")
+outputs = runner(*positional_inputs)
 ```
 
 `graph_interface` and `declared_ingress_range_digest` are the current v3
@@ -45,6 +46,19 @@ once only on a miss. A miss compiles one code-only graph under the sole v1
 compile policy, packages it as a
 verified artifact, stores it through HashRepo, and materializes it. A later
 process pointed at the same HashRepo root reuses it without compiling.
+`Engine.compile(spec, runtime, destination)` is the sealed one-class operation
+used by a compile child: it derives its own key and reuses an admitted exact
+record before doing compiler work. There is no public plan, compiler callback,
+option map, or caller-supplied identity.
+
+`Engine.runner(key, destination)` resolves the exact HashRepo-selected bytes,
+loads the named AOTI model, and returns a `CompiledGraphRunner`. The runner
+refuses every call until `bind` proves the package's own constant table equals
+the artifact manifest and completes one by-reference update. Missing, partial,
+or out-of-memory binding leaves that runner permanently unusable; a caller may
+load a fresh instance on a pod with capacity. Ingress selection, eager fallback,
+family composition, process scheduling, Hub receipts, and telemetry remain
+application policy and are intentionally absent from this package.
 
 The sealed compiler policy uses four Inductor compile workers: pgw#757's
 measured contention ceiling and the current worker value. A balanced 16-run
@@ -93,6 +107,12 @@ The versioned identity corpora used by non-Python consumers ship under
 bytes from an installed wheel; consumers pin the package version and corpus
 SHA-256 rather than fetching a moving source branch.
 
+The versioned compile-span partition lives in
+`torch_compiled_graphs.spans`. Its three totals each have one explicit
+residual, and `check()` must be run by the measurement owner before emitting a
+table. Triton, autotune, and device-lock timing are overlays, never partition
+members.
+
 ## CLI
 
 ```bash
@@ -131,7 +151,7 @@ Package releases use SemVer, beginning with `0.1.0`; the first release tag is
 launch an internal v1 may be replaced in place: there are no dual readers,
 compatibility aliases, or migration paths for abandoned pre-launch formats.
 
-### 0.1.3 public API
+### 0.3.0 public API
 
 - Compilation is owned by `Engine`; no public compiler, packager, context, or
   options callback can replace the fixed output-producing path. The engine
@@ -158,6 +178,14 @@ compatibility aliases, or migration paths for abandoned pre-launch formats.
 - Host ISA facts now cover every CPU and CUDA artifact. x86-64 compilation is
   process-wide capped at `x86-64-v3`; other architectures carry a conservative
   native feature requirement. Unstamped or unsupported artifacts fail closed.
+- `Engine.compile` is the one public one-class compiler lifecycle. It computes
+  declaration and key itself, admits an exact prior record, and otherwise runs
+  the sole sealed compiler/package/store path.
+- `Engine.runner` returns a gated `CompiledGraphRunner`; exact constant-table
+  binding and by-reference lifetime are library-owned, while ingress routing
+  and fallback remain worker-owned.
+- `torch_compiled_graphs.spans` owns the compile attribution vocabulary and
+  closure invariant used across the worker child boundary.
 
 The package root exposes only the engine lifecycle, graph-class declarations,
 result/value types, error types, the single `COMPILED_GRAPH_FORMAT` authority,

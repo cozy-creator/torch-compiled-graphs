@@ -17,6 +17,7 @@ from .declaration import GraphClassDeclaration, GraphClassSpec, RuntimeCompatibi
 from .host_isa import HostISAError, _admit_host
 from .identity import CompiledGraphKey, toolchain_axis_digest
 from .introspection import DeclaredConstant, declared_constants
+from .runner import CompiledGraphRunner
 from .storage import (
     QuarantinedArtifact,
     StorageError,
@@ -177,12 +178,14 @@ class Engine:
         toolchain: Mapping[str, str],
     ) -> None:
         requested_target = str(target).strip().lower()
-        requested_toolchain = {
-            str(name): str(value) for name, value in toolchain.items()
-        }
-        if not requested_target or not requested_toolchain or any(
-            not name or name != name.strip() or not value or value != value.strip()
-            for name, value in requested_toolchain.items()
+        requested_toolchain = {str(name): str(value) for name, value in toolchain.items()}
+        if (
+            not requested_target
+            or not requested_toolchain
+            or any(
+                not name or name != name.strip() or not value or value != value.strip()
+                for name, value in requested_toolchain.items()
+            )
         ):
             raise AdmissionError("ensure requires target and a recorded toolchain block")
         stored_target = compiled_graph.metadata.get("sm")
@@ -214,6 +217,14 @@ class Engine:
 
         return self._store.export_artifact(key, destination)
 
+    def runner(
+        self, key: str | CompiledGraphKey, destination: str | Path
+    ) -> CompiledGraphRunner | None:
+        """Resolve the exact selected artifact and load its gated AOTI runner."""
+
+        graph = self.resolve(key, destination)
+        return None if graph is None else CompiledGraphRunner(graph)
+
     def _mint(self, plan: _GraphClassPlan) -> StoreResult:
         """Compile, package, verify, and publish one plan into the local CAS."""
 
@@ -234,9 +245,7 @@ class Engine:
                     "graph_witness": plan.declaration.graph_witness,
                     "range_digest": plan.declaration.range_digest,
                     "fork": [[name, value] for name, value in plan.declaration.fork],
-                    "class_dims": [
-                        [name, value] for name, value in plan.declaration.class_dims
-                    ],
+                    "class_dims": [[name, value] for name, value in plan.declaration.class_dims],
                     "strict": plan.declaration.strict,
                     "lora_bucket": plan.declaration.lora_bucket,
                     "literal_values": plan.declaration.literal_values,
@@ -254,6 +263,35 @@ class Engine:
                 literals=literals if literals.is_file() else None,
             )
             return self._store.store(plan.key, artifact)
+
+    def compile(
+        self,
+        spec: GraphClassSpec,
+        runtime: RuntimeCompatibility,
+        destination: str | Path,
+    ) -> EnsureResult:
+        """Compile or reuse one self-derived graph class under sealed policy."""
+
+        plan = self._plan(spec, runtime)
+        try:
+            existing = self.resolve(plan.key, destination)
+        except QuarantinedArtifact:
+            existing = None
+        if existing is not None:
+            self._admit(plan, existing)
+            return EnsureResult(EnsureOutcome.REUSED, existing)
+
+        publication = self._mint(plan)
+        resolved = self.resolve(plan.key, destination)
+        if resolved is None:
+            raise StorageError(f"compiled graph {plan.key} disappeared after publication")
+        self._admit(plan, resolved)
+        outcome = (
+            EnsureOutcome.REUSED
+            if publication.outcome == StoreOutcome.DIVERGENT
+            else EnsureOutcome.MINTED
+        )
+        return EnsureResult(outcome, resolved, publication.outcome)
 
     def ensure(
         self,
