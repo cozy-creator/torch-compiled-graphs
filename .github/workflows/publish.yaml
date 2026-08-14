@@ -61,8 +61,10 @@ jobs:
           import sys
 
           from torch_compiled_graphs import is_compiled_graph_key
+          from torch_compiled_graphs.contracts import read_contract
 
           assert is_compiled_graph_key("cg-key-v1-" + "0" * 56)
+          assert read_contract("compiled_graph_key_vectors.json")
           assert "torch" not in sys.modules
           PY
 

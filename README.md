@@ -76,6 +76,11 @@ populate the same HashRepo objects/manifests, then call
 `Engine.import_artifact(key, path)` for verified attachment; compilation remains
 local-first and transport-independent.
 
+The versioned identity corpora used by non-Python consumers ship under
+`torch_compiled_graphs.contracts`. `read_contract(name)` reads their canonical
+bytes from an installed wheel; consumers pin the package version and corpus
+SHA-256 rather than fetching a moving source branch.
+
 ## CLI
 
 ```bash
