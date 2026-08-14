@@ -16,6 +16,7 @@ _LEGACY_PEER_PROJECTION = (
 def test_canonical_contracts_are_importable_package_data() -> None:
     assert CONTRACT_FILES == (
         "KEY_GRAMMAR_DIGEST",
+        "call_ingress_v1.json",
         "compiled_graph_key_vectors.json",
         "graph_class_identity_v3.json",
         "literal_identity_v1.json",

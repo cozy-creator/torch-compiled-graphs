@@ -324,7 +324,10 @@ def validate_metadata(
     metadata = cast(dict[str, Any], decoded)
     if set(metadata) != _TOP_LEVEL_FIELDS:
         raise ArtifactError(f"metadata fields must be exactly {sorted(_TOP_LEVEL_FIELDS)!r}")
-    if metadata.get(_COMPILED_GRAPH_FORMAT_AXIS) != COMPILED_GRAPH_FORMAT:
+    if (
+        type(metadata.get(_COMPILED_GRAPH_FORMAT_AXIS)) is not int
+        or metadata.get(_COMPILED_GRAPH_FORMAT_AXIS) != COMPILED_GRAPH_FORMAT
+    ):
         raise ArtifactError(
             f"{_COMPILED_GRAPH_FORMAT_AXIS} must be {COMPILED_GRAPH_FORMAT}"
         )

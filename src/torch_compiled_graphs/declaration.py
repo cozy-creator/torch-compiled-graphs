@@ -11,6 +11,7 @@ from typing import Any
 
 from .host_isa import HostISAError, _impose_host_policy
 from .identity import CompiledGraphKey, _facts_digest, from_axes, toolchain_axis_digest
+from .ingress import CallIngress, IngressError
 
 _GRAPH_CLASS_CANONICAL_FORMAT = 1
 _GRAPH_DIGEST_HEX = 16
@@ -364,7 +365,7 @@ class GraphClassDeclaration:
                 "graph_class graph interface fields must be exactly "
                 f"{sorted(_GRAPH_INTERFACE_FIELDS)!r}, with literal_values only when present"
             )
-        if canonical_graph.get("v") != 3:
+        if type(canonical_graph.get("v")) is not int or canonical_graph.get("v") != 3:
             raise DeclarationError("graph_class graph interface v must be 3")
         for field in ("constant_fqns", "lifted_inputs"):
             values = canonical_graph.get(field)
@@ -380,6 +381,10 @@ class GraphClassDeclaration:
             raise DeclarationError(
                 "graph_class graph interface pytree and specialization must be objects"
             )
+        try:
+            ingress = CallIngress.from_graph(canonical_graph)
+        except IngressError as exc:
+            raise DeclarationError(f"graph_class call ingress is invalid: {exc}") from exc
         if len(self.graph_witness) != _GRAPH_DIGEST_HEX or any(
             character not in "0123456789abcdef" for character in self.graph_witness
         ):
@@ -390,6 +395,8 @@ class GraphClassDeclaration:
             character not in "0123456789abcdef" for character in self.range_digest
         ):
             raise DeclarationError("range_digest must be 32 lowercase hexadecimal characters")
+        if self.range_digest != ingress.digest():
+            raise DeclarationError("range_digest does not restate graph.pytree.ingress")
         fork = tuple((str(name), value) for name, value in self.fork)
         if any(not name or name != name.strip() for name, _ in fork):
             raise DeclarationError("graph_class fork names must be non-empty canonical strings")
@@ -469,7 +476,6 @@ class GraphClassSpec:
     target: str
     program: object
     graph: Mapping[str, Any]
-    range_digest: str
     fork: tuple[tuple[str, Any], ...] = ()
     class_dims: tuple[tuple[str, int], ...] = ()
     strict: bool = True
@@ -498,12 +504,16 @@ class GraphClassSpec:
             raise DeclarationError(
                 "graph interface states literal_values but the exported program has none"
             )
+        try:
+            range_digest = CallIngress.from_graph(graph).digest()
+        except IngressError as exc:
+            raise DeclarationError(f"graph_class call ingress is invalid: {exc}") from exc
         return GraphClassDeclaration(
             self.graph_class,
             self.target,
             graph,
             graph_witness,
-            self.range_digest,
+            range_digest,
             fork=self.fork,
             class_dims=self.class_dims,
             strict=self.strict,

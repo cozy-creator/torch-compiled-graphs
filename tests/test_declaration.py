@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any
 
 import pytest
 
-from torch_compiled_graphs import GraphClassDeclaration, GraphClassSpec, RuntimeCompatibility
+from torch_compiled_graphs import (
+    CallIngress,
+    CallInput,
+    DeclarationError,
+    GraphClassDeclaration,
+    GraphClassSpec,
+    RuntimeCompatibility,
+)
 from torch_compiled_graphs.contracts import read_contract
 from torch_compiled_graphs.declaration import _graph_digest
 
@@ -49,13 +57,20 @@ def exported(module: Any) -> Any:
     return torch.export.export(module, (torch.ones(2),))
 
 
-GRAPH_INTERFACE = {
+GRAPH_INTERFACE: dict[str, Any] = {
     "v": 3,
     "lifted_inputs": [],
-    "pytree": {"in": "leaf", "out": "leaf"},
+    "pytree": {
+        "in": "leaf",
+        "out": "leaf",
+        "ingress": CallIngress(
+            parameters=("value",),
+            flat_arity=1,
+            inputs=(CallInput("value", 0, "value", 0, (), "value", "float32", (2,)),),
+        ).as_dict(),
+    },
     "specialization": {},
 }
-RANGE_DIGEST = "0" * 32
 
 
 def spec(graph_class: str, target: str, program: object) -> GraphClassSpec:
@@ -64,7 +79,6 @@ def spec(graph_class: str, target: str, program: object) -> GraphClassSpec:
         target,
         program,
         GRAPH_INTERFACE,
-        RANGE_DIGEST,
     )
 
 
@@ -77,6 +91,35 @@ def test_declaration_keys_graph_structure_but_not_weight_values() -> None:
     assert len(first.graph_witness) == 16
     assert first.class_hash != changed_body.class_hash
     assert len(first.class_hash) == 16
+
+
+def test_call_ingress_is_required_rekeys_and_owns_range_digest() -> None:
+    program = exported(Operation())
+    first = spec("model", "denoiser", program).declare()
+    changed_graph = copy.deepcopy(GRAPH_INTERFACE)
+    changed_ingress = CallIngress.decode(changed_graph["pytree"]["ingress"])
+    changed_graph["pytree"]["ingress"] = CallIngress(
+        parameters=changed_ingress.parameters,
+        flat_arity=changed_ingress.flat_arity,
+        inputs=(
+            CallInput("value", 0, "value", 0, (), "value", "float32", (3,)),
+        ),
+    ).as_dict()
+    changed = GraphClassSpec("model", "denoiser", program, changed_graph).declare()
+
+    assert first.range_digest == CallIngress.from_graph(first.graph).digest()
+    assert changed.range_digest != first.range_digest
+    assert changed.class_hash != first.class_hash
+
+    missing = copy.deepcopy(GRAPH_INTERFACE)
+    del missing["pytree"]["ingress"]
+    with pytest.raises(DeclarationError, match="declares no call ingress"):
+        GraphClassSpec("model", "denoiser", program, missing).declare()
+
+    numeric_alias = copy.deepcopy(GRAPH_INTERFACE)
+    numeric_alias["v"] = 3.0
+    with pytest.raises(DeclarationError, match="graph interface v must be 3"):
+        GraphClassSpec("model", "denoiser", program, numeric_alias).declare()
 
 
 def test_lifted_literal_values_ride_inside_graph_interface_and_rekey() -> None:
