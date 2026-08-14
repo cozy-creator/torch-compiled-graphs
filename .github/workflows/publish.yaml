@@ -60,10 +60,9 @@ jobs:
           /tmp/torch-compiled-graphs-wheel/bin/python - <<'PY'
           import sys
 
-          from torch_compiled_graphs import from_axes
+          from torch_compiled_graphs import is_compiled_graph_key
 
-          key = from_axes({"graph": "g", "sm": "sm_89", "toolchain": "t"})
-          assert str(key).startswith("cg-key-v1-")
+          assert is_compiled_graph_key("cg-key-v1-" + "0" * 64)
           assert "torch" not in sys.modules
           PY
 

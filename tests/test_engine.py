@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import errno
 import inspect
+import os
+import platform
+import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -14,6 +18,7 @@ import pytest
 from hashrepo import LocalCAS
 
 import torch_compiled_graphs.engine as engine_module
+import torch_compiled_graphs.host_isa as host_isa_module
 from torch_compiled_graphs import (
     AdmissionError,
     Engine,
@@ -21,8 +26,9 @@ from torch_compiled_graphs import (
     GraphSpec,
     RuntimeCompatibility,
     StorageError,
-    from_axes,
 )
+from torch_compiled_graphs.artifact import pack_artifact, read_metadata
+from torch_compiled_graphs.identity import from_axes
 
 torch: Any = pytest.importorskip("torch")
 
@@ -122,6 +128,17 @@ def _fake_compile_package(
     return compile_package
 
 
+def _alternate_artifact(package: Path, source_artifact: Path, output: Path) -> Path:
+    alternate_package = output.with_suffix(".pt2")
+    with zipfile.ZipFile(package) as source, zipfile.ZipFile(alternate_package, "w") as target:
+        for info in source.infolist():
+            data = source.read(info)
+            if info.filename.endswith(".so"):
+                data += b"different but valid package bytes"
+            target.writestr(info, data)
+    return pack_artifact(alternate_package, output, read_metadata(source_artifact))
+
+
 @pytest.fixture(autouse=True)
 def _default_fake_compile_package(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
@@ -131,8 +148,23 @@ def _default_fake_compile_package(
 
 
 def _spec() -> GraphSpec:
-    program = torch.export.export(Double(), (torch.ones(2),))
+    program = torch.export.export(Double(), (torch.ones(4096),))
     return GraphSpec("model", "denoiser", program)
+
+
+def _instruction_prefixes(disassembly: str) -> tuple[str, ...]:
+    return tuple(
+        match.group(1)
+        for match in re.finditer(r"^\s*[0-9a-f]+:\s+([0-9a-f]{2})(?:\s|$)", disassembly, re.M)
+    )
+
+
+def test_disassembly_prefix_classifier_distinguishes_vex_and_evex() -> None:
+    disassembly = """
+       0: c5 fc 58 c1           vaddps %ymm1,%ymm0,%ymm0
+       4: 62 f1 7c 48 58 c1     vaddps %zmm1,%zmm0,%zmm0
+    """
+    assert _instruction_prefixes(disassembly) == ("c5", "62")
 
 
 def _runtime() -> RuntimeCompatibility:
@@ -332,6 +364,27 @@ def test_real_aoti_package_survives_restart_reuse(tmp_path: Path) -> None:
     )
     assert reused.outcome == EnsureOutcome.REUSED
     assert reused.graph.package.read_bytes() == minted.graph.package.read_bytes()
+    assert torch._inductor.aoti_load_package(str(reused.graph.package)) is not None
+
+    if platform.machine() == "x86_64" and shutil.which("objdump") is not None:
+        saw_vex_vector = False
+        with zipfile.ZipFile(reused.graph.package) as archive:
+            objects = [name for name in archive.namelist() if name.endswith(".so")]
+            assert objects
+            for name in objects:
+                extracted = Path(archive.extract(name, tmp_path / "objects"))
+                disassembly = subprocess.run(
+                    ["objdump", "-d", str(extracted)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout
+                prefixes = _instruction_prefixes(disassembly)
+                assert "62" not in prefixes, "generated host code contains an EVEX instruction"
+                saw_vex_vector = saw_vex_vector or any(
+                    prefix in {"c4", "c5"} for prefix in prefixes
+                )
+        assert saw_vex_vector, "vectorizing graph emitted no VEX instruction evidence"
 
 
 @pytest.mark.real_aoti
@@ -398,17 +451,33 @@ def test_program_mutation_during_compile_is_refused(
 
 def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> None:
     source_cas = LocalCAS(tmp_path / "source-cas")
+    source_engine = Engine(source_cas)
     spec = _spec()
     key = _runtime().key(spec.declare())
-    minted = Engine(source_cas).ensure(
+    minted = source_engine.ensure(
         key,
         tmp_path / "minted",
         target="cpu",
         deployment_compatibility="test-image-v1",
         recipe=lambda: spec,
     )
-    manifest = source_cas.load_manifest(minted.graph.manifest)
-    fetched = source_cas.materialize(manifest.files[0], tmp_path / "fetched.tar.gz")
+    fetched = source_engine.export_artifact(key, tmp_path / "fetched.tar.gz")
+    assert source_engine.export_artifact(key, fetched) == fetched
+    occupied = tmp_path / "occupied.tar.gz"
+    occupied.write_bytes(b"do not overwrite")
+    with pytest.raises(FileExistsError, match="not the selected"):
+        source_engine.export_artifact(key, occupied)
+    assert occupied.read_bytes() == b"do not overwrite"
+
+    divergent = _alternate_artifact(
+        minted.graph.package,
+        fetched,
+        tmp_path / "divergent.tar.gz",
+    )
+    divergent_bytes = divergent.read_bytes()
+    with pytest.raises(FileExistsError, match="not the selected"):
+        source_engine.export_artifact(key, divergent)
+    assert divergent.read_bytes() == divergent_bytes
 
     destination_cas = LocalCAS(tmp_path / "destination-cas")
     imported = Engine(destination_cas).import_artifact(key, fetched)
@@ -420,6 +489,88 @@ def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> 
     wrong = from_axes({"graph": "wrong", "sm": "cpu", "toolchain": "wrong"})
     with pytest.raises(StorageError, match="expected"):
         Engine(destination_cas).import_artifact(wrong, fetched)
+
+
+def test_export_refuses_a_corrupt_cas_object(tmp_path: Path) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    engine = Engine(cas)
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    result = engine.ensure(
+        key,
+        tmp_path / "minted",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
+    )
+    manifest = cas.load_manifest(result.graph.manifest)
+    cas.object_path(manifest.files[0].digest).write_bytes(b"corrupt")
+    with pytest.raises(StorageError, match="export verification"):
+        engine.export_artifact(key, tmp_path / "corrupt.tar.gz")
+    assert not (tmp_path / "corrupt.tar.gz").exists()
+
+
+def test_export_race_refuses_a_different_same_key_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    engine = Engine(cas)
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    minted = engine.ensure(
+        key,
+        tmp_path / "minted",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
+    )
+    selected = engine.export_artifact(key, tmp_path / "selected.tar.gz")
+    divergent = _alternate_artifact(
+        minted.graph.package,
+        selected,
+        tmp_path / "divergent.tar.gz",
+    )
+    destination = tmp_path / "racing.tar.gz"
+    divergent_bytes = divergent.read_bytes()
+
+    def lose_race(source: object, target: object) -> None:
+        destination.write_bytes(divergent_bytes)
+        raise FileExistsError(errno.EEXIST, "simulated winner", target)
+
+    monkeypatch.setattr(os, "link", lose_race)
+    with pytest.raises(FileExistsError, match="not the selected"):
+        engine.export_artifact(key, destination)
+    assert destination.read_bytes() == divergent_bytes
+
+
+def test_host_isa_admission_refuses_cross_machine_and_missing_features(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    engine = Engine(cas)
+    spec = _spec()
+    runtime = _runtime()
+    key = runtime.key(spec.declare())
+    engine.ensure(
+        key,
+        tmp_path / "minted",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
+    )
+
+    actual_machine = platform.machine().lower()
+    other_machine = "aarch64" if actual_machine != "aarch64" else "x86_64"
+    monkeypatch.setattr(platform, "machine", lambda: other_machine)
+    with pytest.raises(AdmissionError, match="artifact host code"):
+        engine.resolve(key, tmp_path / "cross-machine")
+
+    monkeypatch.setattr(platform, "machine", lambda: actual_machine)
+    required = runtime.toolchain["host_isa_features"]
+    if required != "none":
+        monkeypatch.setattr(host_isa_module, "_cpu_features", frozenset)
+        with pytest.raises(AdmissionError, match="this host lacks"):
+            engine.resolve(key, tmp_path / "missing-features")
 
 
 def test_two_process_resolves_converge_on_one_destination(tmp_path: Path) -> None:

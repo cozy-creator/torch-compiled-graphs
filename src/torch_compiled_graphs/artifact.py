@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, cast
 
 from .declaration import DeclarationError, GraphDeclaration, _update_literal_digest
+from .host_isa import HostISAError, _validate_host_facts
 from .identity import from_artifact_metadata, is_compiled_graph_key
 from .introspection import (
     PackageIntrospectionError,
@@ -316,6 +317,10 @@ def validate_metadata(
         )
     ):
         raise ArtifactError("toolchain must contain non-empty string facts")
+    try:
+        _validate_host_facts(cast(dict[str, str], toolchain))
+    except HostISAError as exc:
+        raise ArtifactError(f"toolchain host ISA facts are invalid: {exc}") from exc
     entry = metadata.get("entry")
     if not isinstance(entry, dict):
         raise ArtifactError("metadata must contain one entry object")

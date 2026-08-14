@@ -7,13 +7,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from hashrepo import LocalCAS
 
-from .artifact import build_metadata, pack_artifact
-from .compiler import compile_exported_program, package_compiled_files
+from .artifact import build_metadata, pack_artifact, read_metadata
+from .compiler import _compile_exported_program, _package_compiled_files
 from .declaration import GraphDeclaration, GraphSpec, RuntimeCompatibility
+from .host_isa import HostISAError, _admit_host
 from .identity import CompiledGraphKey
 from .introspection import DeclaredConstant, declared_constants
 from .storage import (
@@ -89,8 +90,8 @@ def _write_literals(program: object, constants: tuple[DeclaredConstant, ...], ta
 
 
 def _compile_package(plan: _GraphPlan, workspace: Path) -> Path:
-    files = compile_exported_program(plan.spec.program)
-    return package_compiled_files(
+    files = _compile_exported_program(plan.spec.program)
+    return _package_compiled_files(
         plan.declaration.entry,
         files,
         workspace / "model.pt2",
@@ -107,6 +108,16 @@ class Engine:
     def _plan(spec: GraphSpec, runtime: RuntimeCompatibility) -> _GraphPlan:
         declaration = spec.declare()
         return _GraphPlan(spec, declaration, runtime, runtime.key(declaration))
+
+    @staticmethod
+    def _admit_host_metadata(metadata: Mapping[str, object]) -> None:
+        toolchain = metadata.get("toolchain")
+        if not isinstance(toolchain, Mapping):
+            raise AdmissionError("artifact records no toolchain")
+        try:
+            _admit_host(cast(Mapping[str, str], toolchain))
+        except HostISAError as exc:
+            raise AdmissionError(f"artifact host ISA is unsupported: {exc}") from exc
 
     @staticmethod
     def _admit(plan: _GraphPlan, graph: StoredGraph) -> None:
@@ -139,7 +150,11 @@ class Engine:
     def resolve(self, key: str | CompiledGraphKey, destination: str | Path) -> StoredGraph | None:
         """Resolve and verify an exact key without importing Torch or building a program."""
 
-        return self._store.resolve(key, destination)
+        graph = self._store.resolve(key, destination)
+        if graph is None:
+            return None
+        self._admit_host_metadata(graph.metadata)
+        return graph
 
     @staticmethod
     def _admit_request(graph: StoredGraph, *, target: str, deployment_compatibility: str) -> None:
@@ -170,7 +185,13 @@ class Engine:
     def import_artifact(self, key: str | CompiledGraphKey, artifact: str | Path) -> StoreResult:
         """Fully verify and attach bytes fetched by HashRepo under one exact key."""
 
+        self._admit_host_metadata(read_metadata(artifact))
         return self._store.store(key, artifact)
+
+    def export_artifact(self, key: str | CompiledGraphKey, destination: str | Path) -> Path:
+        """Export a fully verified artifact without exposing HashRepo ref layout."""
+
+        return self._store.export_artifact(key, destination)
 
     def _mint(self, plan: _GraphPlan) -> StoreResult:
         """Compile, package, verify, and publish one plan into the local CAS."""

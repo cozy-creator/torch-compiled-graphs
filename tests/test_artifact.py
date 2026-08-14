@@ -7,12 +7,12 @@ import struct
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from torch_compiled_graphs import (
-    ArtifactError,
-    GraphDeclaration,
+from torch_compiled_graphs import ArtifactError, GraphDeclaration
+from torch_compiled_graphs.artifact import (
     build_metadata,
     pack_artifact,
     read_metadata,
@@ -77,7 +77,18 @@ def metadata(*, literal: bytes | None = None) -> dict[str, object]:
             "constants": constants,
         },
         sm="sm_89",
-        toolchain={"torch": "record-digest", "triton": "compiler-digest"},
+        toolchain={
+            "torch": "record-digest",
+            "triton": "compiler-digest",
+            "machine": "x86_64",
+            "host_isa_level": "x86-64-v3",
+            "host_isa_features": (
+                "abm,avx,avx2,bmi1,bmi2,cx16,f16c,fma,lahf_lm,movbe,popcnt,"
+                "sse4_1,sse4_2,ssse3,xsave"
+            ),
+            "cpp_march": "x86-64-v3",
+            "cpp_simdlen": "256",
+        },
     )
 
 
@@ -236,6 +247,22 @@ def test_stamped_key_must_restate_recorded_facts() -> None:
     raw = metadata()
     raw["sm"] = "sm_90"
     with pytest.raises(ArtifactError, match="does not restate"):
+        validate_metadata(raw)
+
+
+def test_unstamped_host_isa_is_refused() -> None:
+    raw = metadata()
+    del cast(dict[str, object], raw["toolchain"])["host_isa_level"]
+    with pytest.raises(ArtifactError, match="missing host ISA facts"):
+        validate_metadata(raw)
+
+
+def test_above_v3_host_isa_is_refused() -> None:
+    raw = metadata()
+    toolchain = cast(dict[str, object], raw["toolchain"])
+    toolchain["host_isa_level"] = "x86-64-v4"
+    toolchain["cpp_march"] = "x86-64-v4"
+    with pytest.raises(ArtifactError, match="exceeds the v3 cap"):
         validate_metadata(raw)
 
 

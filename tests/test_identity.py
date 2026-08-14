@@ -6,11 +6,13 @@ import pytest
 from hashrepo import LocalCAS
 
 from torch_compiled_graphs import (
+    CompiledGraphKey,
     Engine,
     IdentityError,
     StorageError,
-    from_axes,
+    is_compiled_graph_key,
 )
+from torch_compiled_graphs.identity import from_axes
 
 
 def test_key_is_stable_and_has_only_the_three_compilation_axes() -> None:
@@ -34,6 +36,26 @@ def test_a_key_cannot_be_hashed_as_an_input_fact() -> None:
     key = str(from_axes({"graph": "g", "sm": "s", "toolchain": "t"}))
     with pytest.raises(IdentityError, match="not an identity fact"):
         from_axes({"graph": key, "sm": "s", "toolchain": "t"})
+
+
+def test_public_boundary_validator_accepts_only_the_key_shape() -> None:
+    key = str(from_axes({"graph": "g", "sm": "s", "toolchain": "t"}))
+    assert is_compiled_graph_key(key)
+    assert not is_compiled_graph_key(key.upper())
+    assert not is_compiled_graph_key("not-a-key")
+
+    class StringLike:
+        def __str__(self) -> str:
+            return key
+
+    assert not is_compiled_graph_key(StringLike())
+
+
+def test_compiled_key_constructor_enforces_the_three_canonical_axes() -> None:
+    with pytest.raises(IdentityError, match="axes must be exactly"):
+        CompiledGraphKey((("bogus", "axis"),))
+    with pytest.raises(IdentityError, match="canonical string 'sm'"):
+        CompiledGraphKey((("graph", "g"), ("sm", " cpu"), ("toolchain", "t")))
 
 
 @pytest.mark.parametrize(
