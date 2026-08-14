@@ -11,7 +11,8 @@ from typing import cast
 
 import pytest
 
-from torch_compiled_graphs import ArtifactError, GraphDeclaration
+import torch_compiled_graphs.artifact as artifact_module
+from torch_compiled_graphs import COMPILED_GRAPH_FORMAT, ArtifactError, GraphClassDeclaration
 from torch_compiled_graphs.artifact import (
     build_metadata,
     pack_artifact,
@@ -23,14 +24,19 @@ from torch_compiled_graphs.cli import main
 
 
 def literal_digest(
-    data: bytes, *, name: str = "table", dtype: str = "float32", shape: tuple[int, ...] = (2, 2)
+    data: bytes,
+    *,
+    name: str = "table",
+    dtype: str = "torch.float32",
+    shape: tuple[int, ...] = (2, 2),
 ) -> str:
     digest = hashlib.sha256()
-    digest.update(name.encode() + b"\0")
-    digest.update(dtype.encode("ascii") + b"\0")
-    digest.update(json.dumps(shape, separators=(",", ":")).encode("ascii") + b"\0")
+    digest.update(name.encode())
+    digest.update(b"\0")
+    digest.update(dtype.encode())
+    digest.update(str(tuple(shape)).encode())
     digest.update(data)
-    return digest.hexdigest()
+    return digest.hexdigest()[:32]
 
 
 def safetensors_file(
@@ -60,18 +66,36 @@ def metadata(*, literal: bytes | None = None) -> dict[str, object]:
         if literal is not None
         else []
     )
-    declaration = GraphDeclaration(
-        "denoiser/h=64,w=64",
-        "unet",
-        "fedcba9876543210" * 4,
-        literal_values=literal_digest(literal) if literal is not None else "",
+    digest = literal_digest(literal) if literal is not None else ""
+    graph: dict[str, object] = {
+        "v": 3,
+        "constant_fqns": ["table"] if literal is not None else [],
+        "lifted_inputs": [],
+        "pytree": {"in": "leaf", "out": "leaf"},
+        "specialization": {},
+    }
+    if digest:
+        graph["literal_values"] = digest
+    declaration = GraphClassDeclaration(
+        graph_class="denoiser/h=64,w=64",
+        target="unet",
+        graph=graph,
+        graph_witness="fedcba9876543210",
+        range_digest="0123456789abcdef" * 2,
+        literal_values=digest,
     )
     return build_metadata(
-        entry={
-            "name": declaration.entry,
+        graph_class={
+            "name": declaration.graph_class,
             "target": declaration.target,
             "class_hash": declaration.class_hash,
-            "graph": declaration.graph,
+            "graph": dict(declaration.graph),
+            "graph_witness": declaration.graph_witness,
+            "range_digest": declaration.range_digest,
+            "fork": [],
+            "class_dims": [],
+            "strict": True,
+            "lora_bucket": 0,
             "literal_values": declaration.literal_values,
             "placement": list(declaration.placement),
             "constants": constants,
@@ -80,6 +104,8 @@ def metadata(*, literal: bytes | None = None) -> dict[str, object]:
         toolchain={
             "torch": "record-digest",
             "triton": "compiler-digest",
+        },
+        host_isa={
             "machine": "x86_64",
             "host_isa_level": "x86-64-v3",
             "host_isa_features": (
@@ -150,7 +176,7 @@ def test_artifact_is_deterministic_and_unpacks_atomically(tmp_path: Path) -> Non
     unpacked = unpack_artifact(first, destination)
     assert unpacked == metadata()
     assert (destination / "model.pt2").read_bytes() == package.read_bytes()
-    assert read_metadata(first)["compiled_graph_format"] == 1
+    assert read_metadata(first)["compiled_graph_format"] == COMPILED_GRAPH_FORMAT == 1
 
     assert main(["verify", str(first)]) == 0
 
@@ -250,25 +276,37 @@ def test_stamped_key_must_restate_recorded_facts() -> None:
         validate_metadata(raw)
 
 
+def test_one_format_symbol_controls_stamp_and_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(artifact_module, "COMPILED_GRAPH_FORMAT", 7)
+    stamped = metadata()
+    assert stamped["compiled_graph_format"] == 7
+    retired = dict(stamped)
+    retired["compiled_graph_format"] = 1
+    with pytest.raises(ArtifactError, match="compiled_graph_format must be 7"):
+        validate_metadata(retired)
+
+
 def test_unstamped_host_isa_is_refused() -> None:
     raw = metadata()
-    del cast(dict[str, object], raw["toolchain"])["host_isa_level"]
+    del cast(dict[str, object], raw["host_isa"])["host_isa_level"]
     with pytest.raises(ArtifactError, match="missing host ISA facts"):
         validate_metadata(raw)
 
 
 def test_above_v3_host_isa_is_refused() -> None:
     raw = metadata()
-    toolchain = cast(dict[str, object], raw["toolchain"])
-    toolchain["host_isa_level"] = "x86-64-v4"
-    toolchain["cpp_march"] = "x86-64-v4"
+    host_isa = cast(dict[str, object], raw["host_isa"])
+    host_isa["host_isa_level"] = "x86-64-v4"
+    host_isa["cpp_march"] = "x86-64-v4"
     with pytest.raises(ArtifactError, match="exceeds the v3 cap"):
         validate_metadata(raw)
 
 
 def test_class_hash_must_restate_declaration_facts() -> None:
     raw = metadata()
-    raw["entry"]["graph"] = "0" * 64  # type: ignore[index]
+    raw["graph_class"]["graph_witness"] = "0" * 16  # type: ignore[index]
     with pytest.raises(ArtifactError, match="class_hash does not restate"):
         validate_metadata(raw)
 
@@ -284,12 +322,12 @@ def test_class_hash_must_restate_declaration_facts() -> None:
 )
 def test_constant_manifest_rows_fail_closed(row: dict[str, object]) -> None:
     raw = metadata()
-    raw["entry"]["constants"] = [row]  # type: ignore[index]
-    with pytest.raises(ArtifactError, match="entry constant"):
+    raw["graph_class"]["constants"] = [row]  # type: ignore[index]
+    with pytest.raises(ArtifactError, match="graph_class constant"):
         validate_metadata(raw)
 
 
-@pytest.mark.parametrize("retired", ["format", "entries"])
+@pytest.mark.parametrize("retired", ["format", "entry", "entries"])
 def test_v1_refuses_retired_artifact_shapes(retired: str) -> None:
     raw = metadata()
     raw[retired] = 3 if retired == "format" else {}

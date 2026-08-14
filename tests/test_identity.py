@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,7 @@ from torch_compiled_graphs import (
     StorageError,
     is_compiled_graph_key,
 )
-from torch_compiled_graphs.identity import from_axes
+from torch_compiled_graphs.identity import from_axes, toolchain_axis_digest
 
 
 def test_key_is_stable_and_has_only_the_three_compilation_axes() -> None:
@@ -21,8 +23,22 @@ def test_key_is_stable_and_has_only_the_three_compilation_axes() -> None:
         b'{"graph":"fedcba9876543210","sm":"sm_89","toolchain":"0123456789abcdef"}'
     )
     assert str(key) == (
-        "cg-key-v1-aefe4c6d52d304f8ef7cc6f9ffae296113b1546defe761e1c12ac2cf521e8fce"
+        "cg-key-v1-aefe4c6d52d304f8ef7cc6f9ffae296113b1546defe761e1c12ac2cf"
     )
+
+
+def test_toolchain_axis_and_final_key_match_current_worker_golden_vector() -> None:
+    vector = json.loads(
+        (Path(__file__).parent / "testdata" / "toolchain_identity_v1.json").read_text()
+    )
+    axis = toolchain_axis_digest(vector["block"])
+    assert axis == vector["toolchain_axis"]
+    assert str(
+        from_axes({"graph": vector["graph"], "sm": vector["sm"], "toolchain": axis})
+    ) == vector["key"]
+    changed_model_libraries = dict(vector["block"])
+    changed_model_libraries.update(diffusers="changed", transformers="changed", peft="changed")
+    assert toolchain_axis_digest(changed_model_libraries) == axis
 
 
 def test_unknown_or_missing_axes_are_refused() -> None:
@@ -51,6 +67,19 @@ def test_public_boundary_validator_accepts_only_the_key_shape() -> None:
     assert not is_compiled_graph_key(StringLike())
 
 
+def test_public_boundary_validator_matches_shared_key_corpus() -> None:
+    data = Path(__file__).parent / "testdata"
+    corpus = data / "compiled_graph_key_vectors.json"
+    recorded = next(
+        line.strip()
+        for line in (data / "KEY_GRAMMAR_DIGEST").read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    )
+    assert hashlib.sha256(corpus.read_bytes()).hexdigest() == recorded
+    vectors = json.loads(corpus.read_text())["vectors"]
+    assert all(is_compiled_graph_key(row["key"]) is row["valid"] for row in vectors)
+
+
 def test_compiled_key_constructor_enforces_the_three_canonical_axes() -> None:
     with pytest.raises(IdentityError, match="axes must be exactly"):
         CompiledGraphKey((("bogus", "axis"),))
@@ -61,12 +90,16 @@ def test_compiled_key_constructor_enforces_the_three_canonical_axes() -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        "future-scheme-" + "0" * 64,
-        "cg-key-v1-" + "A" * 64,
-        "cg-key-v1-" + "0" * 63,
-        "cg-key-v1-" + "0" * 64 + "\n",
+        "cg-key-v1-" + "A" * 56,
+        "cg-key-v1-" + "0" * 55,
+        "cg-key-v1-" + "0" * 56 + "\n",
     ],
 )
 def test_public_resolve_refuses_noncanonical_keys(value: str, tmp_path: Path) -> None:
-    with pytest.raises(StorageError, match="cg-key-v1"):
+    with pytest.raises(StorageError, match="compiled-graph key"):
         Engine(LocalCAS(tmp_path / "cas")).resolve(value, tmp_path / "graph")
+
+
+def test_public_resolve_accepts_a_future_scheme_as_a_clean_miss(tmp_path: Path) -> None:
+    key = "future-scheme-" + "0" * 56
+    assert Engine(LocalCAS(tmp_path / "cas")).resolve(key, tmp_path / "graph") is None

@@ -16,9 +16,9 @@ from pathlib import Path
 from hashrepo import CASRef, DigestMismatch, FileEntry, LocalCAS, RefConflict, RepositoryManifest
 
 from .artifact import ArtifactError, _fsync_dir, _verify_materialized, unpack_artifact
-from .identity import KEY_SCHEME, CompiledGraphKey, is_compiled_graph_key
+from .identity import CompiledGraphKey, is_compiled_graph_key
 
-_ARTIFACT_PATH = "compiled-graph.tar.gz"
+_COMPILED_GRAPH_PATH = "compiled_graph.tar.gz"
 _REF_PREFIX = "torch-compiled-graphs/v1"
 
 
@@ -45,8 +45,8 @@ class StoreResult:
 
 
 @dataclass(frozen=True, slots=True)
-class StoredGraph:
-    """One verified artifact materialized for a caller."""
+class StoredCompiledGraph:
+    """One verified compiled graph materialized for a caller."""
 
     key: str
     directory: Path
@@ -66,7 +66,7 @@ class StoredGraph:
 def _key_value(key: str | CompiledGraphKey) -> str:
     value = str(key)
     if not is_compiled_graph_key(value):
-        raise StorageError(f"v1 storage requires a {KEY_SCHEME} key")
+        raise StorageError("v1 storage requires a compiled-graph key")
     return value
 
 
@@ -78,7 +78,7 @@ def _quarantine_ref(key: str, manifest: CASRef) -> str:
     return f"{_REF_PREFIX}/quarantine/{key}/{manifest.digest}"
 
 
-class _GraphStore:
+class _CompiledGraphStore:
     """Compiled-graph naming, immutability, and quarantine over one ``LocalCAS``."""
 
     def __init__(self, cas: LocalCAS) -> None:
@@ -86,7 +86,7 @@ class _GraphStore:
 
     @staticmethod
     def _file(manifest: RepositoryManifest) -> FileEntry:
-        if len(manifest.files) != 1 or manifest.files[0].path != _ARTIFACT_PATH:
+        if len(manifest.files) != 1 or manifest.files[0].path != _COMPILED_GRAPH_PATH:
             raise StorageError("compiled-graph manifest must contain exactly its v1 artifact")
         return manifest.files[0]
 
@@ -124,7 +124,7 @@ class _GraphStore:
         value = _key_value(key)
         source = Path(artifact)
         with tempfile.TemporaryDirectory(prefix="torch-compiled-graphs-import-") as raw:
-            owned = Path(raw) / _ARTIFACT_PATH
+            owned = Path(raw) / _COMPILED_GRAPH_PATH
             shutil.copyfile(source, owned)
             with owned.open("rb") as handle:
                 os.fsync(handle.fileno())
@@ -134,7 +134,7 @@ class _GraphStore:
                     f"artifact states key {metadata.get('compiled_graph_key')!r}, "
                     f"expected {value!r}"
                 )
-            file = self.cas.ingest_file(owned, manifest_path=_ARTIFACT_PATH)
+            file = self.cas.ingest_file(owned, manifest_path=_COMPILED_GRAPH_PATH)
         candidate = self.cas.store_manifest(RepositoryManifest((file,)))
         ref_name = _graph_ref(value)
         current = self.cas.read_ref(ref_name)
@@ -248,7 +248,9 @@ class _GraphStore:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def resolve(self, key: str | CompiledGraphKey, destination: str | Path) -> StoredGraph | None:
+    def resolve(
+        self, key: str | CompiledGraphKey, destination: str | Path
+    ) -> StoredCompiledGraph | None:
         """Materialize and fully verify one exact key, or return a clean miss."""
 
         value = _key_value(key)
@@ -263,7 +265,7 @@ class _GraphStore:
             metadata = _verify_materialized(target)
             if metadata.get("compiled_graph_key") != value:
                 raise FileExistsError(f"destination {target} contains a different graph")
-            return StoredGraph(value, target, metadata, manifest_ref)
+            return StoredCompiledGraph(value, target, metadata, manifest_ref)
         target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, raw_archive = tempfile.mkstemp(
             prefix="graph-", suffix=".tar.gz", dir=target.parent
@@ -305,9 +307,9 @@ class _GraphStore:
                     raise FileExistsError(
                         f"destination {target} contains a different graph"
                     ) from exc
-                return StoredGraph(value, target, winner, manifest_ref)
+                return StoredCompiledGraph(value, target, winner, manifest_ref)
             _fsync_dir(target.parent)
-            return StoredGraph(value, target, metadata, manifest_ref)
+            return StoredCompiledGraph(value, target, metadata, manifest_ref)
         except QuarantinedArtifact:
             raise
         except (OSError, ArtifactError):

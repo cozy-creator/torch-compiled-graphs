@@ -4,23 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-import platform
 import re
-import shutil
-import subprocess
-import sys
-import sysconfig
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from functools import lru_cache
-from importlib.metadata import PackageNotFoundError, version
-from pathlib import Path
 from typing import Any
 
 from .host_isa import HostISAError, _impose_host_policy
 from .identity import CompiledGraphKey, _facts_digest, from_axes, toolchain_axis_digest
 
-CANONICAL_GRAPH_FORMAT = 1
+_GRAPH_CLASS_CANONICAL_FORMAT = 1
+_GRAPH_DIGEST_HEX = 16
+_GRAPH_INTERFACE_FIELDS = frozenset(
+    ("v", "constant_fqns", "lifted_inputs", "pytree", "specialization")
+)
 
 
 class DeclarationError(ValueError):
@@ -114,12 +110,8 @@ def _render_argument(value: Any, names: dict[Any, str], symbols: _Symbols) -> st
 
 def _render_tensor(value: Any, symbols: _Symbols, *, include_device: bool) -> str:
     shape = ",".join(_render_symbol(dimension, symbols) for dimension in value.shape)
-    layout = str(value.layout)
-    stride = "-"
-    if layout == "torch.strided":
-        stride = ",".join(_render_symbol(dimension, symbols) for dimension in value.stride())
-    device = f"|device={value.device.type}" if include_device else ""
-    return f"t({value.dtype}|shape=[{shape}]|stride=[{stride}]|layout={layout}{device})"
+    device = f"|{value.device.type}" if include_device else ""
+    return f"t({value.dtype}|[{shape}]{device})"
 
 
 def _target(node: Any) -> str:
@@ -194,19 +186,10 @@ def _signature_lines(program: Any) -> list[str]:
             kind = getattr(kind_object, "name", str(kind_object or ""))
             target = getattr(spec, "target", None) or "-"
             lines.append(f"sig {direction} {index} kind={kind} target={target}")
-    call_spec = getattr(program, "call_spec", None)
-    for direction, spec in (
-        ("in", getattr(call_spec, "in_spec", None)),
-        ("out", getattr(call_spec, "out_spec", None)),
-    ):
+    for attribute, direction in (("_in_spec", "in"), ("_out_spec", "out")):
+        spec = getattr(program, attribute, None)
         if spec is not None:
-            try:
-                import torch.utils._pytree as pytree
-
-                rendered = str(pytree.treespec_dumps(spec))
-            except Exception:
-                rendered = repr(spec)
-            lines.append(f"spec {direction} {rendered}".replace("\n", " "))
+            lines.append(f"spec {direction} {spec!s}".replace("\n", " "))
     return lines
 
 
@@ -218,7 +201,7 @@ def _canonical_graph(program: object) -> tuple[str, ...]:
     if not isinstance(program, torch.export.ExportedProgram):
         raise DeclarationError("v1 declarations require a torch.export.ExportedProgram")
     symbols = _Symbols()
-    lines = [f"v={CANONICAL_GRAPH_FORMAT} ir=export"]
+    lines = [f"v={_GRAPH_CLASS_CANONICAL_FORMAT} ir=export"]
     lines.extend(_graph_lines(program.graph_module.graph, symbols))
     lines.extend(_range_lines(program.range_constraints, symbols))
     lines.extend(_signature_lines(program))
@@ -226,8 +209,14 @@ def _canonical_graph(program: object) -> tuple[str, ...]:
 
 
 def _graph_digest(program: object) -> str:
+    # 64 bits, DERIVED and deliberately kept at v1. This graph-body witness is
+    # one fact folded into GraphClassDeclaration.class_hash, which is itself a
+    # 16-hex choke point. Birthday bound P ~= N^2 / 2^65: about 3e-12 at 10^4
+    # graph classes and 3e-8 at 10^6. Widening only this site rekeys the corpus
+    # while leaving graph-axis collision resistance at 64 bits, so BOTH
+    # choke points move together or neither does.
     payload = "\n".join(_canonical_graph(program)).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return hashlib.sha256(payload).hexdigest()[:_GRAPH_DIGEST_HEX]
 
 
 def _literal_names(program: object) -> tuple[str, ...]:
@@ -240,6 +229,17 @@ def _literal_names(program: object) -> tuple[str, ...]:
     names = {str(name) for name in getattr(signature, "lifted_tensor_constants", ()) or ()}
     names.update(str(name) for name in (getattr(program, "constants", {}) or {}))
     return tuple(sorted(names - state))
+
+
+def _constant_names(program: object) -> tuple[str, ...]:
+    signature = getattr(program, "graph_signature", None)
+    names = {
+        str(name)
+        for field in ("parameters", "buffers", "lifted_tensor_constants")
+        for name in (getattr(signature, field, ()) or ())
+    }
+    names.update(str(name) for name in (getattr(program, "constants", {}) or {}))
+    return tuple(sorted(names))
 
 
 def _literal_digest(program: object) -> str:
@@ -259,15 +259,15 @@ def _literal_digest(program: object) -> str:
             _update_literal_digest(
                 digest,
                 name=name,
-                dtype=str(value.dtype).removeprefix("torch."),
+                dtype=str(value.dtype),
                 shape=tuple(value.shape),
-                chunks=(bytes(tensor.view(torch.uint8)),),
+                chunks=(tensor.view(torch.uint8).numpy().tobytes(),),
             )
         except Exception as exc:
             raise DeclarationError(
                 f"literal constant {name!r} could not be digested: {type(exc).__name__}: {exc}"
             ) from exc
-    return digest.hexdigest()
+    return digest.hexdigest()[:32]
 
 
 def _update_literal_digest(
@@ -280,9 +280,10 @@ def _update_literal_digest(
 ) -> None:
     """Update a v1 literal digest from canonical facts and bounded byte chunks."""
 
-    digest.update(name.encode("utf-8") + b"\0")
-    digest.update(dtype.encode("ascii") + b"\0")
-    digest.update(json.dumps(shape, separators=(",", ":")).encode("ascii") + b"\0")
+    digest.update(name.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(dtype.encode("utf-8"))
+    digest.update(str(tuple(shape)).encode("utf-8"))
     for chunk in chunks:
         digest.update(chunk)
 
@@ -314,241 +315,252 @@ def _placement(program: object) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True, slots=True)
-class GraphDeclaration:
+class GraphClassDeclaration:
     """Immutable graph facts shared by lookup, mint, and admission."""
 
-    entry: str
+    graph_class: str
     target: str
-    graph: str
+    graph: Mapping[str, Any]
+    graph_witness: str
+    range_digest: str
+    fork: tuple[tuple[str, Any], ...] = ()
+    class_dims: tuple[tuple[str, int], ...] = ()
+    strict: bool = True
+    lora_bucket: int = 0
     literal_values: str = ""
     placement: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        entry = self.entry.strip()
+        graph_class = self.graph_class.strip()
         target = self.target.strip()
-        if not entry or not target:
-            raise DeclarationError("entry and target must be non-empty")
-        if "\\" in entry or any(part in ("", ".", "..") for part in entry.split("/")):
-            raise DeclarationError(f"unsafe entry name {entry!r}")
-        if len(self.graph) != 64 or any(
-            character not in "0123456789abcdef" for character in self.graph
+        if not graph_class or not target:
+            raise DeclarationError("graph_class and target must be non-empty")
+        if "\\" in graph_class or any(
+            part in ("", ".", "..") for part in graph_class.split("/")
         ):
-            raise DeclarationError("graph digest must be 64 lowercase hexadecimal characters")
+            raise DeclarationError(f"unsafe graph_class name {graph_class!r}")
+        if not isinstance(self.graph, Mapping) or not self.graph:
+            raise DeclarationError("graph_class graph interface must be a non-empty object")
+        try:
+            canonical_graph = json.loads(
+                json.dumps(dict(self.graph), sort_keys=True, allow_nan=False)
+            )
+        except (TypeError, ValueError) as exc:
+            raise DeclarationError(
+                f"graph_class graph interface is not finite JSON: {exc}"
+            ) from exc
+        if not isinstance(canonical_graph, dict) or not canonical_graph:
+            raise DeclarationError("graph_class graph interface must be a non-empty object")
+        graph_fields = set(canonical_graph)
+        if graph_fields not in (
+            _GRAPH_INTERFACE_FIELDS,
+            _GRAPH_INTERFACE_FIELDS | {"literal_values"},
+        ):
+            raise DeclarationError(
+                "graph_class graph interface fields must be exactly "
+                f"{sorted(_GRAPH_INTERFACE_FIELDS)!r}, with literal_values only when present"
+            )
+        if canonical_graph.get("v") != 3:
+            raise DeclarationError("graph_class graph interface v must be 3")
+        for field in ("constant_fqns", "lifted_inputs"):
+            values = canonical_graph.get(field)
+            if not isinstance(values, list) or not all(
+                isinstance(value, str) and value for value in values
+            ) or values != sorted(set(values)):
+                raise DeclarationError(
+                    f"graph_class graph interface {field} must be sorted unique strings"
+                )
+        if not isinstance(canonical_graph.get("pytree"), dict) or not isinstance(
+            canonical_graph.get("specialization"), dict
+        ):
+            raise DeclarationError(
+                "graph_class graph interface pytree and specialization must be objects"
+            )
+        if len(self.graph_witness) != _GRAPH_DIGEST_HEX or any(
+            character not in "0123456789abcdef" for character in self.graph_witness
+        ):
+            raise DeclarationError(
+                "graph_witness must be 16 lowercase hexadecimal characters"
+            )
+        if len(self.range_digest) != 32 or any(
+            character not in "0123456789abcdef" for character in self.range_digest
+        ):
+            raise DeclarationError("range_digest must be 32 lowercase hexadecimal characters")
+        fork = tuple((str(name), value) for name, value in self.fork)
+        if any(not name or name != name.strip() for name, _ in fork):
+            raise DeclarationError("graph_class fork names must be non-empty canonical strings")
+        try:
+            json.dumps([[name, value] for name, value in fork], allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise DeclarationError(f"graph_class fork is not finite JSON: {exc}") from exc
+        if fork != tuple(sorted(fork, key=lambda item: item[0])):
+            raise DeclarationError("graph_class fork must be sorted by name")
+        class_dims = tuple((str(name), value) for name, value in self.class_dims)
+        if any(
+            not name
+            or name != name.strip()
+            or type(value) is not int
+            for name, value in class_dims
+        ):
+            raise DeclarationError("graph_class dimensions must be canonical name/integer pairs")
+        if class_dims != tuple(sorted(class_dims, key=lambda item: item[0])):
+            raise DeclarationError("graph_class dimensions must be sorted by name")
+        if type(self.strict) is not bool:
+            raise DeclarationError("graph_class strict must be a boolean")
+        if type(self.lora_bucket) is not int:
+            raise DeclarationError("graph_class lora_bucket must be an integer")
         if self.literal_values and (
-            len(self.literal_values) != 64
+            len(self.literal_values) != 32
             or any(character not in "0123456789abcdef" for character in self.literal_values)
         ):
             raise DeclarationError(
-                "literal-values digest must be 64 lowercase hexadecimal characters"
+                "literal-values digest must be 32 lowercase hexadecimal characters"
             )
-        object.__setattr__(self, "entry", entry)
+        graph_literals = canonical_graph.get("literal_values")
+        if graph_literals != (self.literal_values or None):
+            raise DeclarationError(
+                "graph interface literal_values must exactly match the compiled-graph payload"
+            )
+        object.__setattr__(self, "graph_class", graph_class)
         object.__setattr__(self, "target", target)
-        canonical_placement = tuple(sorted(set(self.placement)))
+        object.__setattr__(self, "graph", canonical_graph)
+        object.__setattr__(self, "fork", fork)
+        object.__setattr__(self, "class_dims", class_dims)
+        canonical_placement = tuple(sorted({str(device) for device in self.placement if device}))
         if len(canonical_placement) == 1:
             raise DeclarationError("single-device placement must be omitted")
         object.__setattr__(self, "placement", canonical_placement)
 
     def facts(self) -> dict[str, object]:
         facts: dict[str, object] = {
-            "v": 1,
-            "entry": self.entry,
+            "v": 3,
             "target": self.target,
-            "graph": self.graph,
+            "fork": [[name, value] for name, value in self.fork],
+            "class_dims": [[name, value] for name, value in self.class_dims],
+            "range_digest": self.range_digest,
+            "graph": dict(self.graph),
+            "graph_witness": self.graph_witness,
+            "strict": self.strict,
+            "lora_bucket": self.lora_bucket,
         }
-        if self.literal_values:
-            facts["literal_values"] = self.literal_values
         if len(self.placement) > 1:
             facts["placement"] = list(self.placement)
         return facts
 
     @property
     def class_hash(self) -> str:
-        return _facts_digest(self.facts())
+        # 64 bits, DERIVED and deliberately kept at v1. THIS is the `graph`
+        # axis's graph-class identity and the second 16-hex choke point; the
+        # other is _graph_digest, which produces one fact above. The axis has
+        # the MINIMUM of the two. Birthday bound P ~= N^2 / 2^65: about 3e-12
+        # at 10^4 graph classes and 3e-8 at 10^6. Widen both or neither.
+        return _facts_digest(self.facts())[:_GRAPH_DIGEST_HEX]
 
 
 @dataclass(frozen=True, slots=True)
-class GraphSpec:
+class GraphClassSpec:
     """A named exported program ready for local resolution or minting."""
 
-    entry: str
+    graph_class: str
     target: str
     program: object
+    graph: Mapping[str, Any]
+    range_digest: str
+    fork: tuple[tuple[str, Any], ...] = ()
+    class_dims: tuple[tuple[str, int], ...] = ()
+    strict: bool = True
+    lora_bucket: int = 0
 
-    def declare(self) -> GraphDeclaration:
-        graph = _graph_digest(self.program)
+    def declare(self) -> GraphClassDeclaration:
+        graph_witness = _graph_digest(self.program)
         literals = _literal_digest(self.program)
         placement = _placement(self.program)
-        return GraphDeclaration(
-            self.entry,
+        graph = dict(self.graph)
+        constant_fqns = list(_constant_names(self.program))
+        stated_constants = graph.get("constant_fqns")
+        if stated_constants not in (None, constant_fqns):
+            raise DeclarationError(
+                "graph interface constant_fqns disagrees with the exported program"
+            )
+        graph["constant_fqns"] = constant_fqns
+        if literals:
+            stated = graph.get("literal_values")
+            if stated not in (None, literals):
+                raise DeclarationError(
+                    "graph interface literal_values disagrees with the exported program"
+                )
+            graph["literal_values"] = literals
+        elif "literal_values" in graph:
+            raise DeclarationError(
+                "graph interface states literal_values but the exported program has none"
+            )
+        return GraphClassDeclaration(
+            self.graph_class,
             self.target,
             graph,
+            graph_witness,
+            self.range_digest,
+            fork=self.fork,
+            class_dims=self.class_dims,
+            strict=self.strict,
+            lora_bucket=self.lora_bucket,
             literal_values=literals,
             placement=placement if len(placement) > 1 else (),
         )
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while chunk := source.read(1 << 20):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _command_fingerprint(command: str) -> tuple[str, str, str]:
-    resolved = shutil.which(command)
-    if resolved is None:
-        raise DeclarationError(f"AOTInductor C++ compiler {command!r} is unavailable")
-    try:
-        version = subprocess.run(
-            [resolved, "--version"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout
-        library = subprocess.run(
-            [resolved, "-print-file-name=libstdc++.so.6"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise DeclarationError(
-            f"cannot fingerprint AOTInductor compiler {resolved}: {exc}"
-        ) from exc
-    library_path = Path(library)
-    if not library_path.is_file():
-        raise DeclarationError(f"compiler did not resolve libstdc++.so.6: {library!r}")
-    return (
-        Path(resolved).name,
-        hashlib.sha256(version.encode("utf-8")).hexdigest(),
-        _sha256_file(library_path),
-    )
-
-
-def _cuda_driver_version() -> str:
-    import ctypes
-
-    try:
-        driver = ctypes.CDLL("libcuda.so.1")
-        version = ctypes.c_int()
-        result = driver.cuDriverGetVersion(ctypes.byref(version))
-    except (AttributeError, OSError) as exc:
-        raise DeclarationError(f"CUDA target requires a readable driver version: {exc}") from exc
-    if result != 0 or version.value <= 0:
-        raise DeclarationError(f"CUDA driver version query failed with status {result}")
-    return str(version.value)
-
-
-@lru_cache(maxsize=8)
-def _detected_toolchain(
-    target: str,
-    deployment_compatibility: str,
-    host_facts: tuple[tuple[str, str], ...],
-) -> tuple[tuple[str, str], ...]:
-    import torch
-
-    try:
-        import torch._inductor.config as inductor_config
-    except ImportError as exc:
-        raise DeclarationError("PyTorch AOTInductor is required") from exc
-    try:
-        triton_version = version("triton")
-    except PackageNotFoundError as exc:
-        raise DeclarationError("Triton is required") from exc
-    from .compiler import _compiler_options
-
-    abi = sysconfig.get_config_var("SOABI")
-    multiarch = sysconfig.get_config_var("MULTIARCH")
-    libc_name, libc_version = platform.libc_ver()
-    cache_tag = sys.implementation.cache_tag
-    torch_git = getattr(torch.version, "git_version", None)
-    if not all((abi, multiarch, libc_name, libc_version, cache_tag, torch_git)):
-        raise DeclarationError(
-            "runtime cannot derive complete Python, platform, libc, and Torch build facts"
-        )
-
-    configured = getattr(inductor_config.cpp, "cxx", ())
-    candidates = configured if isinstance(configured, (list, tuple)) else (configured,)
-    compiler = next((str(item) for item in candidates if item), "g++")
-    compiler_name, compiler_version, libstdcxx = _command_fingerprint(compiler)
-    facts = {
-        "compile_settings": json.dumps(
-            _compiler_options(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
-        ),
-        "compiler": compiler_name,
-        "compiler_version_sha256": compiler_version,
-        "deployment_compatibility": deployment_compatibility,
-        "inductor": str(torch_git),
-        "libc": f"{libc_name}-{libc_version}",
-        "libstdcxx_sha256": libstdcxx,
-        "platform": sys.platform,
-        "python_abi": str(abi),
-        "python_cache_tag": str(cache_tag),
-        "python_multiarch": str(multiarch),
-        "torch": str(torch.__version__),
-        "torch_build_sha256": hashlib.sha256(torch.__config__.show().encode("utf-8")).hexdigest(),
-        "torch_cxx11_abi": str(torch.compiled_with_cxx11_abi()),
-        "triton": triton_version,
-    }
-    facts.update(host_facts)
-    if target.startswith("sm_"):
-        cuda_runtime = getattr(torch.version, "cuda", None)
-        if not cuda_runtime or not torch.cuda.is_available():
-            raise DeclarationError("CUDA target requires a compatible visible CUDA device")
-        cuda_capability = torch.cuda.get_device_capability()
-        actual = f"sm_{cuda_capability[0]}{cuda_capability[1]}"
-        if target != actual:
-            raise DeclarationError(f"requested CUDA target {target!r} does not match {actual!r}")
-        facts["cuda_driver"] = _cuda_driver_version()
-        facts["cuda_runtime"] = str(cuda_runtime)
-    else:
-        cpu_capability = torch.backends.cpu.get_cpu_capability()
-        if target != f"cpu-{cpu_capability.lower()}":
-            raise DeclarationError(
-                f"CPU target {target!r} does not match capability {cpu_capability!r}"
-            )
-        facts["cpu_target"] = cpu_capability
-    if any(not value for value in facts.values()):
-        raise DeclarationError("runtime derived an empty compatibility fact")
-    return tuple(sorted(facts.items()))
-
-
 @dataclass(frozen=True, slots=True, init=False)
 class RuntimeCompatibility:
-    """Library-derived compiler/runtime facts for one current execution target."""
+    """Recorded compiler facts plus the current host policy for one target."""
 
     sm: str
     _toolchain: tuple[tuple[str, str], ...]
+    _host_isa: tuple[tuple[str, str], ...]
 
-    def __init__(self, target: str, *, deployment_compatibility: str) -> None:
+    def __init__(self, target: str, *, toolchain: Mapping[str, str]) -> None:
         requested = str(target).strip().lower()
-        deployment = str(deployment_compatibility).strip()
-        if not deployment:
-            raise DeclarationError("runtime requires an explicit deployment_compatibility axis")
         if requested == "cpu":
             import torch
 
             architecture = f"cpu-{torch.backends.cpu.get_cpu_capability().lower()}"
         elif re.fullmatch(r"sm_[0-9]+", requested):
-            architecture = requested
+            import torch
+
+            if not torch.cuda.is_available():
+                raise DeclarationError("CUDA target requires a compatible visible CUDA device")
+            major, minor = torch.cuda.get_device_capability()
+            architecture = f"sm_{major}{minor}"
+            if requested != architecture:
+                raise DeclarationError(
+                    f"requested CUDA target {requested!r} does not match {architecture!r}"
+                )
         else:
             raise DeclarationError("runtime target must be 'cpu' or a concrete 'sm_NN'")
+        cleaned = tuple(sorted((str(name), str(value)) for name, value in toolchain.items()))
+        if not cleaned or any(
+            not name or name != name.strip() or not value or value != value.strip()
+            for name, value in cleaned
+        ):
+            raise DeclarationError(
+                "runtime requires a worker-recorded toolchain block of non-empty strings"
+            )
         try:
             host_facts = tuple(sorted(_impose_host_policy().items()))
         except HostISAError as exc:
             raise DeclarationError(f"cannot establish host ISA policy: {exc}") from exc
-        cleaned = _detected_toolchain(architecture, deployment, host_facts)
         object.__setattr__(self, "sm", architecture)
         object.__setattr__(self, "_toolchain", cleaned)
+        object.__setattr__(self, "_host_isa", host_facts)
 
     @property
     def toolchain(self) -> dict[str, str]:
         return dict(self._toolchain)
 
-    def key(self, declaration: GraphDeclaration) -> CompiledGraphKey:
+    @property
+    def host_isa(self) -> dict[str, str]:
+        return dict(self._host_isa)
+
+    def key(self, declaration: GraphClassDeclaration) -> CompiledGraphKey:
         return from_axes(
             {
                 "graph": declaration.class_hash,

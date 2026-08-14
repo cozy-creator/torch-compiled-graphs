@@ -8,19 +8,22 @@ formats.
 An artifact carries one `compiled_graph_key` with this canonical derivation:
 
 ```text
-cg-key-v1- + full lowercase hexadecimal
+cg-key-v1- + first 56 lowercase hexadecimal characters of
 SHA-256(canonical JSON({graph, sm, toolchain}))
 ```
 
 The three axes are exhaustive:
 
-- `graph`: the full SHA-256 class hash of the canonical traced computation,
-  including input tensor shape, stride, layout, dtype, and placement facts;
+- `graph`: the 16-hex graph-class hash of the current facts-v3 fold. It binds
+  target, fork, class dimensions, ingress-range digest, graph-interface facts,
+  the 16-hex canonical body witness, strictness, LoRA bucket, and multi-device
+  placement when present. The display graph-class name does not key;
 - `sm`: the concrete CUDA compute capability or CPU target; and
-- `toolchain`: a full SHA-256 digest of library-derived Torch/Inductor, Triton,
-  Python ABI/platform/arch, CUDA or CPU, compiler, libc/libstdc++, fixed compile
-  settings, host ISA requirement, and the required deployment-compatibility
-  axis.
+- `toolchain`: the 16-hex current-worker digest of an explicit recorded
+  compiler-content block. The block carries the settings declaration,
+  loaded-library digest, installed Torch/Triton/NVIDIA distribution RECORD
+  digests, and bundled CUDA binary digests. Trace-only `diffusers`,
+  `transformers`, and `peft` records are removed by the one membership rule.
 
 Family, checkpoint, weights, declaration-wide coverage, and trace-time model
 libraries are not axes. Facts that alter the trace arrive through `graph`;
@@ -33,7 +36,7 @@ The artifact is a deterministic gzip-compressed USTAR archive with exactly:
 ```text
 metadata.json
 model.pt2
-constants.safetensors  # present only when the entry declares literals
+constants.safetensors  # present only when the graph class declares literals
 ```
 
 All tar timestamps and ownership fields and the gzip timestamp are zero.
@@ -45,19 +48,22 @@ Required top-level metadata includes:
 - `compiled_graph_format: 1`;
 - `kind: "aot-inductor"`;
 - `compiled_graph_key`, which must be exactly derivable from the recorded facts;
-- `entry`, with non-empty `name`, `target`, `class_hash`, and `graph`, plus
-  `literal_values`, `placement`, and a `constants` array. `class_hash` must be
-  recomputable from those declaration facts;
-- non-empty `sm` and `toolchain` facts;
+- `graph_class`, with non-empty `name`, `target`, `class_hash`,
+  `graph_witness`, and `range_digest`; a non-empty `graph` interface object;
+  canonical `fork`, `class_dims`, `strict`, `lora_bucket`, and `placement`
+  facts; plus `literal_values` and a `constants` array. `class_hash` must be
+  recomputable from the exact facts-v3 fold;
+- non-empty `sm` and worker-recorded `toolchain` facts;
+- a separate `host_isa` requirement;
 - `package_constants_in_so: false`; and
 - `constant_folding_fenced: true`.
 
-Those are the exact v1 top-level and entry fields; extensions and abandoned
+Those are the exact v1 top-level and graph-class fields; extensions and abandoned
 pre-launch shapes are refused. Readers reject missing, duplicate, non-file, or
 unexpected archive members and materialize only into a new directory.
 
-The toolchain must include `machine`, `host_isa_level`, `host_isa_features`,
-`cpp_march`, and `cpp_simdlen`. x86-64 writers cap `cpp_march` at
+The `host_isa` object must include `machine`, `host_isa_level`,
+`host_isa_features`, `cpp_march`, and `cpp_simdlen`. x86-64 writers cap `cpp_march` at
 `x86-64-v3`, record only the cumulative features required by that level, and
 use a matching 128- or 256-bit SIMD width. Other machines record `native` plus
 the CPU features common to every processor reported by Linux. Readers reject
@@ -71,7 +77,17 @@ refused. A `literal` row requires `constants.safetensors`, and that payload is
 forbidden otherwise. Readers validate its bounded header and exact names,
 dtypes, shapes, byte ranges, and full value digest before admission. The
 package's own AOTInductor wrapper remains the authority for classification.
+Literal identity is the first 32 lowercase hexadecimal characters of SHA-256
+over each sorted FQN, a NUL byte, `str(torch.dtype)`, `str(tuple(shape))`, and
+the contiguous raw uint8 tensor bytes. There are no separators after dtype or
+shape. The same routine validates `constants.safetensors`; changing name,
+dtype, shape, or value rekeys, while state-dict weight bytes do not.
 
 Package release versions are ordinary SemVer and start at `0.1.0`. They are
 independent from this internal v1. Before launch, this one accepted v1 may be
 replaced in place; the package does not carry dual readers or writers.
+
+A compiled graph contains one graph class. This format therefore emits no
+bundle list. Any layer that groups several compiled graphs names that list
+`compiled_graph_manifest`; HashRepo's generic `RepositoryManifest` remains a
+byte-storage record and is not the compiled-graph bundle contract.

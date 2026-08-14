@@ -23,7 +23,7 @@ from torch_compiled_graphs import (
     AdmissionError,
     Engine,
     EnsureOutcome,
-    GraphSpec,
+    GraphClassSpec,
     RuntimeCompatibility,
     StorageError,
 )
@@ -121,7 +121,7 @@ def _fake_compile_package(
             mutate()
         result = package(
             str(workspace / "model.pt2"),
-            {plan.declaration.entry: ["wrapper.cpp", "model.so"]},
+            {plan.declaration.graph_class: ["wrapper.cpp", "model.so"]},
         )
         return Path(str(result))
 
@@ -147,9 +147,24 @@ def _default_fake_compile_package(
         monkeypatch.setattr(engine_module, "_compile_package", _fake_compile_package())
 
 
-def _spec() -> GraphSpec:
+def _spec_for(program: object) -> GraphClassSpec:
+    return GraphClassSpec(
+        "model",
+        "denoiser",
+        program,
+        {
+            "v": 3,
+            "lifted_inputs": [],
+            "pytree": {"in": "leaf", "out": "leaf"},
+            "specialization": {},
+        },
+        "0" * 32,
+    )
+
+
+def _spec() -> GraphClassSpec:
     program = torch.export.export(Double(), (torch.ones(4096),))
-    return GraphSpec("model", "denoiser", program)
+    return _spec_for(program)
 
 
 def _instruction_prefixes(disassembly: str) -> tuple[str, ...]:
@@ -168,7 +183,16 @@ def test_disassembly_prefix_classifier_distinguishes_vex_and_evex() -> None:
 
 
 def _runtime() -> RuntimeCompatibility:
-    return RuntimeCompatibility("cpu", deployment_compatibility="test-image-v1")
+    return RuntimeCompatibility("cpu", toolchain=_toolchain())
+
+
+def _toolchain(*, torch_digest: str = "torch-record-v1") -> dict[str, str]:
+    return {
+        "settings_declaration": "settings-v1",
+        "loaded_libs": "loaded-libs-v1",
+        "torch": torch_digest,
+        "triton": "triton-record-v1",
+    }
 
 
 def test_engine_signatures_expose_no_output_changing_compile_seam() -> None:
@@ -185,24 +209,24 @@ def test_fresh_engine_reuses_local_hashrepo_without_compiling(tmp_path: Path) ->
         key,
         tmp_path / "first",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
     assert first.outcome == EnsureOutcome.MINTED
-    assert first.graph.package.is_file()
+    assert first.compiled_graph.package.is_file()
 
-    def must_not_construct() -> GraphSpec:
+    def must_not_construct() -> GraphClassSpec:
         raise AssertionError("restart reuse invoked the lazy recipe")
 
     second = Engine(LocalCAS(cas_root)).ensure(
         key,
         tmp_path / "second",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=must_not_construct,
     )
     assert second.outcome == EnsureOutcome.REUSED
-    assert second.graph.package.read_bytes() == first.graph.package.read_bytes()
+    assert second.compiled_graph.package.read_bytes() == first.compiled_graph.package.read_bytes()
 
     cold_destination = tmp_path / "cold-process"
     cold = subprocess.run(
@@ -219,7 +243,8 @@ def forbidden_recipe():
     raise AssertionError("cache hit invoked recipe")
 result = Engine(LocalCAS(sys.argv[1])).ensure(
     sys.argv[2], Path(sys.argv[3]), target="cpu",
-    deployment_compatibility="test-image-v1", recipe=forbidden_recipe,
+    toolchain={"settings_declaration":"settings-v1","loaded_libs":"loaded-libs-v1","torch":"torch-record-v1","triton":"triton-record-v1"},
+    recipe=forbidden_recipe,
 )
 assert result.outcome == EnsureOutcome.REUSED
 assert "torch" not in sys.modules
@@ -244,7 +269,7 @@ assert "torch" not in sys.modules
             "resolve",
             "--cas-root",
             str(cas_root),
-            first.graph.key,
+            first.compiled_graph.key,
             str(process_destination),
         ],
         check=True,
@@ -255,15 +280,15 @@ assert "torch" not in sys.modules
 
 
 @pytest.mark.parametrize(
-    ("target", "deployment", "pattern"),
+    ("target", "torch_digest", "pattern"),
     [
-        ("sm_90", "test-image-v1", "stored target"),
-        ("cpu", "different-image", "stored deployment_compatibility"),
+        ("sm_90", "torch-record-v1", "stored target"),
+        ("cpu", "different-record", "stored toolchain axis"),
     ],
 )
 def test_cache_hit_rejects_requested_runtime_mismatch_without_recipe(
     target: str,
-    deployment: str,
+    torch_digest: str,
     pattern: str,
     tmp_path: Path,
 ) -> None:
@@ -274,11 +299,11 @@ def test_cache_hit_rejects_requested_runtime_mismatch_without_recipe(
         key,
         tmp_path / "seed",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
 
-    def forbidden_recipe() -> GraphSpec:
+    def forbidden_recipe() -> GraphClassSpec:
         raise AssertionError("mismatched cache hit invoked recipe")
 
     with pytest.raises(AdmissionError, match=pattern):
@@ -286,9 +311,34 @@ def test_cache_hit_rejects_requested_runtime_mismatch_without_recipe(
             key,
             tmp_path / "mismatch",
             target=target,
-            deployment_compatibility=deployment,
+            toolchain=_toolchain(torch_digest=torch_digest),
             recipe=forbidden_recipe,
         )
+
+
+def test_cache_hit_ignores_trace_only_model_library_records(tmp_path: Path) -> None:
+    cas_root = tmp_path / "cas"
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    recorded = _toolchain()
+    recorded["diffusers"] = "record-a"
+    Engine(LocalCAS(cas_root)).ensure(
+        key,
+        tmp_path / "seed",
+        target="cpu",
+        toolchain=recorded,
+        recipe=lambda: spec,
+    )
+    current = _toolchain()
+    current["diffusers"] = "record-b"
+    reused = Engine(LocalCAS(cas_root)).ensure(
+        key,
+        tmp_path / "reused",
+        target="cpu",
+        toolchain=current,
+        recipe=lambda: (_ for _ in ()).throw(AssertionError("cache hit invoked recipe")),
+    )
+    assert reused.outcome == EnsureOutcome.REUSED
 
 
 def test_corrupt_local_object_is_quarantined_and_repaired(tmp_path: Path) -> None:
@@ -299,21 +349,21 @@ def test_corrupt_local_object_is_quarantined_and_repaired(tmp_path: Path) -> Non
         key,
         tmp_path / "first",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
-    manifest = cas.load_manifest(first.graph.manifest)
+    manifest = cas.load_manifest(first.compiled_graph.manifest)
     cas.object_path(manifest.files[0].digest).write_bytes(b"corrupt")
 
     repaired = Engine(LocalCAS(tmp_path / "cas")).ensure(
         key,
         tmp_path / "repaired",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
     assert repaired.outcome == EnsureOutcome.MINTED
-    assert repaired.graph.package.is_file()
+    assert repaired.compiled_graph.package.is_file()
 
 
 def test_named_literal_bytes_survive_hashrepo_reuse(
@@ -321,21 +371,17 @@ def test_named_literal_bytes_survive_hashrepo_reuse(
 ) -> None:
     from safetensors.torch import load_file
 
-    spec = GraphSpec(
-        "model",
-        "denoiser",
-        torch.export.export(WithLiteral(), (torch.ones(2),)),
-    )
+    spec = _spec_for(torch.export.export(WithLiteral(), (torch.ones(2),)))
     monkeypatch.setattr(engine_module, "_compile_package", _fake_compile_package(literal_packager))
     result = Engine(LocalCAS(tmp_path / "cas")).ensure(
         _runtime().key(spec.declare()),
         tmp_path / "graph",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
-    assert result.graph.literals is not None
-    assert load_file(result.graph.literals)["table"].tolist() == [2.0, 3.0]
+    assert result.compiled_graph.literals is not None
+    assert load_file(result.compiled_graph.literals)["table"].tolist() == [2.0, 3.0]
 
 
 @pytest.mark.real_aoti
@@ -350,7 +396,7 @@ def test_real_aoti_package_survives_restart_reuse(tmp_path: Path) -> None:
         key,
         tmp_path / "minted",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
     assert minted.outcome == EnsureOutcome.MINTED
@@ -359,16 +405,16 @@ def test_real_aoti_package_survives_restart_reuse(tmp_path: Path) -> None:
         key,
         tmp_path / "reused",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: (_ for _ in ()).throw(AssertionError("restart reuse rebuilt recipe")),
     )
     assert reused.outcome == EnsureOutcome.REUSED
-    assert reused.graph.package.read_bytes() == minted.graph.package.read_bytes()
-    assert torch._inductor.aoti_load_package(str(reused.graph.package)) is not None
+    assert reused.compiled_graph.package.read_bytes() == minted.compiled_graph.package.read_bytes()
+    assert torch._inductor.aoti_load_package(str(reused.compiled_graph.package)) is not None
 
     if platform.machine() == "x86_64" and shutil.which("objdump") is not None:
         saw_vex_vector = False
-        with zipfile.ZipFile(reused.graph.package) as archive:
+        with zipfile.ZipFile(reused.compiled_graph.package) as archive:
             objects = [name for name in archive.namelist() if name.endswith(".so")]
             assert objects
             for name in objects:
@@ -391,35 +437,27 @@ def test_real_aoti_package_survives_restart_reuse(tmp_path: Path) -> None:
 def test_real_aoti_refuses_a_literal_whose_fqn_the_compiler_erases(tmp_path: Path) -> None:
     """Never guess which exported value an anonymous package constant means."""
 
-    spec = GraphSpec(
-        "model",
-        "denoiser",
-        torch.export.export(WithLiteral(), (torch.ones(2),)),
-    )
+    spec = _spec_for(torch.export.export(WithLiteral(), (torch.ones(2),)))
     with pytest.raises(AdmissionError, match="_tensor_constant0"):
         Engine(LocalCAS(tmp_path / "cas")).ensure(
             _runtime().key(spec.declare()),
             tmp_path / "refused",
             target="cpu",
-            deployment_compatibility="test-image-v1",
+            toolchain=_toolchain(),
             recipe=lambda: spec,
         )
 
 
 def test_lazy_recipe_must_restate_the_requested_key(tmp_path: Path) -> None:
     expected = _spec()
-    changed = GraphSpec(
-        "model",
-        "denoiser",
-        torch.export.export(WithLiteral(), (torch.ones(2),)),
-    )
+    changed = _spec_for(torch.export.export(WithLiteral(), (torch.ones(2),)))
     key = _runtime().key(expected.declare())
     with pytest.raises(AdmissionError, match="lazy recipe derives"):
         Engine(LocalCAS(tmp_path / "cas")).ensure(
             key,
             tmp_path / "graph",
             target="cpu",
-            deployment_compatibility="test-image-v1",
+            toolchain=_toolchain(),
             recipe=lambda: changed,
         )
 
@@ -444,7 +482,7 @@ def test_program_mutation_during_compile_is_refused(
             key,
             tmp_path / "graph",
             target="cpu",
-            deployment_compatibility="test-image-v1",
+            toolchain=_toolchain(),
             recipe=lambda: spec,
         )
 
@@ -458,7 +496,7 @@ def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> 
         key,
         tmp_path / "minted",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
     fetched = source_engine.export_artifact(key, tmp_path / "fetched.tar.gz")
@@ -470,7 +508,7 @@ def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> 
     assert occupied.read_bytes() == b"do not overwrite"
 
     divergent = _alternate_artifact(
-        minted.graph.package,
+        minted.compiled_graph.package,
         fetched,
         tmp_path / "divergent.tar.gz",
     )
@@ -500,10 +538,10 @@ def test_export_refuses_a_corrupt_cas_object(tmp_path: Path) -> None:
         key,
         tmp_path / "minted",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
-    manifest = cas.load_manifest(result.graph.manifest)
+    manifest = cas.load_manifest(result.compiled_graph.manifest)
     cas.object_path(manifest.files[0].digest).write_bytes(b"corrupt")
     with pytest.raises(StorageError, match="export verification"):
         engine.export_artifact(key, tmp_path / "corrupt.tar.gz")
@@ -521,12 +559,12 @@ def test_export_race_refuses_a_different_same_key_winner(
         key,
         tmp_path / "minted",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
     selected = engine.export_artifact(key, tmp_path / "selected.tar.gz")
     divergent = _alternate_artifact(
-        minted.graph.package,
+        minted.compiled_graph.package,
         selected,
         tmp_path / "divergent.tar.gz",
     )
@@ -555,7 +593,7 @@ def test_host_isa_admission_refuses_cross_machine_and_missing_features(
         key,
         tmp_path / "minted",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
 
@@ -566,7 +604,7 @@ def test_host_isa_admission_refuses_cross_machine_and_missing_features(
         engine.resolve(key, tmp_path / "cross-machine")
 
     monkeypatch.setattr(platform, "machine", lambda: actual_machine)
-    required = runtime.toolchain["host_isa_features"]
+    required = runtime.host_isa["host_isa_features"]
     if required != "none":
         monkeypatch.setattr(host_isa_module, "_cpu_features", frozenset)
         with pytest.raises(AdmissionError, match="this host lacks"):
@@ -581,7 +619,7 @@ def test_two_process_resolves_converge_on_one_destination(tmp_path: Path) -> Non
         key,
         tmp_path / "seed",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
     destination = tmp_path / "shared"
@@ -614,7 +652,7 @@ def test_destination_io_error_does_not_quarantine_valid_bytes(
         key,
         tmp_path / "seed",
         target="cpu",
-        deployment_compatibility="test-image-v1",
+        toolchain=_toolchain(),
         recipe=lambda: spec,
     )
     original = LocalCAS.materialize

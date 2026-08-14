@@ -26,7 +26,7 @@ Repository = "https://github.com/cozy-creator/torch-compiled-graphs"
 Issues = "https://github.com/cozy-creator/torch-compiled-graphs/issues"
 
 [project.optional-dependencies]
-torch = ["torch>=2.8"]
+torch = ["numpy>=1.26,<2.3", "torch>=2.8"]
 dev = [
     "mypy>=1.10",
     "pytest>=9.0",
