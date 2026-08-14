@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from hashrepo import LocalCAS
+from hashrepo import CASRef, LocalCAS
 
 import torch_compiled_graphs.engine as engine_module
 import torch_compiled_graphs.host_isa as host_isa_module
@@ -29,7 +29,7 @@ from torch_compiled_graphs import (
     StorageError,
     StoreOutcome,
 )
-from torch_compiled_graphs.artifact import pack_artifact, read_metadata
+from torch_compiled_graphs.artifact import pack_artifact, read_metadata, unpack_artifact
 from torch_compiled_graphs.identity import from_axes
 from torch_compiled_graphs.storage import _CompiledGraphStore, _quarantine_ref
 
@@ -405,7 +405,7 @@ def test_repairing_with_a_previously_divergent_manifest_retires_its_stale_quaran
     assert resolved.manifest == divergent.manifest
 
 
-def test_stale_quarantine_clear_never_removes_a_concurrent_fresh_marker(
+def test_each_quarantine_event_replaces_the_previous_marker_generation(
     tmp_path: Path,
 ) -> None:
     cas = LocalCAS(tmp_path / "cas")
@@ -416,11 +416,71 @@ def test_stale_quarantine_clear_never_removes_a_concurrent_fresh_marker(
     name = _quarantine_ref(key, manifest)
     stale = cas.read_ref(name)
     assert stale is not None
-    fresh = cas.put_bytes(b"fresh quarantine marker")
-    cas.compare_and_swap_ref(name, fresh, expected=stale)
+    store.quarantine(key, manifest)
+    fresh = cas.read_ref(name)
 
+    assert fresh is not None
+    assert fresh != stale
     assert not store._clear_quarantine(key, manifest, stale)
     assert cas.read_ref(name) == fresh
+
+
+def test_repair_cannot_clear_a_concurrent_production_quarantine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    engine = Engine(cas)
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    minted = engine.ensure(
+        key,
+        tmp_path / "minted",
+        target="cpu",
+        toolchain=_toolchain(),
+        recipe=lambda: spec,
+    )
+    artifact_a = engine.export_artifact(key, tmp_path / "artifact-a.tar.gz")
+    artifact_b = _alternate_artifact(
+        minted.compiled_graph.package,
+        artifact_a,
+        tmp_path / "artifact-b.tar.gz",
+    )
+    divergent = engine.import_artifact(key, artifact_b)
+    assert divergent.outcome == StoreOutcome.DIVERGENT
+
+    manifest_a = cas.load_manifest(minted.compiled_graph.manifest)
+    cas.object_path(manifest_a.files[0].digest).write_bytes(b"corrupt-a")
+    with pytest.raises(QuarantinedArtifact, match="CAS verification"):
+        engine.resolve(key, tmp_path / "corrupt-a")
+
+    name = _quarantine_ref(str(key), divergent.manifest)
+    stale = cas.read_ref(name)
+    assert stale is not None
+    original_clear = _CompiledGraphStore._clear_quarantine
+    interleaved = False
+
+    def quarantine_before_clear(
+        store: _CompiledGraphStore,
+        inner_key: str,
+        manifest: CASRef,
+        expected: CASRef,
+    ) -> bool:
+        nonlocal interleaved
+        if not interleaved and inner_key == str(key) and manifest == divergent.manifest:
+            interleaved = True
+            _CompiledGraphStore(cas).quarantine(inner_key, divergent.manifest)
+        return original_clear(store, inner_key, manifest, expected)
+
+    monkeypatch.setattr(_CompiledGraphStore, "_clear_quarantine", quarantine_before_clear)
+    with pytest.raises(QuarantinedArtifact, match="fresh quarantine"):
+        engine.import_artifact(key, artifact_b)
+
+    fresh = cas.read_ref(name)
+    assert interleaved
+    assert fresh is not None
+    assert fresh != stale
+    with pytest.raises(QuarantinedArtifact, match="is quarantined"):
+        engine.resolve(key, tmp_path / "still-quarantined")
 
 
 def test_named_literal_bytes_survive_hashrepo_reuse(
@@ -584,6 +644,65 @@ def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> 
     wrong = from_axes({"graph": "wrong", "sm": "cpu", "toolchain": "wrong"})
     with pytest.raises(StorageError, match="expected"):
         Engine(destination_cas).import_artifact(wrong, fetched)
+
+
+def test_resolve_refuses_an_occupied_same_key_divergent_directory(tmp_path: Path) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    engine = Engine(cas)
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    minted = engine.ensure(
+        key,
+        tmp_path / "minted",
+        target="cpu",
+        toolchain=_toolchain(),
+        recipe=lambda: spec,
+    )
+    selected = engine.export_artifact(key, tmp_path / "selected.tar.gz")
+    divergent = _alternate_artifact(
+        minted.compiled_graph.package,
+        selected,
+        tmp_path / "divergent.tar.gz",
+    )
+    destination = tmp_path / "occupied"
+    unpack_artifact(divergent, destination)
+    divergent_package = (destination / "model.pt2").read_bytes()
+
+    with pytest.raises(FileExistsError, match="not the selected"):
+        engine.resolve(key, destination)
+    assert (destination / "model.pt2").read_bytes() == divergent_package
+
+
+def test_resolve_race_refuses_a_same_key_divergent_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    engine = Engine(cas)
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    minted = engine.ensure(
+        key,
+        tmp_path / "minted",
+        target="cpu",
+        toolchain=_toolchain(),
+        recipe=lambda: spec,
+    )
+    selected = engine.export_artifact(key, tmp_path / "selected.tar.gz")
+    divergent = _alternate_artifact(
+        minted.compiled_graph.package,
+        selected,
+        tmp_path / "divergent.tar.gz",
+    )
+    destination = tmp_path / "racing"
+
+    def lose_race(source: object, target: object) -> None:
+        unpack_artifact(divergent, destination)
+        raise OSError(errno.EEXIST, "simulated winner", target)
+
+    monkeypatch.setattr(os, "rename", lose_race)
+    with pytest.raises(FileExistsError, match="not the selected"):
+        engine.resolve(key, destination)
+    assert (destination / "model.pt2").read_bytes() != minted.compiled_graph.package.read_bytes()
 
 
 def test_export_refuses_a_corrupt_cas_object(tmp_path: Path) -> None:

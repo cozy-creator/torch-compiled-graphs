@@ -16,7 +16,7 @@ from pathlib import Path
 
 from hashrepo import CASRef, DigestMismatch, FileEntry, LocalCAS, RefConflict, RepositoryManifest
 
-from .artifact import ArtifactError, _fsync_dir, _verify_materialized, unpack_artifact
+from .artifact import ArtifactError, _fsync_dir, unpack_artifact
 from .identity import CompiledGraphKey, is_compiled_graph_key
 
 _COMPILED_GRAPH_PATH = "compiled_graph.tar.gz"
@@ -130,10 +130,13 @@ class _CompiledGraphStore:
                 separators=(",", ":"),
             ).encode("ascii")
         )
-        try:
-            self.cas.compare_and_swap_ref(name, marker, expected=None)
-        except RefConflict:
-            pass
+        expected = self.cas.read_ref(name)
+        while True:
+            try:
+                self.cas.compare_and_swap_ref(name, marker, expected=expected)
+                return
+            except RefConflict:
+                expected = self.cas.read_ref(name)
 
     def store(self, key: str | CompiledGraphKey, artifact: str | Path) -> StoreResult:
         """Verify and keep the first bytes published under one exact graph key."""
@@ -243,6 +246,101 @@ class _CompiledGraphStore:
                 f"destination {target} is not the selected compiled-graph artifact"
             )
 
+    @staticmethod
+    def _require_exact_directory(target: Path, expected: Path) -> None:
+        """Accept an occupied directory only when every selected artifact byte won."""
+
+        message = f"destination {target} is not the selected compiled-graph artifact"
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        target_fd: int | None = None
+        expected_fd: int | None = None
+        try:
+            try:
+                target_fd = os.open(target, directory_flags)
+                expected_fd = os.open(expected, directory_flags)
+            except OSError as exc:
+                raise FileExistsError(f"{message}: {exc}") from exc
+            if target_fd is None or expected_fd is None:  # pragma: no cover - os.open returns int
+                raise FileExistsError(message)
+            target_directory_before = os.fstat(target_fd)
+            if not stat.S_ISDIR(target_directory_before.st_mode):
+                raise FileExistsError(message)
+            target_names = set(os.listdir(target_fd))
+            expected_names = set(os.listdir(expected_fd))
+            if target_names != expected_names:
+                raise FileExistsError(message)
+            for name in sorted(expected_names):
+                target_member = os.open(name, file_flags, dir_fd=target_fd)
+                try:
+                    expected_member = os.open(name, file_flags, dir_fd=expected_fd)
+                    try:
+                        target_before = os.fstat(target_member)
+                        expected_before = os.fstat(expected_member)
+                        if (
+                            not stat.S_ISREG(target_before.st_mode)
+                            or not stat.S_ISREG(expected_before.st_mode)
+                            or target_before.st_size != expected_before.st_size
+                        ):
+                            raise FileExistsError(message)
+                        while True:
+                            target_chunk = os.read(target_member, 1 << 20)
+                            expected_chunk = os.read(expected_member, 1 << 20)
+                            if target_chunk != expected_chunk:
+                                raise FileExistsError(message)
+                            if not target_chunk:
+                                break
+                        target_after = os.fstat(target_member)
+                        expected_after = os.fstat(expected_member)
+                        for before, after in (
+                            (target_before, target_after),
+                            (expected_before, expected_after),
+                        ):
+                            if (
+                                before.st_dev != after.st_dev
+                                or before.st_ino != after.st_ino
+                                or before.st_size != after.st_size
+                                or before.st_mtime_ns != after.st_mtime_ns
+                            ):
+                                raise FileExistsError(message)
+                    finally:
+                        os.close(expected_member)
+                finally:
+                    os.close(target_member)
+            target_directory_after = os.fstat(target_fd)
+            current_path = os.stat(target, follow_symlinks=False)
+            if (
+                target_directory_before.st_dev != target_directory_after.st_dev
+                or target_directory_before.st_ino != target_directory_after.st_ino
+                or target_directory_before.st_mtime_ns != target_directory_after.st_mtime_ns
+                or current_path.st_dev != target_directory_after.st_dev
+                or current_path.st_ino != target_directory_after.st_ino
+            ):
+                raise FileExistsError(message)
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            raise FileExistsError(f"{message}: {exc}") from exc
+        finally:
+            if expected_fd is not None:
+                os.close(expected_fd)
+            if target_fd is not None:
+                os.close(target_fd)
+
+    def _require_selected(self, key: str, manifest: CASRef) -> None:
+        """Fail closed if publication or quarantine moved during resolution."""
+
+        if self.cas.read_ref(_graph_ref(key)) != manifest:
+            raise StorageError(f"compiled graph {key} changed during resolution")
+        if self._is_quarantined(key, manifest):
+            raise QuarantinedArtifact(
+                f"compiled graph {key} received a quarantine during resolution"
+            )
+
     def export_artifact(self, key: str | CompiledGraphKey, destination: str | Path) -> Path:
         """Export one exact CAS record as a fully verified artifact envelope."""
 
@@ -297,11 +395,6 @@ class _CompiledGraphStore:
             raise QuarantinedArtifact(f"compiled graph {value} is quarantined")
 
         target = Path(destination)
-        if target.exists():
-            metadata = _verify_materialized(target)
-            if metadata.get("compiled_graph_key") != value:
-                raise FileExistsError(f"destination {target} contains a different graph")
-            return StoredCompiledGraph(value, target, metadata, manifest_ref)
         target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, raw_archive = tempfile.mkstemp(
             prefix="graph-", suffix=".tar.gz", dir=target.parent
@@ -338,13 +431,11 @@ class _CompiledGraphStore:
             except OSError as exc:
                 if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY) or not target.is_dir():
                     raise
-                winner = _verify_materialized(target)
-                if winner.get("compiled_graph_key") != value:
-                    raise FileExistsError(
-                        f"destination {target} contains a different graph"
-                    ) from exc
-                return StoredCompiledGraph(value, target, winner, manifest_ref)
+                self._require_exact_directory(target, candidate)
+                self._require_selected(value, manifest_ref)
+                return StoredCompiledGraph(value, target, metadata, manifest_ref)
             _fsync_dir(target.parent)
+            self._require_selected(value, manifest_ref)
             return StoredCompiledGraph(value, target, metadata, manifest_ref)
         except QuarantinedArtifact:
             raise
