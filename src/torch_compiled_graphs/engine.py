@@ -274,12 +274,15 @@ class Engine:
         with tempfile.TemporaryDirectory(prefix="torch-compiled-graphs-mint-") as raw:
             workspace = Path(raw)
             package = _compile_package(plan, workspace)
-            if plan.spec.declare() != plan.declaration:
-                raise AdmissionError("exported program changed during compilation or packaging")
             constants = declared_constants(package, plan.declaration.graph_class)
             _admit_constant_table(plan, constants)
             literals = workspace / "constants.safetensors"
             literal_payload_values = _write_literals(plan.spec.program, constants, literals)
+            if plan.spec.declare() != plan.declaration:
+                raise AdmissionError(
+                    "exported program changed during compilation, packaging, "
+                    "or literal serialization"
+                )
             metadata = build_metadata(
                 graph_class={
                     "name": plan.declaration.graph_class,

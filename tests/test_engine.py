@@ -834,6 +834,27 @@ def test_program_mutation_during_compile_is_refused(
         )
 
 
+def test_literal_mutation_during_payload_serialization_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec_for(torch.export.export(WithLiteral(), (torch.ones(2),)))
+    monkeypatch.setattr(
+        engine_module, "_compile_package", _fake_compile_package(literal_packager)
+    )
+    write_literals = engine_module._write_literals
+
+    def mutate_before_write(
+        program: object, constants: tuple[object, ...], target: Path
+    ) -> str:
+        cast(Any, program).constants["table"].add_(1)
+        return write_literals(program, cast(Any, constants), target)
+
+    monkeypatch.setattr(engine_module, "_write_literals", mutate_before_write)
+
+    with pytest.raises(AdmissionError, match="literal serialization"):
+        Engine(LocalCAS(tmp_path / "cas")).compile(spec, _runtime(), tmp_path / "refused")
+
+
 def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> None:
     source_cas = LocalCAS(tmp_path / "source-cas")
     source_engine = Engine(source_cas)
