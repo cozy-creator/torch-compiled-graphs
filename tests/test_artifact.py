@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
@@ -509,3 +510,25 @@ def test_unpack_normalizes_truncated_decompression_and_cleans_stage(tmp_path: Pa
         unpack_artifact(artifact, destination)
     assert not destination.exists()
     assert not list(tmp_path.glob(".materialized.*"))
+
+
+def test_unpack_refuses_a_truncated_gzip_trailer(tmp_path: Path) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    raw = artifact.read_bytes()
+    artifact.write_bytes(raw[:-4])
+    destination = tmp_path / "materialized"
+    with pytest.raises(ArtifactError, match="cannot read artifact"):
+        unpack_artifact(artifact, destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".materialized.*"))
+
+
+def test_unpack_refuses_a_concatenated_gzip_tail(tmp_path: Path) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "artifact.tar.gz", metadata())
+    artifact.write_bytes(artifact.read_bytes() + gzip.compress(b"\0"))
+    destination = tmp_path / "materialized"
+    with pytest.raises(ArtifactError, match="after the canonical USTAR record"):
+        unpack_artifact(artifact, destination)
+    assert not destination.exists()

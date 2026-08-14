@@ -606,6 +606,30 @@ def _members(artifact: Path) -> tuple[tarfile.TarFile, dict[str, tarfile.TarInfo
             sizes[row.name] = row.size
             _validate_member_sizes(sizes)
             members[row.name] = row
+        # The v1 writer closes USTAR with two zero blocks and pads to the next
+        # 20-block record. Consume exactly those canonical bytes, then force one
+        # EOF read so gzip validates its CRC and end marker.
+        expected_end = (
+            (
+                archive.offset
+                + 2 * tarfile.BLOCKSIZE
+                + tarfile.RECORDSIZE
+                - 1
+            )
+            // tarfile.RECORDSIZE
+        ) * tarfile.RECORDSIZE
+        remaining_padding = expected_end - archive.fileobj.tell()
+        if not 0 <= remaining_padding <= tarfile.RECORDSIZE:
+            raise ArtifactError("artifact has a non-canonical USTAR end marker")
+        while remaining_padding:
+            trailer = archive.fileobj.read(min(1 << 20, remaining_padding))
+            if not trailer:
+                raise ArtifactError("artifact has truncated USTAR padding")
+            if trailer.strip(b"\0"):
+                raise ArtifactError("artifact has nonzero bytes after the USTAR end marker")
+            remaining_padding -= len(trailer)
+        if archive.fileobj.read(1):
+            raise ArtifactError("artifact has bytes after the canonical USTAR record")
         missing = _REQUIRED_MEMBERS - set(members)
         if missing:
             raise ArtifactError(f"artifact is missing {sorted(missing)!r}")
