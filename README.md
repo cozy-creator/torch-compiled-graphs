@@ -11,7 +11,7 @@ The v1 boundary is deliberately narrow:
 - one deterministic artifact envelope containing `metadata.json`, `model.pt2`,
   and an optional literal-constant payload;
 - code-only AOTI compilation with weight folding kept bindable; and
-- storage behind `chunked-cas`, with Tensorhub as the first remote adapter.
+- storage behind `hashrepo`, with Tensorhub as the first remote adapter.
 
 This repository does not own endpoint composition, model loading, GPU
 scheduling, worker telemetry, or Tensorhub policy. Those remain application
@@ -21,7 +21,7 @@ concerns in `python-gen-worker` and Tensorhub.
 
 This is the first pre-release extraction slice. It establishes and tests the
 format-v1 identity, compilation seam, deterministic package boundary, and
-fail-closed AOTInductor package introspection. The `chunked-cas` adapter and the
+fail-closed AOTInductor package introspection. The `hashrepo` adapter and the
 migrations that delete the old worker copies are dependency-ordered follow-ups.
 
 The repository is private during package and license review.
