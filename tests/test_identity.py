@@ -14,6 +14,7 @@ from torch_compiled_graphs import (
     StorageError,
     is_compiled_graph_key,
 )
+from torch_compiled_graphs.contracts import read_contract
 from torch_compiled_graphs.identity import from_axes, toolchain_axis_digest
 
 
@@ -28,9 +29,7 @@ def test_key_is_stable_and_has_only_the_three_compilation_axes() -> None:
 
 
 def test_toolchain_axis_and_final_key_match_current_worker_golden_vector() -> None:
-    vector = json.loads(
-        (Path(__file__).parent / "testdata" / "toolchain_identity_v1.json").read_text()
-    )
+    vector = json.loads(read_contract("toolchain_identity_v1.json"))
     axis = toolchain_axis_digest(vector["block"])
     assert axis == vector["toolchain_axis"]
     assert str(
@@ -68,15 +67,14 @@ def test_public_boundary_validator_accepts_only_the_key_shape() -> None:
 
 
 def test_public_boundary_validator_matches_shared_key_corpus() -> None:
-    data = Path(__file__).parent / "testdata"
-    corpus = data / "compiled_graph_key_vectors.json"
+    corpus = read_contract("compiled_graph_key_vectors.json")
     recorded = next(
         line.strip()
-        for line in (data / "KEY_GRAMMAR_DIGEST").read_text().splitlines()
+        for line in read_contract("KEY_GRAMMAR_DIGEST").decode().splitlines()
         if line.strip() and not line.startswith("#")
     )
-    assert hashlib.sha256(corpus.read_bytes()).hexdigest() == recorded
-    vectors = json.loads(corpus.read_text())["vectors"]
+    assert hashlib.sha256(corpus).hexdigest() == recorded
+    vectors = json.loads(corpus)["vectors"]
     assert all(is_compiled_graph_key(row["key"]) is row["valid"] for row in vectors)
 
 

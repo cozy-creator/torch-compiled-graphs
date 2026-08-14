@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 from torch_compiled_graphs import GraphClassDeclaration, GraphClassSpec, RuntimeCompatibility
+from torch_compiled_graphs.contracts import read_contract
 from torch_compiled_graphs.declaration import _graph_digest
 
 torch: Any = pytest.importorskip("torch")
@@ -89,9 +89,7 @@ def test_lifted_literal_values_ride_inside_graph_interface_and_rekey() -> None:
 
 
 def test_literal_digest_and_constant_names_match_current_worker_golden_vector() -> None:
-    vector = json.loads(
-        (Path(__file__).parent / "testdata" / "literal_identity_v1.json").read_text()
-    )
+    vector = json.loads(read_contract("literal_identity_v1.json"))
     program = torch.export.export(LiteralMatrixOperation(), (torch.ones(2, 2),))
     declaration = spec("model", "denoiser", program).declare()
     assert declaration.graph["constant_fqns"] == vector["constant_fqns"]
@@ -130,9 +128,7 @@ def test_graph_witness_matches_current_worker_canonical_form() -> None:
 
 
 def test_graph_witness_and_class_hash_match_current_worker_golden_vector() -> None:
-    vector = json.loads(
-        (Path(__file__).parent / "testdata" / "graph_class_identity_v3.json").read_text()
-    )
+    vector = json.loads(read_contract("graph_class_identity_v3.json"))
     block = vector["block"]
     program = torch.export.export(SineOperation(), (torch.ones(2, 3),))
     assert _graph_digest(program) == block["graph_witness"]
