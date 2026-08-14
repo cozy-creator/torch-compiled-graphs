@@ -52,9 +52,11 @@ one-versus-four comparison found no material wall-time difference, so this is
 parity and a ceiling, not a claim that four is intrinsically faster. The
 compiler privately rewrites the generated C++ wrapper's pathological
 constructor and `run_impl` functions into reconstruction-checked smaller
-functions/translation units. Unrecognized shapes compile unchanged; failed
-transformed builds retry PyTorch's original source. Neither transform is a
-caller option, environment switch, public API, or identity axis.
+functions/translation units. Unrecognized shapes compile unchanged. A failed
+run_impl split retries the constructor-transformed monolith when that first
+transform applied; if that build also fails, or the constructor transform was
+the failure, the compiler retries PyTorch's original source. Neither transform
+is a caller option, environment switch, public API, or identity axis.
 
 `recorded_toolchain` is an explicit adapter input, not a guessed version or
 host fingerprint. A worker records its settings declaration, loaded-library

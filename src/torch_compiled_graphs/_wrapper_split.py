@@ -13,10 +13,11 @@ runs exactly once at model construction, and it has no runtime significance
 whatsoever. GCC's optimizer is superlinear in statements WITHIN one
 function, so this is a single-function blowup, not a big-file problem.
 
-This module rewrites that one run of statements into chunked helper
-functions before the compiler sees it. Nothing else in the TU is touched;
-``run_impl`` — which does carry runtime significance — is left exactly as
-inductor emitted it.
+This module first rewrites that one run of constructor statements into chunked
+helper functions. The same sealed compiler funnel then gives the resulting TU
+to :mod:`_run_impl_split`, whose separate continuation-chain gate may split
+``run_impl`` across translation units. Each transform declines independently;
+an unrecognised shape remains exactly as Inductor emitted it.
 
 Why a mint-path transform and not an inductor config: torch 2.13 exposes no
 knob for constants emission or per-function optimization, and the only
