@@ -527,7 +527,11 @@ def test_real_aoti_package_survives_restart_reuse(tmp_path: Path) -> None:
     )
     assert reused.outcome == EnsureOutcome.REUSED
     assert reused.compiled_graph.package.read_bytes() == minted.compiled_graph.package.read_bytes()
-    assert torch._inductor.aoti_load_package(str(reused.compiled_graph.package)) is not None
+    loaded = torch._inductor.aoti_load_package(str(reused.compiled_graph.package))
+    representative = torch.linspace(-3.0, 3.0, 4096)
+    actual = loaded(representative)
+    expected = Double()(representative)
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
 
     if platform.machine() == "x86_64" and shutil.which("objdump") is not None:
         saw_vex_vector = False
