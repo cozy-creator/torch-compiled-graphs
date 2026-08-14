@@ -162,6 +162,62 @@ class _GraphStore:
         self.quarantine(value, candidate)
         return StoreResult(StoreOutcome.DIVERGENT, value, candidate)
 
+    @staticmethod
+    def _verify_archive(artifact: Path, key: str) -> None:
+        with tempfile.TemporaryDirectory(prefix="torch-compiled-graphs-export-verify-") as raw:
+            metadata = unpack_artifact(artifact, Path(raw) / "artifact")
+        if metadata.get("compiled_graph_key") != key:
+            raise ArtifactError(
+                f"artifact states key {metadata.get('compiled_graph_key')!r}, expected {key!r}"
+            )
+
+    def export_artifact(self, key: str | CompiledGraphKey, destination: str | Path) -> Path:
+        """Export one exact CAS record as a fully verified artifact envelope."""
+
+        value = _key_value(key)
+        manifest_ref = self.cas.read_ref(_graph_ref(value))
+        if manifest_ref is None:
+            raise StorageError(f"compiled graph {value} is not present")
+        if self._is_quarantined(value, manifest_ref):
+            raise QuarantinedArtifact(f"compiled graph {value} is quarantined")
+
+        target = Path(destination)
+        if target.exists():
+            if not target.is_file():
+                raise FileExistsError(f"destination {target} is not a regular file")
+            self._verify_archive(target, value)
+            return target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            try:
+                manifest = self.cas.load_manifest(manifest_ref)
+                self.cas.materialize(self._file(manifest), temporary)
+                self._verify_archive(temporary, value)
+            except (
+                ArtifactError,
+                DigestMismatch,
+                FileNotFoundError,
+                StorageError,
+                ValueError,
+            ) as exc:
+                self.quarantine(value, manifest_ref)
+                raise QuarantinedArtifact(
+                    f"compiled graph {value} failed export verification: {exc}"
+                ) from exc
+            try:
+                os.link(temporary, target)
+            except FileExistsError:
+                if not target.is_file():
+                    raise
+                self._verify_archive(target, value)
+            _fsync_dir(target.parent)
+            return target
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def resolve(self, key: str | CompiledGraphKey, destination: str | Path) -> StoredGraph | None:
         """Materialize and fully verify one exact key, or return a clean miss."""
 

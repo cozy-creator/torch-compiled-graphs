@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -42,6 +44,33 @@ def test_compile_uses_the_one_fixed_v1_policy() -> None:
         "aot_inductor.use_runtime_constant_folding": True,
         "aot_inductor.package": True,
     }
+
+
+def test_compile_context_is_internal_and_derived_from_the_program() -> None:
+    import torch._guards as guards
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+    assert "context" not in inspect.signature(compile_exported_program).parameters
+    previous = ShapeEnv()
+    exported = ShapeEnv()
+    mode = FakeTensorMode(shape_env=previous)
+    program = cast(Any, Program())
+    program.state_dict = {"weight": SimpleNamespace(fake_mode=mode)}
+    dimension = SimpleNamespace(node=SimpleNamespace(shape_env=exported))
+    value = SimpleNamespace(shape=(dimension,))
+    node = SimpleNamespace(meta={"val": value})
+    program.graph_module = SimpleNamespace(graph=SimpleNamespace(nodes=(node,)))
+
+    def compiler(*args: object, **kwargs: object) -> object:
+        context = guards.TracingContext.try_get()
+        assert context is not None
+        assert context.fake_mode is mode
+        assert mode.shape_env is exported
+        return ["wrapper.cpp", "kernel.so"]
+
+    compile_exported_program(program, compiler=cast(Compiler, compiler))
+    assert mode.shape_env is previous
 
 
 def test_compile_refuses_non_file_list_result() -> None:

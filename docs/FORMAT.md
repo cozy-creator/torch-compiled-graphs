@@ -19,7 +19,8 @@ The three axes are exhaustive:
 - `sm`: the concrete CUDA compute capability or CPU target; and
 - `toolchain`: a full SHA-256 digest of library-derived Torch/Inductor, Triton,
   Python ABI/platform/arch, CUDA or CPU, compiler, libc/libstdc++, fixed compile
-  settings, and the required deployment-compatibility axis.
+  settings, host ISA requirement, and the required deployment-compatibility
+  axis.
 
 Family, checkpoint, weights, declaration-wide coverage, and trace-time model
 libraries are not axes. Facts that alter the trace arrive through `graph`;
@@ -54,6 +55,14 @@ Required top-level metadata includes:
 Those are the exact v1 top-level and entry fields; extensions and abandoned
 pre-launch shapes are refused. Readers reject missing, duplicate, non-file, or
 unexpected archive members and materialize only into a new directory.
+
+The toolchain must include `machine`, `host_isa_level`, `host_isa_features`,
+`cpp_march`, and `cpp_simdlen`. x86-64 writers cap `cpp_march` at
+`x86-64-v3`, record only the cumulative features required by that level, and
+use a matching 128- or 256-bit SIMD width. Other machines record `native` plus
+the CPU features common to every processor reported by Linux. Readers reject
+missing facts, cross-machine artifacts, unknown levels, above-v3 x86 code, and
+requirements the current host cannot satisfy before returning the package.
 
 Each constant row has exactly `fqn`, `source`, `dtype`, and `shape`. `source`
 is one of `state_dict`, `computed`, or `literal`; `shape` is an array of

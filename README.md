@@ -31,11 +31,18 @@ runner_package = result.graph.package
 The same declaration derives the `cg-key-v1` lookup, mint stamp, and
 admission expectation. Future workers call `Engine.resolve(key, destination)`
 with the known key: that hit path neither constructs an ExportedProgram nor
-imports Torch. `ensure` also resolves first and invokes its lazy recipe exactly
+imports Torch. It does read the local CPU feature surface and fails before
+returning a package if the artifact's host-code requirement is incomplete or
+unsupported. `ensure` also resolves first and invokes its lazy recipe exactly
 once only on a miss. A miss compiles one code-only graph under the sole v1
 compile policy, packages it as a
 verified artifact, stores it through HashRepo, and materializes it. A later
 process pointed at the same HashRepo root reuses it without compiling.
+
+`Engine.export_artifact(key, path)` emits the verified artifact envelope for a
+remote adapter. `Engine.import_artifact(key, path)` validates its metadata and
+host requirement before attaching the fully verified bytes to the local CAS.
+Neither operation exposes the package's private HashRepo ref layout.
 
 HashRepo owns immutable objects, chunk manifests, durability, GC reachability,
 and transfer primitives. This package owns only graph declaration, compilation,
@@ -95,6 +102,9 @@ compatibility aliases, or migration paths for abandoned pre-launch formats.
 - `is_compiled_graph_key` is public for validating digest-only boundary values.
 - `Engine.export_artifact(key, destination)` exports a fully verified artifact
   envelope without exposing HashRepo ref layout.
+- Host ISA facts now cover every CPU and CUDA artifact. x86-64 compilation is
+  process-wide capped at `x86-64-v3`; other architectures carry a conservative
+  native feature requirement. Unstamped or unsupported artifacts fail closed.
 
 The release workflow is exactly `.github/workflows/publish.yaml`. It requires
 a `v<project version>` tag on `main`, rebuilds and smoke-tests the wheel, uses

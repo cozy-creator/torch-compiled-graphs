@@ -6,6 +6,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from .host_isa import HostISAError, _impose_host_policy
+
 _COMPILER_OPTIONS: dict[str, object] = {
     "compile_threads": 1,
     "aot_inductor.package_constants_in_so": False,
@@ -107,6 +109,11 @@ def compile_exported_program(
         except ImportError as exc:  # pragma: no cover - exercised with torch extra
             raise CompileError("PyTorch with AOTInductor is required to compile") from exc
         compiler = cast(Compiler, vars(module)["aot_compile"])
+
+    try:
+        _impose_host_policy()
+    except HostISAError as exc:
+        raise CompileError(f"cannot establish host ISA policy: {exc}") from exc
 
     exported_module = getattr(program, "module", None)
     if not callable(exported_module):

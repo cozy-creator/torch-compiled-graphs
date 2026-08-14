@@ -17,6 +17,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
+from .host_isa import HostISAError, _impose_host_policy
 from .identity import CompiledGraphKey, _facts_digest, from_axes, toolchain_axis_digest
 
 CANONICAL_GRAPH_FORMAT = 1
@@ -442,7 +443,11 @@ def _cuda_driver_version() -> str:
 
 
 @lru_cache(maxsize=8)
-def _detected_toolchain(target: str, deployment_compatibility: str) -> tuple[tuple[str, str], ...]:
+def _detected_toolchain(
+    target: str,
+    deployment_compatibility: str,
+    host_facts: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, str], ...]:
     import torch
 
     try:
@@ -479,7 +484,6 @@ def _detected_toolchain(target: str, deployment_compatibility: str) -> tuple[tup
         "inductor": str(torch_git),
         "libc": f"{libc_name}-{libc_version}",
         "libstdcxx_sha256": libstdcxx,
-        "machine": platform.machine(),
         "platform": sys.platform,
         "python_abi": str(abi),
         "python_cache_tag": str(cache_tag),
@@ -489,6 +493,7 @@ def _detected_toolchain(target: str, deployment_compatibility: str) -> tuple[tup
         "torch_cxx11_abi": str(torch.compiled_with_cxx11_abi()),
         "triton": triton_version,
     }
+    facts.update(host_facts)
     if target.startswith("sm_"):
         cuda_runtime = getattr(torch.version, "cuda", None)
         if not cuda_runtime or not torch.cuda.is_available():
@@ -531,7 +536,11 @@ class RuntimeCompatibility:
             architecture = requested
         else:
             raise DeclarationError("runtime target must be 'cpu' or a concrete 'sm_NN'")
-        cleaned = _detected_toolchain(architecture, deployment)
+        try:
+            host_facts = tuple(sorted(_impose_host_policy().items()))
+        except HostISAError as exc:
+            raise DeclarationError(f"cannot establish host ISA policy: {exc}") from exc
+        cleaned = _detected_toolchain(architecture, deployment, host_facts)
         object.__setattr__(self, "sm", architecture)
         object.__setattr__(self, "_toolchain", cleaned)
 

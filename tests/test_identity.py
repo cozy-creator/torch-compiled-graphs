@@ -10,6 +10,7 @@ from torch_compiled_graphs import (
     IdentityError,
     StorageError,
     from_axes,
+    is_compiled_graph_key,
 )
 
 
@@ -34,6 +35,13 @@ def test_a_key_cannot_be_hashed_as_an_input_fact() -> None:
     key = str(from_axes({"graph": "g", "sm": "s", "toolchain": "t"}))
     with pytest.raises(IdentityError, match="not an identity fact"):
         from_axes({"graph": key, "sm": "s", "toolchain": "t"})
+
+
+def test_public_boundary_validator_accepts_only_the_key_shape() -> None:
+    key = str(from_axes({"graph": "g", "sm": "s", "toolchain": "t"}))
+    assert is_compiled_graph_key(key)
+    assert not is_compiled_graph_key(key.upper())
+    assert not is_compiled_graph_key("not-a-key")
 
 
 @pytest.mark.parametrize(

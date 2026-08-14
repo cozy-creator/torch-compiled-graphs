@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import errno
 import inspect
+import platform
+import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -14,8 +17,10 @@ import pytest
 from hashrepo import LocalCAS
 
 import torch_compiled_graphs.engine as engine_module
+import torch_compiled_graphs.host_isa as host_isa_module
 from torch_compiled_graphs import (
     AdmissionError,
+    ArtifactError,
     Engine,
     EnsureOutcome,
     GraphSpec,
@@ -332,6 +337,22 @@ def test_real_aoti_package_survives_restart_reuse(tmp_path: Path) -> None:
     )
     assert reused.outcome == EnsureOutcome.REUSED
     assert reused.graph.package.read_bytes() == minted.graph.package.read_bytes()
+    assert torch._inductor.aoti_load_package(str(reused.graph.package)) is not None
+
+    if platform.machine() == "x86_64" and shutil.which("objdump") is not None:
+        above_v3 = re.compile(r"%zmm|%k[0-7]\b|vpternlog|vgather|vscatter")
+        with zipfile.ZipFile(reused.graph.package) as archive:
+            objects = [name for name in archive.namelist() if name.endswith(".so")]
+            assert objects
+            for name in objects:
+                extracted = Path(archive.extract(name, tmp_path / "objects"))
+                disassembly = subprocess.run(
+                    ["objdump", "-d", str(extracted)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout
+                assert above_v3.search(disassembly) is None
 
 
 @pytest.mark.real_aoti
@@ -398,17 +419,23 @@ def test_program_mutation_during_compile_is_refused(
 
 def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> None:
     source_cas = LocalCAS(tmp_path / "source-cas")
+    source_engine = Engine(source_cas)
     spec = _spec()
     key = _runtime().key(spec.declare())
-    minted = Engine(source_cas).ensure(
+    source_engine.ensure(
         key,
         tmp_path / "minted",
         target="cpu",
         deployment_compatibility="test-image-v1",
         recipe=lambda: spec,
     )
-    manifest = source_cas.load_manifest(minted.graph.manifest)
-    fetched = source_cas.materialize(manifest.files[0], tmp_path / "fetched.tar.gz")
+    fetched = source_engine.export_artifact(key, tmp_path / "fetched.tar.gz")
+    assert source_engine.export_artifact(key, fetched) == fetched
+    occupied = tmp_path / "occupied.tar.gz"
+    occupied.write_bytes(b"do not overwrite")
+    with pytest.raises(ArtifactError, match="cannot read artifact"):
+        source_engine.export_artifact(key, occupied)
+    assert occupied.read_bytes() == b"do not overwrite"
 
     destination_cas = LocalCAS(tmp_path / "destination-cas")
     imported = Engine(destination_cas).import_artifact(key, fetched)
@@ -420,6 +447,55 @@ def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> 
     wrong = from_axes({"graph": "wrong", "sm": "cpu", "toolchain": "wrong"})
     with pytest.raises(StorageError, match="expected"):
         Engine(destination_cas).import_artifact(wrong, fetched)
+
+
+def test_export_refuses_a_corrupt_cas_object(tmp_path: Path) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    engine = Engine(cas)
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    result = engine.ensure(
+        key,
+        tmp_path / "minted",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
+    )
+    manifest = cas.load_manifest(result.graph.manifest)
+    cas.object_path(manifest.files[0].digest).write_bytes(b"corrupt")
+    with pytest.raises(StorageError, match="export verification"):
+        engine.export_artifact(key, tmp_path / "corrupt.tar.gz")
+    assert not (tmp_path / "corrupt.tar.gz").exists()
+
+
+def test_host_isa_admission_refuses_cross_machine_and_missing_features(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    engine = Engine(cas)
+    spec = _spec()
+    runtime = _runtime()
+    key = runtime.key(spec.declare())
+    engine.ensure(
+        key,
+        tmp_path / "minted",
+        target="cpu",
+        deployment_compatibility="test-image-v1",
+        recipe=lambda: spec,
+    )
+
+    actual_machine = platform.machine().lower()
+    other_machine = "aarch64" if actual_machine != "aarch64" else "x86_64"
+    monkeypatch.setattr(platform, "machine", lambda: other_machine)
+    with pytest.raises(AdmissionError, match="artifact host code"):
+        engine.resolve(key, tmp_path / "cross-machine")
+
+    monkeypatch.setattr(platform, "machine", lambda: actual_machine)
+    required = runtime.toolchain["host_isa_features"]
+    if required != "none":
+        monkeypatch.setattr(host_isa_module, "_cpu_features", frozenset)
+        with pytest.raises(AdmissionError, match="this host lacks"):
+            engine.resolve(key, tmp_path / "missing-features")
 
 
 def test_two_process_resolves_converge_on_one_destination(tmp_path: Path) -> None:
