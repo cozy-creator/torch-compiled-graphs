@@ -149,7 +149,7 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for name, value in pairs:
         if name in result:
-            raise ArtifactError(f"safetensors header declares {name!r} twice")
+            raise ArtifactError(f"JSON object declares duplicate key {name!r}")
         result[name] = value
     return result
 
@@ -578,7 +578,7 @@ def read_metadata(artifact: str | Path) -> dict[str, Any]:
         if handle is None:
             raise ArtifactError("metadata member is unreadable")
         try:
-            raw = json.load(handle)
+            raw = json.load(handle, object_pairs_hook=_unique_object)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ArtifactError(f"metadata is not valid JSON: {exc}") from exc
         if not isinstance(raw, dict):
@@ -607,7 +607,7 @@ def _verify_materialized(directory: Path) -> dict[str, Any]:
     if metadata_path.stat().st_size > _MAX_METADATA_BYTES:
         raise ArtifactError(f"metadata exceeds {_MAX_METADATA_BYTES} bytes")
     try:
-        raw = json.loads(metadata_path.read_bytes())
+        raw = json.loads(metadata_path.read_bytes(), object_pairs_hook=_unique_object)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ArtifactError(f"metadata is not valid JSON: {exc}") from exc
     if not isinstance(raw, dict):

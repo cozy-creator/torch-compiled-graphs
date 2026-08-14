@@ -24,11 +24,14 @@ from torch_compiled_graphs import (
     Engine,
     EnsureOutcome,
     GraphClassSpec,
+    QuarantinedArtifact,
     RuntimeCompatibility,
     StorageError,
+    StoreOutcome,
 )
 from torch_compiled_graphs.artifact import pack_artifact, read_metadata
 from torch_compiled_graphs.identity import from_axes
+from torch_compiled_graphs.storage import _CompiledGraphStore, _quarantine_ref
 
 torch: Any = pytest.importorskip("torch")
 
@@ -364,6 +367,60 @@ def test_corrupt_local_object_is_quarantined_and_repaired(tmp_path: Path) -> Non
     )
     assert repaired.outcome == EnsureOutcome.MINTED
     assert repaired.compiled_graph.package.is_file()
+
+
+def test_repairing_with_a_previously_divergent_manifest_retires_its_stale_quarantine(
+    tmp_path: Path,
+) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    engine = Engine(cas)
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    minted = engine.ensure(
+        key,
+        tmp_path / "minted",
+        target="cpu",
+        toolchain=_toolchain(),
+        recipe=lambda: spec,
+    )
+    artifact_a = engine.export_artifact(key, tmp_path / "artifact-a.tar.gz")
+    artifact_b = _alternate_artifact(
+        minted.compiled_graph.package,
+        artifact_a,
+        tmp_path / "artifact-b.tar.gz",
+    )
+    divergent = engine.import_artifact(key, artifact_b)
+    assert divergent.outcome == StoreOutcome.DIVERGENT
+
+    manifest_a = cas.load_manifest(minted.compiled_graph.manifest)
+    cas.object_path(manifest_a.files[0].digest).write_bytes(b"corrupt-a")
+    with pytest.raises(QuarantinedArtifact, match="CAS verification"):
+        engine.resolve(key, tmp_path / "corrupt-a")
+
+    repaired = engine.import_artifact(key, artifact_b)
+    assert repaired.outcome == StoreOutcome.REPAIRED
+    assert repaired.manifest == divergent.manifest
+    resolved = engine.resolve(key, tmp_path / "resolved-b")
+    assert resolved is not None
+    assert resolved.manifest == divergent.manifest
+
+
+def test_stale_quarantine_clear_never_removes_a_concurrent_fresh_marker(
+    tmp_path: Path,
+) -> None:
+    cas = LocalCAS(tmp_path / "cas")
+    store = _CompiledGraphStore(cas)
+    key = str(from_axes({"graph": "graph", "sm": "sm_89", "toolchain": "toolchain"}))
+    manifest = cas.put_bytes(b"manifest identity")
+    store.quarantine(key, manifest)
+    name = _quarantine_ref(key, manifest)
+    stale = cas.read_ref(name)
+    assert stale is not None
+    fresh = cas.put_bytes(b"fresh quarantine marker")
+    cas.compare_and_swap_ref(name, fresh, expected=stale)
+
+    assert not store._clear_quarantine(key, manifest, stale)
+    assert cas.read_ref(name) == fresh
 
 
 def test_named_literal_bytes_survive_hashrepo_reuse(

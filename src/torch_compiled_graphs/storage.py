@@ -6,6 +6,7 @@ import errno
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import stat
 import tempfile
@@ -93,22 +94,38 @@ class _CompiledGraphStore:
     def _is_quarantined(self, key: str, manifest: CASRef) -> bool:
         return self.cas.read_ref(_quarantine_ref(key, manifest)) is not None
 
-    def _clear_quarantine(self, key: str, manifest: CASRef) -> None:
+    def _clear_quarantine(self, key: str, manifest: CASRef, expected: CASRef) -> bool:
+        """Retire exactly one observed marker, never a newer quarantine."""
+
         name = _quarantine_ref(key, manifest)
-        marker = self.cas.read_ref(name)
-        if marker is None:
-            return
         try:
-            self.cas.compare_and_swap_ref(name, None, expected=marker)
+            self.cas.compare_and_swap_ref(name, None, expected=expected)
+            return True
         except RefConflict:
-            pass
+            return self.cas.read_ref(name) is None
+
+    def _retire_candidate_quarantine(
+        self, key: str, manifest: CASRef, observed: CASRef | None
+    ) -> None:
+        if observed is not None and self._clear_quarantine(key, manifest, observed):
+            return
+        if observed is None and not self._is_quarantined(key, manifest):
+            return
+        raise QuarantinedArtifact(
+            f"compiled graph {key} received a fresh quarantine during repair"
+        )
 
     def quarantine(self, key: str | CompiledGraphKey, manifest: CASRef) -> None:
         value = _key_value(key)
         name = _quarantine_ref(value, manifest)
         marker = self.cas.put_bytes(
             json.dumps(
-                {"format": 1, "key": value, "manifest": str(manifest)},
+                {
+                    "format": 1,
+                    "key": value,
+                    "manifest": str(manifest),
+                    "marker": secrets.token_hex(16),
+                },
                 sort_keys=True,
                 separators=(",", ":"),
             ).encode("ascii")
@@ -136,28 +153,47 @@ class _CompiledGraphStore:
                 )
             file = self.cas.ingest_file(owned, manifest_path=_COMPILED_GRAPH_PATH)
         candidate = self.cas.store_manifest(RepositoryManifest((file,)))
+        candidate_quarantine = self.cas.read_ref(_quarantine_ref(value, candidate))
         ref_name = _graph_ref(value)
         current = self.cas.read_ref(ref_name)
         if current is None:
             try:
                 self.cas.compare_and_swap_ref(ref_name, candidate, expected=None)
-                return StoreResult(StoreOutcome.STORED, value, candidate)
+                self._retire_candidate_quarantine(
+                    value, candidate, candidate_quarantine
+                )
+                outcome = (
+                    StoreOutcome.REPAIRED
+                    if candidate_quarantine is not None
+                    else StoreOutcome.STORED
+                )
+                return StoreResult(outcome, value, candidate)
             except RefConflict:
                 current = self.cas.read_ref(ref_name)
         if current is None:
             raise StorageError(f"exact-key ref {value} disappeared during publication")
-        if current == candidate and self._is_quarantined(value, current):
-            self._clear_quarantine(value, current)
-            return StoreResult(StoreOutcome.REPAIRED, value, current)
         if current == candidate:
+            if candidate_quarantine is not None:
+                self._retire_candidate_quarantine(value, current, candidate_quarantine)
+                return StoreResult(StoreOutcome.REPAIRED, value, current)
+            if self._is_quarantined(value, current):
+                raise QuarantinedArtifact(
+                    f"compiled graph {value} received a fresh quarantine during publication"
+                )
             return StoreResult(StoreOutcome.PRESENT, value, current)
         if self._is_quarantined(value, current):
             try:
                 self.cas.compare_and_swap_ref(ref_name, candidate, expected=current)
+                self._retire_candidate_quarantine(
+                    value, candidate, candidate_quarantine
+                )
                 return StoreResult(StoreOutcome.REPAIRED, value, candidate)
             except RefConflict:
                 current = self.cas.read_ref(ref_name)
                 if current == candidate:
+                    self._retire_candidate_quarantine(
+                        value, candidate, candidate_quarantine
+                    )
                     return StoreResult(StoreOutcome.PRESENT, value, candidate)
                 if current is None:
                     raise StorageError(f"exact-key ref {value} disappeared during repair") from None

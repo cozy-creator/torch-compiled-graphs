@@ -14,6 +14,7 @@ import pytest
 import torch_compiled_graphs.artifact as artifact_module
 from torch_compiled_graphs import COMPILED_GRAPH_FORMAT, ArtifactError, GraphClassDeclaration
 from torch_compiled_graphs.artifact import (
+    _verify_materialized,
     build_metadata,
     pack_artifact,
     read_metadata,
@@ -58,6 +59,32 @@ def safetensors_file(
     encoded += b" " * (-len(encoded) % 8)
     path.write_bytes(struct.pack("<Q", len(encoded)) + encoded + payload)
     return path
+
+
+def duplicate_metadata(payload: bytes, *, nested: bool) -> tuple[bytes, str]:
+    if nested:
+        return (
+            payload.replace(
+                b'"graph_class":{', b'"graph_class":{"target":"unet",', 1
+            ),
+            "target",
+        )
+    return b'{"kind":"aot-inductor",' + payload[1:], "kind"
+
+
+def replace_metadata(artifact: Path, target: Path, payload: bytes) -> Path:
+    with tarfile.open(artifact, "r:gz") as source:
+        members = {
+            row.name: source.extractfile(row).read()  # type: ignore[union-attr]
+            for row in source.getmembers()
+        }
+    members["metadata.json"] = payload
+    with tarfile.open(target, "w:gz") as output:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            output.addfile(info, io.BytesIO(data))
+    return target
 
 
 def metadata(*, literal: bytes | None = None) -> dict[str, object]:
@@ -179,6 +206,35 @@ def test_artifact_is_deterministic_and_unpacks_atomically(tmp_path: Path) -> Non
     assert read_metadata(first)["compiled_graph_format"] == COMPILED_GRAPH_FORMAT == 1
 
     assert main(["verify", str(first)]) == 0
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_archive_metadata_rejects_duplicate_json_keys(
+    nested: bool, tmp_path: Path
+) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    valid = pack_artifact(package, tmp_path / "valid.tar.gz", metadata())
+    with tarfile.open(valid, "r:gz") as source:
+        raw = source.extractfile("metadata.json").read()  # type: ignore[union-attr]
+    duplicate, key = duplicate_metadata(raw, nested=nested)
+    artifact = replace_metadata(valid, tmp_path / "duplicate.tar.gz", duplicate)
+    with pytest.raises(ArtifactError, match=rf"duplicate key '{key}'"):
+        read_metadata(artifact)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_materialized_metadata_rejects_duplicate_json_keys(
+    nested: bool, tmp_path: Path
+) -> None:
+    package = aoti_package(tmp_path / "source.pt2")
+    artifact = pack_artifact(package, tmp_path / "valid.tar.gz", metadata())
+    directory = tmp_path / "materialized"
+    unpack_artifact(artifact, directory)
+    metadata_path = directory / "metadata.json"
+    duplicate, key = duplicate_metadata(metadata_path.read_bytes(), nested=nested)
+    metadata_path.write_bytes(duplicate)
+    with pytest.raises(ArtifactError, match=rf"duplicate key '{key}'"):
+        _verify_materialized(directory)
 
 
 def test_literal_declaration_requires_payload(tmp_path: Path) -> None:
