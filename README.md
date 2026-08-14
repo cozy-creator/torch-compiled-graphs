@@ -92,9 +92,14 @@ artifact policy, exact-key refs, admission, and quarantine. A divergent second
 artifact never overwrites an admitted key. A corrupt or inadmissible manifest
 is quarantined and can be repaired only by a newly verified mint.
 
-A literal whose AOTI wrapper erases its exported FQN is refused rather than
-matched by tensor order or shape. Register durable module tensors as buffers;
-guessing an anonymous constant mapping can silently run the wrong computation.
+A package literal whose AOTI wrapper names no FQN lifted by the exported
+program is refused rather than matched by tensor order or shape. Register
+durable module tensors as buffers; guessing an anonymous constant mapping can
+silently run the wrong computation. The opposite direction is safe: a program
+literal the compiler eliminates remains covered by the key-bearing
+`literal_values` digest. `literal_payload_values` separately authenticates the
+subset the package still consumes, so partial elimination never weakens either
+identity or payload verification.
 
 Tensorhub is the first intended remote service, but no speculative registry or
 plugin interface lives here. Its adapter will obtain byte-operation grants and
