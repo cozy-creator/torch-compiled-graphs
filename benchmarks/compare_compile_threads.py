@@ -105,6 +105,18 @@ def _phase_snapshot() -> dict[str, float]:
     }
 
 
+def _partition_problems(wall: float, partition: Mapping[str, float]) -> list[str]:
+    expected = {*_PARTITION_KEYS, "compile_other_s"}
+    missing = sorted(expected - set(partition))
+    problems = [f"missing partition members {missing!r}"] if missing else []
+    total = sum(partition.get(name, 0.0) for name in expected)
+    if abs(total - wall) > 0.05:
+        problems.append(f"partition sums to {total:.3f}s, wall is {wall:.3f}s")
+    if partition.get("compile_other_s", 0.0) < -0.05:
+        problems.append("compile_other_s is negative; named members overlap")
+    return problems
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--threads", type=int, choices=(1, 4), required=True)
@@ -139,9 +151,9 @@ def main() -> None:
         label: sum(raw.get(name, 0.0) for name in names) for label, names in _PARTITION_KEYS.items()
     }
     partition["compile_other_s"] = wall - sum(partition.values())
-    closure = sum(partition.values())
-    if abs(closure - wall) > 0.05:
-        raise RuntimeError(f"compile partition does not close: {closure=} {wall=}")
+    problems = _partition_problems(wall, partition)
+    if problems:
+        raise RuntimeError("compile partition does not close: " + "; ".join(problems))
 
     print(
         json.dumps(
@@ -151,7 +163,7 @@ def main() -> None:
                 "peak_rss_mib": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024),
                 "files": len(files),
                 "partition": {name: round(value, 3) for name, value in partition.items()},
-                "partition_problems": [],
+                "partition_problems": problems,
             },
             sort_keys=True,
         )

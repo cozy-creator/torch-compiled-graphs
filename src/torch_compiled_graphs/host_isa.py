@@ -171,7 +171,7 @@ def _impose_host_policy() -> dict[str, str]:
 def _assert_command_is_clamped(command: str) -> None:
     """Refuse an x86 host compile that escaped the process-wide ISA clamp."""
 
-    if _host_requirement().machine != _X86_64:
+    if platform.machine().strip().lower() != _X86_64:
         return
     try:
         arguments = shlex.split(command)

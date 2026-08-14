@@ -79,3 +79,19 @@ def test_unknown_native_host_without_features_fails_closed(
     monkeypatch.setattr(host_isa, "_cpu_features", frozenset)
     with pytest.raises(host_isa.HostISAError, match="cannot state a native ISA"):
         host_isa._impose_host_policy()
+
+
+def test_host_compile_command_refuses_an_x86_native_escape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    with pytest.raises(host_isa.HostISAError, match="-march=native"):
+        host_isa._assert_command_is_clamped("g++ -march=native wrapper.cpp -c")
+    host_isa._assert_command_is_clamped("g++ -march=x86-64-v3 wrapper.cpp -c")
+
+
+def test_non_x86_host_compile_keeps_its_native_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "machine", lambda: "aarch64")
+    host_isa._assert_command_is_clamped("g++ -march=native wrapper.cpp -c")
