@@ -6,10 +6,16 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, cast
 
+from . import _wrapper_split
 from .host_isa import HostISAError, _impose_host_policy
 
 _COMPILER_OPTIONS: dict[str, object] = {
-    "compile_threads": 1,
+    # pgw#757 measured 32 -> 4 as effectively free while sharply reducing
+    # contention with live serving. A later balanced 16-run 1-vs-4 cold AOTI
+    # comparison put both means inside run-to-run noise (4 was 1.0% lower), so
+    # there is no measured reason to fork the current worker's value. Four is
+    # the one sealed policy; callers cannot select a compiler topology.
+    "compile_threads": 4,
     "aot_inductor.package_constants_in_so": False,
     "aot_inductor.use_runtime_constant_folding": True,
     "aot_inductor.package": True,
@@ -62,20 +68,16 @@ def _export_context(program: object) -> tuple[object, object]:
                 shape = getattr(value, "shape", None)
                 if shape is not None:
                     for dimension in shape:
-                        environment = getattr(
-                            getattr(dimension, "node", None), "shape_env", None
-                        )
+                        environment = getattr(getattr(dimension, "node", None), "shape_env", None)
                         if environment is not None:
                             environments[id(environment)] = environment
     if len(modes) != 1:
         raise CompileError(
-            "exported graph metadata must carry exactly one FakeTensorMode, "
-            f"found {len(modes)}"
+            f"exported graph metadata must carry exactly one FakeTensorMode, found {len(modes)}"
         )
     if len(environments) != 1:
         raise CompileError(
-            "exported graph metadata must carry exactly one ShapeEnv, "
-            f"found {len(environments)}"
+            f"exported graph metadata must carry exactly one ShapeEnv, found {len(environments)}"
         )
     return next(iter(modes.values())), next(iter(environments.values()))
 
@@ -125,6 +127,7 @@ def _compile_exported_program(program: object) -> tuple[object, ...]:
     """
     try:
         _impose_host_policy()
+        _wrapper_split.install()
     except HostISAError as exc:
         raise CompileError(f"cannot establish host ISA policy: {exc}") from exc
 

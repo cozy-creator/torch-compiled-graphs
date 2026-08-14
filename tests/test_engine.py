@@ -17,6 +17,7 @@ from typing import Any, cast
 import pytest
 from hashrepo import CASRef, LocalCAS
 
+import torch_compiled_graphs._wrapper_split as wrapper_split_module
 import torch_compiled_graphs.engine as engine_module
 import torch_compiled_graphs.host_isa as host_isa_module
 from torch_compiled_graphs import (
@@ -502,8 +503,19 @@ def test_named_literal_bytes_survive_hashrepo_reuse(
 
 
 @pytest.mark.real_aoti
-def test_real_aoti_package_survives_restart_reuse(tmp_path: Path) -> None:
-    """Exercise torch.export -> AOTInductor -> HashRepo without test doubles."""
+def test_real_aoti_package_survives_restart_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise CPU AOTI reuse and prove the private CUDA transforms decline."""
+
+    emitted: list[wrapper_split_module.SplitOutcome] = []
+
+    def record(outcome: wrapper_split_module.SplitOutcome, lever: str = "") -> None:
+        del lever
+        emitted.append(outcome)
+
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "inductor-cache"))
+    monkeypatch.setattr(wrapper_split_module, "_emit", record)
 
     spec = _spec()
     runtime = _runtime()
@@ -532,6 +544,9 @@ def test_real_aoti_package_survives_restart_reuse(tmp_path: Path) -> None:
     actual = loaded(representative)
     expected = Double()(representative)
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    assert emitted
+    assert not any(outcome.applied for outcome in emitted)
+    assert any("CUDA_DRIVER_CHECK" in outcome.reason for outcome in emitted)
 
     if platform.machine() == "x86_64" and shutil.which("objdump") is not None:
         saw_vex_vector = False

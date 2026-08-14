@@ -79,3 +79,37 @@ def test_unknown_native_host_without_features_fails_closed(
     monkeypatch.setattr(host_isa, "_cpu_features", frozenset)
     with pytest.raises(host_isa.HostISAError, match="cannot state a native ISA"):
         host_isa._impose_host_policy()
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "-march=native",
+        "-march=x86-64-v4",
+        "-march=skylake-avx512",
+        "-mavx512f",
+    ],
+)
+def test_host_compile_command_refuses_an_x86_isa_escape(
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+) -> None:
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    with pytest.raises(host_isa.HostISAError, match="ISA clamp"):
+        host_isa._assert_command_is_clamped(f"g++ -march=x86-64-v3 {flag} wrapper.cpp -c")
+
+
+def test_x86_host_compile_requires_the_exact_policy_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    host_isa._assert_command_is_clamped("g++ -march=x86-64-v3 -mavx2 -mfma -mf16c wrapper.cpp -c")
+    with pytest.raises(host_isa.HostISAError, match="ISA clamp"):
+        host_isa._assert_command_is_clamped("g++ wrapper.cpp -c")
+
+
+def test_non_x86_host_compile_keeps_its_native_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "machine", lambda: "aarch64")
+    host_isa._assert_command_is_clamped("g++ -march=native wrapper.cpp -c")

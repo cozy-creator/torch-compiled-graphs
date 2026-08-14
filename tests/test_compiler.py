@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import torch_compiled_graphs
+import torch_compiled_graphs._wrapper_split as wrapper_split
 import torch_compiled_graphs.compiler as compiler_module
 from torch_compiled_graphs import CompileError
 
@@ -45,7 +46,7 @@ def test_compile_uses_the_one_fixed_v1_policy(monkeypatch: pytest.MonkeyPatch) -
     files = compiler_module._compile_exported_program(_program())
     assert files == ("wrapper.cpp", "kernel.so")
     assert seen["options"] == {
-        "compile_threads": 1,
+        "compile_threads": 4,
         "aot_inductor.package_constants_in_so": False,
         "aot_inductor.use_runtime_constant_folding": True,
         "aot_inductor.package": True,
@@ -109,6 +110,21 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
     )
 
 
+def test_compile_installs_the_sealed_host_transform(monkeypatch: pytest.MonkeyPatch) -> None:
+    installed: list[bool] = []
+
+    def install() -> bool:
+        installed.append(True)
+        return True
+
+    monkeypatch.setattr(compiler_module, "_impose_host_policy", lambda: {})
+    monkeypatch.setattr(wrapper_split, "install", install)
+    monkeypatch.setattr(compiler_module, "_aot_compile", lambda *args, **kwargs: ["model.so"])
+
+    assert compiler_module._compile_exported_program(_program()) == ("model.so",)
+    assert installed == [True]
+
+
 def test_compile_refuses_missing_or_conflicting_graph_context() -> None:
     class Missing:
         graph_module = type("GraphModule", (), {"graph": type("Graph", (), {"nodes": ()})()})()
@@ -146,10 +162,5 @@ def test_packager_receives_exactly_one_named_graph(
 
     monkeypatch.setattr(compiler_module, "_package_aoti", packager)
     output = tmp_path / "model.pt2"
-    assert (
-        compiler_module._package_compiled_files(
-            "denoiser/h=64", ["a.so"], output
-        )
-        == output
-    )
+    assert compiler_module._package_compiled_files("denoiser/h=64", ["a.so"], output) == output
     assert seen["files"] == {"denoiser/h=64": ["a.so"]}
