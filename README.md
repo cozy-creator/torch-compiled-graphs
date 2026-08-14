@@ -46,6 +46,13 @@ compile policy, packages it as a
 verified artifact, stores it through HashRepo, and materializes it. A later
 process pointed at the same HashRepo root reuses it without compiling.
 
+The sealed compiler policy uses four Inductor compile workers (pgw#757's
+measured contention knee) and privately rewrites the generated C++ wrapper's
+pathological constructor and `run_impl` functions into reconstruction-checked
+smaller functions/translation units. Unrecognized shapes compile unchanged;
+failed transformed builds retry PyTorch's original source. Neither transform
+is a caller option, environment switch, public API, or identity axis.
+
 `recorded_toolchain` is an explicit adapter input, not a guessed version or
 host fingerprint. A worker records its settings declaration, loaded-library
 digest, installed Torch/Triton/NVIDIA wheel RECORD digests, and bundled CUDA

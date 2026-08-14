@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+import shlex
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -165,6 +166,19 @@ def _impose_host_policy() -> dict[str, str]:
         if foreign != wanted:
             raise HostISAError(f"host ISA clamp is thread-local: fresh thread reads {foreign!r}")
         return requirement.facts()
+
+
+def _assert_command_is_clamped(command: str) -> None:
+    """Refuse an x86 host compile that escaped the process-wide ISA clamp."""
+
+    if _host_requirement().machine != _X86_64:
+        return
+    try:
+        arguments = shlex.split(command)
+    except ValueError as exc:
+        raise HostISAError(f"cannot parse host compiler command: {exc}") from exc
+    if any(argument in {"-march=native", "--param=march=native"} for argument in arguments):
+        raise HostISAError("host compiler command carries -march=native despite the ISA clamp")
 
 
 def _validate_host_facts(toolchain: Mapping[str, str]) -> _Requirement:
