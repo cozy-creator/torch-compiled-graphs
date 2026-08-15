@@ -33,16 +33,81 @@ The probe's `RuntimeCompatibility` toolchain block folds these into the same
 worker-shaped members (settings/libs/torch/triton), so the folded 16-hex axis
 moves exactly when an underlying fact moves.
 
+## Running the matrix (one command)
+
+`run_matrix.py` ships the bundle to every target in a manifest, runs
+`probe_run.py` there, collects the rows, folds them, and writes a dated
+report. Transports: `local`, `docker` (free), `ssh` (pods).
+
+```bash
+# Review the entire campaign before spending a cent — prints the exact
+# command sequence per target and executes nothing.
+python run_matrix.py --targets targets.example.json --bundle bundle/ \
+    --out results/ --dry-run
+
+# Free targets only (pod targets are skipped unless you ask for them).
+python run_matrix.py --targets targets.local-demo.json --bundle bundle/ --out results/
+
+# The real campaign, once pods are booted and endpoints filled in.
+python run_matrix.py --targets targets.json --bundle bundle/ --out results/ \
+    --include-pod-only
+```
+
+`targets.example.json` is the host inventory **as data**: every target states
+which axis it exists to vary, how to obtain it, and whether it needs a paid
+pod. Pod targets are skipped by default, so no command in this directory can
+start billing by accident.
+
+## INCONCLUSIVE rows — the distinction that keeps the matrix honest
+
+A host that cannot even attempt the probe (no torch, no package) yields a row
+flagged `inconclusive`, and the report **excludes it from the contingency**.
+Treating "could not try" as "incompatible" would mark every differing axis
+RETAIN for a reason that has nothing to do with portability.
+
+This is not hypothetical. The committed `local-demo-*` rows are exactly that
+case: two containers whose glibc/libstdc++/os_release/cxx_compiler genuinely
+differ from the build host, but with no torch installed. Scored naively they
+would have condemned **eight** axes; scored honestly they condemn none and
+the verdict stays `insufficient data`.
+
+## Projected cache-hit improvement (tcg#4's "report before you change")
+
+The issue asks for the expected cache-hit gain *before* any axis is touched.
+Measured improvement needs probed hosts; a projection needs only a fleet
+census:
+
+```bash
+# Build a census from a fleet export you supply (this never queries prod),
+# or generate a synthetic one to exercise the pipeline.
+python fleet_census.py --input export.jsonl --output results/census.json
+python fleet_census.py --synthetic 400 --output results/census-synthetic.json
+
+python matrix_report.py results/*.json --census results/census.json
+```
+
+The projection assumes axes vary **independently**, which a fleet of pinned
+images does not — one image pins glibc, libstdc++ and torch together, so the
+true gain from dropping any one of them is smaller than the model says. Every
+projected record carries `projection_not_measurement` and
+`assumes_axis_independence` so a number can never be quoted as a measurement.
+It is only as good as the export behind it: a census from one region or one
+image generation overstates agreement.
+
 ## Pod matrix runbook (the real measurement)
 
-Build ONE bundle per compiler environment worth distinguishing, then run
-`probe_run.py` on every representative image. Cover at minimum:
+Build ONE bundle per compiler environment worth distinguishing, then run the
+matrix against every representative image. Cover at minimum:
 
 - the production worker CUDA images (current and previous release);
 - an image with a different libstdc++/glibc pair (older LTS base);
 - a different Torch patch build of the same minor (and one different minor);
 - a Triton-present vs Triton-absent environment;
 - an x86-64-v3-only host vs an avx512 host (`host_isa_*` axes).
+
+Keep torch identical to the build host wherever the intent is to isolate an
+OS-level axis; if torch moves too, several axes differ at once and the
+contingency can only fail closed across all of them.
 
 CPU pods (~$0.03–0.50) suffice for CPU-target probes; a CUDA-target matrix
 needs GPU pods and is a separate campaign. Collect every row, run
@@ -51,6 +116,14 @@ coarsens axes — with regression cases per retained boundary, per tcg#4.
 
 ## results/
 
-`local-<hostname-hash>.json` is the single-host arm proving the harness end
-to end (all axes equal, all stages ok). A one-host matrix decides nothing and
-the report says so.
+- `local-<hostname-hash>.json` — the phase-1 single-host arm (all axes equal,
+  all stages ok).
+- `local-demo-*.json` + `report-local-demo-*.json` — the free 3-host runner
+  demonstration described above. It proves the runner and the inconclusive
+  rule on real hosts; it proves **nothing** about portability.
+- `census-synthetic.json`, `fleet-export-synthetic.jsonl` — the projection
+  pipeline's synthetic input and output. Synthetic, deliberately correlated,
+  and not production data.
+
+**No fingerprint axis changes until the matrix holds conclusive rows from at
+least two distinct hosts.** Nothing committed here clears that bar yet.

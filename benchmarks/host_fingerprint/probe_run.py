@@ -50,7 +50,12 @@ def run_probe(bundle: Path) -> dict[str, Any]:
 
         from torch_compiled_graphs import Engine
     except Exception as error:  # noqa: BLE001 - the row reports, never raises
+        # The host could not ATTEMPT the probe. That is not evidence that its
+        # axes are incompatible, and counting it as a failure would mark every
+        # differing axis RETAIN for a reason that has nothing to do with
+        # portability. Inconclusive rows are excluded from the contingency.
         row["error"] = f"import: {error}"
+        row["inconclusive"] = True
         return row
 
     with tempfile.TemporaryDirectory(prefix="tfs-probe-run-") as scratch:
