@@ -23,6 +23,22 @@ def _failed(row: dict[str, Any]) -> bool:
     return not (row["load_ok"] and row["exec_ok"] and row["output_ok"])
 
 
+def inconclusive(row: dict[str, Any]) -> bool:
+    """Did the host fail to ATTEMPT the probe (no torch, no package)?
+
+    Such a row carries real axis values but no compatibility evidence. It is
+    excluded from the contingency: treating "could not try" as "incompatible"
+    would mark every differing axis RETAIN for the wrong reason, which is
+    exactly the misattribution this matrix exists to prevent.
+    """
+
+    return bool(row.get("inconclusive", False))
+
+
+def conclusive_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if not inconclusive(row)]
+
+
 def axis_contingency(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
     """Per axis: how often did a difference from the build host co-occur with
     a failure? Counts are per row (one candidate host each)."""
@@ -106,36 +122,110 @@ def cache_hit_improvement(rows: list[dict[str, Any]], dropped_axis: str) -> dict
     }
 
 
-def report(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def projected_cache_hit_improvement(
+    census: dict[str, Any], dropped_axis: str
+) -> dict[str, Any]:
+    """Projected gain from dropping ONE axis, over a FLEET CENSUS.
+
+    This is a PROJECTION, not a measurement. The census gives per-axis value
+    distributions (marginals), not the joint distribution, so the arithmetic
+    below assumes the axes vary independently across the fleet — stated in
+    every returned record because a correlated fleet (one image pinning
+    glibc, libstdc++ and torch together) makes the true gain smaller.
+
+    For two hosts drawn at random, P(agree on axis X) = sum_v p_v^2. The
+    cache-hit rate is the product over retained axes; dropping A removes its
+    factor, so the gain is the difference.
+    """
+
+    distributions: dict[str, dict[str, int]] = census.get("axis_values", {})
+    if dropped_axis not in distributions:
+        return {
+            "dropped_axis": dropped_axis,
+            "projection_not_measurement": True,
+            "insufficient_data": True,
+            "reason": f"census records no distribution for {dropped_axis!r}",
+        }
+
+    def agreement(axis: str) -> float:
+        counts = distributions[axis]
+        total = sum(counts.values())
+        if total <= 0:
+            return 1.0
+        return sum((count / total) ** 2 for count in counts.values())
+
+    before = 1.0
+    for axis in distributions:
+        before *= agreement(axis)
+    after = before / agreement(dropped_axis) if agreement(dropped_axis) else before
+    return {
+        "dropped_axis": dropped_axis,
+        "projection_not_measurement": True,
+        "assumes_axis_independence": True,
+        "insufficient_data": False,
+        "census_hosts": census.get("hosts"),
+        "census_source": census.get("source"),
+        "axes_in_census": len(distributions),
+        "hit_rate_before": before,
+        "hit_rate_after": after,
+        "projected_gain": after - before,
+    }
+
+
+def report(
+    rows: list[dict[str, Any]], census: dict[str, Any] | None = None
+) -> dict[str, Any]:
     from axes import validate_row
 
     for row in rows:
         validate_row(row)
-    table = axis_contingency(rows)
+    conclusive = conclusive_rows(rows)
+    table = axis_contingency(conclusive)
     classes = classify(table)
-    return {
+    folded: dict[str, Any] = {
         "rows": len(rows),
-        "failures": sum(1 for row in rows if _failed(row)),
+        "conclusive_rows": len(conclusive),
+        "inconclusive_rows": len(rows) - len(conclusive),
+        "failures": sum(1 for row in conclusive if _failed(row)),
         "contingency": table,
         **classes,
         "cache_hit_improvement": [
-            cache_hit_improvement(rows, axis) for axis in classes["coarsening_candidates"]
+            cache_hit_improvement(conclusive, axis) for axis in classes["coarsening_candidates"]
         ],
         "verdict": (
             "insufficient data: a fingerprint change needs rows from at least "
-            f"{MIN_HOSTS_FOR_A_VERDICT} distinct hosts"
-            if len(_host_identities(rows)) < MIN_HOSTS_FOR_A_VERDICT
+            f"{MIN_HOSTS_FOR_A_VERDICT} distinct hosts that could ATTEMPT the probe"
+            if len(_host_identities(conclusive)) < MIN_HOSTS_FOR_A_VERDICT
             else "measured; candidates above differed without a single failure"
         ),
     }
+    if census is not None:
+        folded["projection"] = {
+            "note": (
+                "projection over a fleet census, NOT measured portability; "
+                "assumes axes vary independently, which a fleet of pinned "
+                "images does not"
+            ),
+            "per_axis": [
+                projected_cache_hit_improvement(census, axis)
+                for axis in sorted(census.get("axis_values", {}))
+            ],
+        }
+    return folded
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("rows", nargs="+", type=Path)
+    parser.add_argument(
+        "--census",
+        type=Path,
+        help="fleet census (fleet_census.py output) for the PROJECTED gain",
+    )
     arguments = parser.parse_args()
     loaded = [json.loads(path.read_text()) for path in arguments.rows]
-    print(json.dumps(report(loaded), indent=2))
+    census = json.loads(arguments.census.read_text()) if arguments.census else None
+    print(json.dumps(report(loaded, census), indent=2))
 
 
 if __name__ == "__main__":

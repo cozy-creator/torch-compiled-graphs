@@ -206,3 +206,8 @@ def validate_row(row: dict[str, Any]) -> None:
     for flag in ("load_ok", "exec_ok", "output_ok"):
         if not isinstance(row[flag], bool):
             raise ValueError(f"{flag} must be a boolean")
+    if "inconclusive" in row:
+        if not isinstance(row["inconclusive"], bool):
+            raise ValueError("inconclusive must be a boolean")
+        if row["inconclusive"] and row["load_ok"]:
+            raise ValueError("an inconclusive row cannot also report a successful load")

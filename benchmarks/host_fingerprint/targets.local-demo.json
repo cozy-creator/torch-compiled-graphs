@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "note": [
+    "The exact manifest that produced the committed results/local-demo-* rows.",
+    "It costs nothing: one local run plus two containers off free public images.",
+    "",
+    "It proves the RUNNER (ship -> execute -> collect -> fold) and produces real",
+    "per-axis differences for glibc / libstdcxx / os_release / cxx_compiler. It",
+    "does NOT prove portability: the containers have no torch, so their rows are",
+    "INCONCLUSIVE by construction and are excluded from the contingency. Real",
+    "compatibility verdicts need the pod targets in targets.example.json.",
+    "",
+    "`python` for the local target points at a venv that actually has torch and",
+    "the package installed; the generic example manifest says python3."
+  ],
+  "targets": [
+    {
+      "name": "local-demo-build-host",
+      "transport": "local",
+      "axis_intent": "the build host itself — all axes equal, the control row",
+      "obtain": "this machine",
+      "pod_only": false,
+      "python": "/home/fidika/cozy/torch-compiled-graphs/.venv/bin/python"
+    },
+    {
+      "name": "local-demo-debian12",
+      "transport": "docker",
+      "image": "python:3.13-slim-bookworm",
+      "axis_intent": "glibc/libstdcxx/os_release/cxx_compiler one LTS step below the build host",
+      "obtain": "docker pull python:3.13-slim-bookworm (free)",
+      "pod_only": false,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo"
+      ]
+    },
+    {
+      "name": "local-demo-debian11",
+      "transport": "docker",
+      "image": "python:3.13-slim-bullseye",
+      "axis_intent": "glibc/libstdcxx two LTS steps below — the oldest base worth supporting",
+      "obtain": "docker pull python:3.13-slim-bullseye (free)",
+      "pod_only": false,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo"
+      ]
+    }
+  ]
+}

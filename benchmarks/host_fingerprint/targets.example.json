@@ -1,0 +1,116 @@
+{
+  "schema": 1,
+  "note": [
+    "The tcg#4 host inventory as DATA, not prose: every target states which axis",
+    "it exists to vary, how to obtain it, and whether it needs a paid pod. The",
+    "rationale is a field rather than a comment so a report can cite why a host",
+    "was in the matrix. Copy this file, fill in real endpoints, and run:",
+    "  python run_matrix.py --targets targets.json --bundle bundle/ --out results/ --dry-run",
+    "then drop --dry-run once the printed command sequence looks right.",
+    "",
+    "setup[] runs on the TARGET before the probe. Keep the torch build identical",
+    "to the build host wherever the intent is to isolate an OS-level axis: if",
+    "torch moves too, several axes differ at once and the contingency can only",
+    "fail closed across all of them."
+  ],
+  "targets": [
+    {
+      "name": "local-build-host",
+      "transport": "local",
+      "axis_intent": "the build host itself — the all-axes-equal control row",
+      "obtain": "this machine",
+      "pod_only": false,
+      "python": "python3"
+    },
+    {
+      "name": "debian12-glibc236",
+      "transport": "docker",
+      "image": "python:3.13-slim-bookworm",
+      "axis_intent": "glibc/libstdcxx/os_release one LTS step below the build host",
+      "obtain": "docker pull python:3.13-slim-bookworm (~130 MB, free)",
+      "pod_only": false,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo"
+      ]
+    },
+    {
+      "name": "debian11-glibc231",
+      "transport": "docker",
+      "image": "python:3.13-slim-bullseye",
+      "axis_intent": "glibc/libstdcxx two LTS steps below — the oldest base worth supporting",
+      "obtain": "docker pull python:3.13-slim-bullseye (~130 MB, free)",
+      "pod_only": false,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo"
+      ]
+    },
+    {
+      "name": "worker-cuda-current",
+      "transport": "ssh",
+      "endpoint": "root@POD-ENDPOINT-CURRENT",
+      "axis_intent": "the production worker image in service — the reference environment",
+      "obtain": "runpod/vast CPU pod booted from the current worker release image",
+      "pod_only": true,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo"
+      ]
+    },
+    {
+      "name": "worker-cuda-previous",
+      "transport": "ssh",
+      "endpoint": "root@POD-ENDPOINT-PREVIOUS",
+      "axis_intent": "previous worker release image — does a release bump invalidate the cache?",
+      "obtain": "same provider, previous worker release image tag",
+      "pod_only": true,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo"
+      ]
+    },
+    {
+      "name": "torch-same-minor-different-patch",
+      "transport": "ssh",
+      "endpoint": "root@POD-ENDPOINT-TORCH-PATCH",
+      "axis_intent": "torch_version/torch_git/torch_config_digest at one patch step",
+      "obtain": "any CPU pod; pip install the neighbouring torch patch of the build host's minor",
+      "pod_only": true,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo",
+        "pip install --quiet --index-url https://download.pytorch.org/whl/cpu 'torch==PIN-THE-NEIGHBOURING-PATCH'"
+      ]
+    },
+    {
+      "name": "triton-absent",
+      "transport": "ssh",
+      "endpoint": "root@POD-ENDPOINT-NO-TRITON",
+      "axis_intent": "triton — present on the build host, absent here",
+      "obtain": "CPU pod with the build host's torch but no triton installed",
+      "pod_only": true,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo",
+        "pip uninstall -y triton || true"
+      ]
+    },
+    {
+      "name": "avx512-host",
+      "transport": "ssh",
+      "endpoint": "root@POD-ENDPOINT-AVX512",
+      "axis_intent": "host_isa_level/host_isa_features above the build host's x86-64-v3 clamp",
+      "obtain": "provider instance type with avx512 (check /proc/cpuinfo before booting the matrix)",
+      "pod_only": true,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo"
+      ]
+    },
+    {
+      "name": "v3-only-host",
+      "transport": "ssh",
+      "endpoint": "root@POD-ENDPOINT-V3",
+      "axis_intent": "host_isa_* at exactly the compilation clamp — the floor case",
+      "obtain": "older provider instance type without avx512",
+      "pod_only": true,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo"
+      ]
+    }
+  ]
+}

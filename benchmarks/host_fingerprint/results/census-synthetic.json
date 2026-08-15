@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "source": "synthetic fleet of 400 hosts (NOT production)",
+  "hosts": 400,
+  "malformed_lines": 0,
+  "unknown_axes": [],
+  "missing_axes": [],
+  "axis_values": {
+    "cxx_compiler": {
+      "c++ (Ubuntu 13.3.0) 13.3.0": 293,
+      "c++ (Ubuntu 11.4.0) 11.4.0": 107
+    },
+    "glibc": {
+      "glibc-2.39": 293,
+      "glibc-2.35": 107
+    },
+    "host_isa_features": {
+      "abm,avx,avx2,bmi1,bmi2,f16c,fma,movbe,xsave": 400
+    },
+    "host_isa_level": {
+      "x86-64-v3": 240,
+      "x86-64-v4": 160
+    },
+    "libstdcxx_max_glibcxx": {
+      "GLIBCXX_3.4.33": 293,
+      "GLIBCXX_3.4.30": 107
+    },
+    "machine": {
+      "x86_64": 400
+    },
+    "os_release": {
+      "ubuntu-24.04": 293,
+      "ubuntu-22.04": 107
+    },
+    "python_abi": {
+      "cpython-3.13-cpython-313-x86_64-linux-gnu": 400
+    },
+    "torch_config_digest": {
+      "5f31e143bbf0b632": 293,
+      "9c02aa71de44bb18": 107
+    },
+    "torch_cxx11_abi": {
+      "1": 400
+    },
+    "torch_git": {
+      "cf30153c": 293,
+      "a1b2c3d4": 107
+    },
+    "torch_version": {
+      "2.13.0+cu130": 293,
+      "2.12.1+cu124": 107
+    },
+    "triton": {
+      "3.1.0": 372,
+      "absent": 28
+    }
+  }
+}
