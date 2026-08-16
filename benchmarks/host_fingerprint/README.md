@@ -154,15 +154,36 @@ varying it alone would prove nothing about the artifact. Fail closed on all four
   and no second 2.13 patch is published on the cpu index. Do not read this as
   "torch does not matter".
 
-**`torch_config_digest` is host-dependent, not build-dependent.**
-`torch.__config__.show()` carries a runtime-detected `CPU capability usage:`
-line. The same wheel (2.13.0+cpu, git `cf30153c`) digests `5f31e143bbf0b632` on
-an EPYC 7713 (AVX2) and `76efcb828dca63fb` on an EPYC 9655P (AVX512), so the
-axis fragments the cache by CPU model for no portability reason. Meanwhile
-`host_isa_*` is blind to exactly that difference: compiles clamp to
-`x86-64-v3`, so every v3-or-better x86 host records identical ISA facts (the
-v3 artifact ran correctly on the AVX512 host). The fix is to stabilise the
-digest, not to drop the axis.
+**`torch_config_digest` was host-dependent, not build-dependent — FIXED
+(tcg#26), schema 1 → 2.** `torch.__config__.show()` carries a runtime-detected
+`CPU capability usage:` line. The same wheel (2.13.0+cpu, git `cf30153c`)
+digested `5f31e143bbf0b632` on an EPYC 7713 (AVX2) and `76efcb828dca63fb` on an
+EPYC 9655P (AVX512), so the axis fragmented the cache by CPU model for no
+portability reason. Meanwhile `host_isa_*` is blind to exactly that difference:
+compiles clamp to `x86-64-v3`, so every v3-or-better x86 host records identical
+ISA facts (the v3 artifact ran correctly on the AVX512 host).
+
+The axis was stabilised, not dropped. `axes.torch_config_digest()` now digests
+an **allowlist** of the build-identifying lines only — GCC/clang/MSVC, C++
+Version, oneAPI MKL, MKL-DNN, OpenMP, LAPACK, NNPACK, cross-compile, and
+`Build settings:` (which carries COMMIT_SHA, TORCH_VERSION, CUDA_VERSION,
+CUDNN_VERSION, CXX_COMPILER, CXX_FLAGS and every `USE_*`). An unrecognised line
+is dropped, so a future torch release that adds another host-probed line cannot
+silently re-fragment the axis.
+
+**A second host-dependence the issue did not name, found while auditing
+`show()`'s full output:** ATen appends `getCUDAHooks().showConfig()` behind
+`hasCUDA()`, a live *driver* probe. A `+cu130` wheel on a host with a too-old
+driver emits no CUDA block at all; the same wheel on a working GPU host emits
+`CUDA Runtime` / `NVCC architecture flags` / `CuDNN` / `Magma`. That is four
+lines swinging on driver state alone — wider than the CPU-capability line, and
+it means the axis moved between a build host and a run host for reasons that
+had nothing to do with the wheel. Both are covered by the allowlist and both
+are fenced in `tests/test_host_fingerprint_matrix.py`.
+
+The v1 rows under `results/` are the record of what was measured under the old
+derivation and are **not** regenerated; the schema bump makes a v1/v2 mix a
+refusal in `validate_row` rather than a false diff on an axis that never moved.
 
 **UNMEASURED, fail-closed — `machine`, `host_isa_level`, `host_isa_features`,
 `torch_cxx11_abi`.** No row ever saw them differ, and the ISA pair *cannot*
