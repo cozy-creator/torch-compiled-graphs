@@ -1,0 +1,105 @@
+{
+  "rows": 3,
+  "conclusive_rows": 1,
+  "inconclusive_rows": 2,
+  "failures": 0,
+  "contingency": {
+    "cxx_compiler": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "glibc": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "host_isa_features": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "host_isa_level": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "libstdcxx_max_glibcxx": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "machine": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "os_release": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "python_abi": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "torch_config_digest": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "torch_cxx11_abi": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "torch_git": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "torch_version": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "triton": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 1
+    }
+  },
+  "coarsening_candidates": [],
+  "retain": [],
+  "unmeasured": [
+    "cxx_compiler",
+    "glibc",
+    "host_isa_features",
+    "host_isa_level",
+    "libstdcxx_max_glibcxx",
+    "machine",
+    "os_release",
+    "python_abi",
+    "torch_config_digest",
+    "torch_cxx11_abi",
+    "torch_git",
+    "torch_version",
+    "triton"
+  ],
+  "cache_hit_improvement": [],
+  "verdict": "insufficient data: a fingerprint change needs rows from at least 2 distinct hosts that could ATTEMPT the probe"
+}
