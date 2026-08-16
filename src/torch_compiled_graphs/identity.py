@@ -22,6 +22,12 @@ REQUIRED_AXES: tuple[str, ...] = ("graph", "sm", "toolchain")
 #: run time, not at import, and its fixtures keep the obsolete shape green.
 GRAPH_CLASS_BLOCK = "graph_class"
 
+#: The artifact `kind` this package writes and refuses on read. Public for the
+#: same reason again, and defined HERE rather than in `artifact` because this
+#: module is the dependency root: `artifact` imports from it, so the constant
+#: can have exactly one definition that both readers share.
+ARTIFACT_KIND = "aot-inductor"
+
 _NOT_TOOLCHAIN = frozenset(("diffusers", "transformers", "peft"))
 _KEY_RE = re.compile(rf"[a-z0-9][a-z0-9._-]*-[0-9a-f]{{{_DIGEST_HEX}}}\Z")
 
@@ -124,8 +130,10 @@ def toolchain_axis_digest(block: Mapping[str, Any]) -> str:
 
 
 def from_artifact_metadata(metadata: Mapping[str, Any]) -> CompiledGraphKey:
-    if metadata.get("kind") != "aot-inductor":
-        raise IdentityError("only an aot-inductor artifact has compiled-graph identity")
+    if metadata.get("kind") != ARTIFACT_KIND:
+        raise IdentityError(
+            f"only an {ARTIFACT_KIND} artifact has compiled-graph identity"
+        )
     sm = metadata.get("sm")
     if not isinstance(sm, str) or not sm.strip():
         raise IdentityError("artifact records no GPU compute capability")

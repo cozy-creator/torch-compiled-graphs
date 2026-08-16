@@ -9,6 +9,7 @@ import pytest
 from hashrepo import LocalCAS
 
 from torch_compiled_graphs import (
+    ARTIFACT_KIND,
     GRAPH_CLASS_BLOCK,
     REQUIRED_AXES,
     CompiledGraphKey,
@@ -114,7 +115,7 @@ def _artifact_metadata(block_name: str) -> dict[str, object]:
     """Minimal aot-inductor metadata with the graph-class facts under ``block_name``."""
 
     return {
-        "kind": "aot-inductor",
+        "kind": ARTIFACT_KIND,
         "sm": "sm_89",
         block_name: {"class_hash": "fedcba9876543210"},
         "toolchain": {"torch": "2.13.0"},
@@ -154,3 +155,22 @@ def test_exported_graph_class_block_is_the_block_the_reader_reads() -> None:
 
     with pytest.raises(IdentityError, match=re.escape(GRAPH_CLASS_BLOCK)):
         from_artifact_metadata(_artifact_metadata("entry"))
+
+
+def test_exported_artifact_kind_is_the_kind_identity_refuses_on() -> None:
+    """The export must BE the kind this reader enforces, not a copy.
+
+    ``identity`` spelled the literal while ``artifact`` used the constant, so a
+    rename would have split the two readers silently — the same shape as the
+    ``entry``/``graph_class`` outage, one field over. Both the accept and the
+    refusal are derived from the export, so this follows a deliberate rename
+    and fails only when the export and its reader disagree. ``artifact``'s
+    half of the pair is fenced in ``test_artifact.py``.
+    """
+
+    metadata = _artifact_metadata(GRAPH_CLASS_BLOCK)
+    assert metadata["kind"] == ARTIFACT_KIND
+    assert from_artifact_metadata(metadata).as_dict()["graph"] == "fedcba9876543210"
+
+    with pytest.raises(IdentityError, match=re.escape(ARTIFACT_KIND)):
+        from_artifact_metadata({**metadata, "kind": ARTIFACT_KIND + "-not"})
