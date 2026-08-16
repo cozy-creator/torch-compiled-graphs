@@ -8,7 +8,7 @@ sole local content-addressed storage and chunking layer.
 ## V1 lifecycle
 
 ```python
-from hashrepo import LocalCAS
+from tensorfs import LocalCAS
 from torchcg import (
     Engine,
     GraphClassSpec,

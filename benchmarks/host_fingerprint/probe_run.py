@@ -46,7 +46,7 @@ def run_probe(bundle: Path) -> dict[str, Any]:
 
     try:
         import torch
-        from hashrepo import LocalCAS
+        from tensorfs import LocalCAS
 
         from torchcg import Engine
     except Exception as error:  # noqa: BLE001 - the row reports, never raises

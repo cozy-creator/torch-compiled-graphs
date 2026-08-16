@@ -30,7 +30,7 @@
       "obtain": "docker pull python:3.13-slim-bookworm (~130 MB, free)",
       "pod_only": false,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs"
       ]
     },
     {
@@ -41,7 +41,7 @@
       "obtain": "docker pull python:3.13-slim-bullseye (~130 MB, free)",
       "pod_only": false,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs"
       ]
     },
     {
@@ -52,7 +52,7 @@
       "obtain": "runpod/vast CPU pod booted from the current worker release image",
       "pod_only": true,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs"
       ]
     },
     {
@@ -63,7 +63,7 @@
       "obtain": "same provider, previous worker release image tag",
       "pod_only": true,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs"
       ]
     },
     {
@@ -74,7 +74,7 @@
       "obtain": "any CPU pod; pip install the neighbouring torch patch of the build host's minor",
       "pod_only": true,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo",
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs",
         "pip install --quiet --index-url https://download.pytorch.org/whl/cpu 'torch==PIN-THE-NEIGHBOURING-PATCH'"
       ]
     },
@@ -86,7 +86,7 @@
       "obtain": "CPU pod with the build host's torch but no triton installed",
       "pod_only": true,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo",
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs",
         "pip uninstall -y triton || true"
       ]
     },
@@ -98,7 +98,7 @@
       "obtain": "provider instance type with avx512 (check /proc/cpuinfo before booting the matrix)",
       "pod_only": true,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs"
       ]
     },
     {
@@ -109,7 +109,7 @@
       "obtain": "older provider instance type without avx512",
       "pod_only": true,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs"
       ]
     }
   ]

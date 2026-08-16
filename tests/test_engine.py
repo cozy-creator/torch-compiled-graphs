@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from hashrepo import CASRef, LocalCAS
+from tensorfs import CASRef, LocalCAS
 
 import torchcg._wrapper_split as wrapper_split_module
 import torchcg.engine as engine_module
@@ -296,7 +296,7 @@ def test_engine_signatures_expose_no_output_changing_compile_seam() -> None:
     assert forbidden.isdisjoint(inspect.signature(Engine._mint).parameters)
 
 
-def test_fresh_engine_reuses_local_hashrepo_without_compiling(tmp_path: Path) -> None:
+def test_fresh_engine_reuses_the_local_store_without_compiling(tmp_path: Path) -> None:
     cas_root = tmp_path / "cas"
     spec = _spec()
     key = _runtime().key(spec.declare())
@@ -331,7 +331,7 @@ def test_fresh_engine_reuses_local_hashrepo_without_compiling(tmp_path: Path) ->
             """
 import sys
 from pathlib import Path
-from hashrepo import LocalCAS
+from tensorfs import LocalCAS
 from torchcg import Engine, EnsureOutcome
 assert "torch" not in sys.modules
 def forbidden_recipe():
@@ -447,8 +447,7 @@ def test_corrupt_local_object_is_quarantined_and_repaired(tmp_path: Path) -> Non
         toolchain=_toolchain(),
         recipe=lambda: spec,
     )
-    manifest = cas.load_manifest(first.compiled_graph.manifest)
-    cas.object_path(manifest.files[0].digest).write_bytes(b"corrupt")
+    cas.object_path(first.compiled_graph.artifact).write_bytes(b"corrupt")
 
     repaired = Engine(LocalCAS(tmp_path / "cas")).ensure(
         key,
@@ -461,7 +460,7 @@ def test_corrupt_local_object_is_quarantined_and_repaired(tmp_path: Path) -> Non
     assert repaired.compiled_graph.package.is_file()
 
 
-def test_repairing_with_a_previously_divergent_manifest_retires_its_stale_quarantine(
+def test_repairing_with_a_previously_divergent_artifact_retires_its_stale_quarantine(
     tmp_path: Path,
 ) -> None:
     cas = LocalCAS(tmp_path / "cas")
@@ -484,17 +483,16 @@ def test_repairing_with_a_previously_divergent_manifest_retires_its_stale_quaran
     divergent = engine.import_artifact(key, artifact_b)
     assert divergent.outcome == StoreOutcome.DIVERGENT
 
-    manifest_a = cas.load_manifest(minted.compiled_graph.manifest)
-    cas.object_path(manifest_a.files[0].digest).write_bytes(b"corrupt-a")
+    cas.object_path(minted.compiled_graph.artifact).write_bytes(b"corrupt-a")
     with pytest.raises(QuarantinedArtifact, match="CAS verification"):
         engine.resolve(key, tmp_path / "corrupt-a")
 
     repaired = engine.import_artifact(key, artifact_b)
     assert repaired.outcome == StoreOutcome.REPAIRED
-    assert repaired.manifest == divergent.manifest
+    assert repaired.artifact == divergent.artifact
     resolved = engine.resolve(key, tmp_path / "resolved-b")
     assert resolved is not None
-    assert resolved.manifest == divergent.manifest
+    assert resolved.artifact == divergent.artifact
 
 
 def test_each_quarantine_event_replaces_the_previous_marker_generation(
@@ -503,17 +501,17 @@ def test_each_quarantine_event_replaces_the_previous_marker_generation(
     cas = LocalCAS(tmp_path / "cas")
     store = _CompiledGraphStore(cas)
     key = str(from_axes({"graph": "graph", "sm": "sm_89", "toolchain": "toolchain"}))
-    manifest = cas.put_bytes(b"manifest identity")
-    store.quarantine(key, manifest)
-    name = _quarantine_ref(key, manifest)
+    artifact = cas.put_bytes(b"artifact identity")
+    store.quarantine(key, artifact)
+    name = _quarantine_ref(key, artifact)
     stale = cas.read_ref(name)
     assert stale is not None
-    store.quarantine(key, manifest)
+    store.quarantine(key, artifact)
     fresh = cas.read_ref(name)
 
     assert fresh is not None
     assert fresh != stale
-    assert not store._clear_quarantine(key, manifest, stale)
+    assert not store._clear_quarantine(key, artifact, stale)
     assert cas.read_ref(name) == fresh
 
 
@@ -540,12 +538,11 @@ def test_repair_cannot_clear_a_concurrent_production_quarantine(
     divergent = engine.import_artifact(key, artifact_b)
     assert divergent.outcome == StoreOutcome.DIVERGENT
 
-    manifest_a = cas.load_manifest(minted.compiled_graph.manifest)
-    cas.object_path(manifest_a.files[0].digest).write_bytes(b"corrupt-a")
+    cas.object_path(minted.compiled_graph.artifact).write_bytes(b"corrupt-a")
     with pytest.raises(QuarantinedArtifact, match="CAS verification"):
         engine.resolve(key, tmp_path / "corrupt-a")
 
-    name = _quarantine_ref(str(key), divergent.manifest)
+    name = _quarantine_ref(str(key), divergent.artifact)
     stale = cas.read_ref(name)
     assert stale is not None
     original_clear = _CompiledGraphStore._clear_quarantine
@@ -554,14 +551,14 @@ def test_repair_cannot_clear_a_concurrent_production_quarantine(
     def quarantine_before_clear(
         store: _CompiledGraphStore,
         inner_key: str,
-        manifest: CASRef,
+        artifact: CASRef,
         expected: CASRef,
     ) -> bool:
         nonlocal interleaved
-        if not interleaved and inner_key == str(key) and manifest == divergent.manifest:
+        if not interleaved and inner_key == str(key) and artifact == divergent.artifact:
             interleaved = True
-            _CompiledGraphStore(cas).quarantine(inner_key, divergent.manifest)
-        return original_clear(store, inner_key, manifest, expected)
+            _CompiledGraphStore(cas).quarantine(inner_key, divergent.artifact)
+        return original_clear(store, inner_key, artifact, expected)
 
     monkeypatch.setattr(_CompiledGraphStore, "_clear_quarantine", quarantine_before_clear)
     with pytest.raises(QuarantinedArtifact, match="fresh quarantine"):
@@ -575,7 +572,7 @@ def test_repair_cannot_clear_a_concurrent_production_quarantine(
         engine.resolve(key, tmp_path / "still-quarantined")
 
 
-def test_named_literal_bytes_survive_hashrepo_reuse(
+def test_named_literal_bytes_survive_store_reuse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from safetensors.torch import load_file
@@ -612,7 +609,7 @@ def test_compile_derives_its_own_key_and_reuses_without_recompiling(
     assert minted.outcome == EnsureOutcome.MINTED
     assert reused.outcome == EnsureOutcome.REUSED
     assert minted.compiled_graph.key == str(runtime.key(spec.declare()))
-    assert reused.compiled_graph.manifest == minted.compiled_graph.manifest
+    assert reused.compiled_graph.artifact == minted.compiled_graph.artifact
     assert calls == 1
 
 
@@ -777,7 +774,7 @@ import sys
 from pathlib import Path
 
 import torch
-from hashrepo import LocalCAS
+from tensorfs import LocalCAS
 from torchcg import Engine
 
 runner = Engine(LocalCAS(Path(sys.argv[1]))).runner(sys.argv[2], Path(sys.argv[3]))
@@ -828,7 +825,7 @@ import sys
 from pathlib import Path
 
 import torch
-from hashrepo import LocalCAS
+from tensorfs import LocalCAS
 from torchcg import CallIngress, Engine
 
 engine = Engine(LocalCAS(Path(sys.argv[1])))
@@ -1055,8 +1052,7 @@ def test_export_refuses_a_corrupt_cas_object(tmp_path: Path) -> None:
         toolchain=_toolchain(),
         recipe=lambda: spec,
     )
-    manifest = cas.load_manifest(result.compiled_graph.manifest)
-    cas.object_path(manifest.files[0].digest).write_bytes(b"corrupt")
+    cas.object_path(result.compiled_graph.artifact).write_bytes(b"corrupt")
     with pytest.raises(StorageError, match="export verification"):
         engine.export_artifact(key, tmp_path / "corrupt.tar.gz")
     assert not (tmp_path / "corrupt.tar.gz").exists()
@@ -1169,14 +1165,55 @@ def test_destination_io_error_does_not_quarantine_valid_bytes(
         toolchain=_toolchain(),
         recipe=lambda: spec,
     )
-    original = LocalCAS.materialize
+    # Acquisition no longer writes the archive anywhere: resolve untars straight
+    # out of the store. The only destination write left is the unpack itself, so
+    # that is where a full disk now surfaces -- at the fsync of an unpacked
+    # member, which is exactly how delayed allocation reports ENOSPC.
+    #
+    # Only the caller's subtree is allowed to fail. Failing every fsync would
+    # also break the quarantine marker's own write, and the test would then pass
+    # whichever branch ran. tests/test_storage.py holds the same property with
+    # the mutation evidence behind it.
+    destinations = tmp_path / "out"
+    destinations.mkdir()
+    original = os.fsync
 
-    def no_space(*args: object, **kwargs: object) -> object:
-        raise OSError(errno.ENOSPC, "no space")
+    def no_space(descriptor: int) -> None:
+        try:
+            target = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+        except OSError:
+            return original(descriptor)
+        if destinations == target or destinations in target.parents:
+            raise OSError(errno.ENOSPC, "no space")
+        return original(descriptor)
 
-    monkeypatch.setattr(LocalCAS, "materialize", no_space)
+    monkeypatch.setattr(os, "fsync", no_space)
     with pytest.raises(OSError) as raised:
-        Engine(cas).resolve(key, tmp_path / "failed")
+        Engine(cas).resolve(key, destinations / "failed")
     assert raised.value.errno == errno.ENOSPC
-    monkeypatch.setattr(LocalCAS, "materialize", original)
+    assert not isinstance(raised.value, QuarantinedArtifact)
+    monkeypatch.setattr(os, "fsync", original)
+    # The bytes were never in question, so nothing may have been quarantined.
     assert Engine(cas).resolve(key, tmp_path / "healthy") is not None
+
+
+def test_unreadable_stored_bytes_do_quarantine(tmp_path: Path) -> None:
+    """The other half of the ENOSPC property: bad stored bytes DO quarantine.
+
+    Without this, the test above passes vacuously against a resolve that never
+    quarantines anything at all.
+    """
+
+    cas = LocalCAS(tmp_path / "cas")
+    spec = _spec()
+    key = _runtime().key(spec.declare())
+    stored = Engine(cas).ensure(
+        key,
+        tmp_path / "seed",
+        target="cpu",
+        toolchain=_toolchain(),
+        recipe=lambda: spec,
+    )
+    cas.object_path(stored.compiled_graph.artifact).write_bytes(b"not a tarball")
+    with pytest.raises(QuarantinedArtifact):
+        Engine(cas).resolve(key, tmp_path / "failed")

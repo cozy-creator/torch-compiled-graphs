@@ -1,9 +1,14 @@
 name: Publish to PyPI
 
+# Deliberate button, never a side effect. Publishing used to fire on any `v*`
+# tag; the version restart recreates `v0.1.0`, which would have pushed a release
+# nobody asked for. DESIGN-RULINGS "Release policy" (2026-08-16) is that internal
+# consumption is git-pinned and nothing reaches PyPI as a side effect of
+# development -- the same ruling that deleted the hashrepo PyPI project. The
+# workflow stays because a real release still needs it; it just has to be asked
+# for. Run it from the Actions tab against the tag you mean to publish.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 permissions: {}
 
@@ -37,6 +42,9 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
+
+      # The lock pins tensorfs by git, and tensorfs builds with maturin.
+      - run: rustup toolchain install stable --profile minimal --no-self-update
 
       - name: Install locked dependencies
         run: uv sync --locked --all-extras

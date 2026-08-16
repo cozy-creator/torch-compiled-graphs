@@ -5,9 +5,11 @@ description = "Mint, package, store, and reuse PyTorch AOTInductor graphs"
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Paul Fidika", email = "paul@fidika.com" }]
-requires-python = ">=3.10"
+# tensorfs sets the floor at 3.11: its compiled extension is abi3 over the
+# stable-ABI buffer protocol, which entered CPython in 3.11.
+requires-python = ">=3.11"
 dependencies = [
-    "hashrepo>=0.3,<0.4",
+    "tensorfs",
     "safetensors>=0.8,<0.9",
 ]
 classifiers = [
@@ -15,15 +17,21 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
 
 [project.urls]
-Repository = "https://github.com/cozy-creator/torch-compiled-graphs"
-Issues = "https://github.com/cozy-creator/torch-compiled-graphs/issues"
+Repository = "https://github.com/cozy-creator/torchcg"
+Issues = "https://github.com/cozy-creator/torchcg/issues"
+
+# tensorfs is consumed by git pin, not from PyPI: it is an internal peer with no
+# published release, and its consumers are all in this workspace. The cost is a
+# Rust toolchain wherever the lock is resolved, because tensorfs builds with
+# maturin -- see .github/workflows/ci.yaml.
+[tool.uv.sources]
+tensorfs = { git = "https://github.com/cozy-creator/tensorfs" }
 
 [project.optional-dependencies]
 torch = ["numpy>=1.26,<2.3", "torch>=2.8"]
@@ -57,22 +65,13 @@ testpaths = ["tests"]
 markers = ["real_aoti: exercise the installed PyTorch AOTInductor implementation"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
 files = ["src", "tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-
-# The hashrepo PyPI project was deleted permanently (DESIGN-RULINGS "Release
-# policy", 2026-08-16): internal consumption is git-pinned, and nothing
-# publishes to PyPI as a side effect of development. This rev is the contents
-# of the last published 0.3.1, so the resolution is unchanged — only its source
-# is. tcg#28 replaces it with a pin at CURRENT tensorfs when it repins the
-# imports; update the rev there rather than deleting this entry.
-[tool.uv.sources]
-hashrepo = { git = "https://github.com/cozy-creator/tensorfs", rev = "0d0437570aac241ed234b741e66af8c79492d872" }

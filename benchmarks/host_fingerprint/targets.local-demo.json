@@ -30,7 +30,7 @@
       "obtain": "docker pull python:3.13-slim-bookworm (free)",
       "pod_only": false,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs"
       ]
     },
     {
@@ -41,7 +41,7 @@
       "obtain": "docker pull python:3.13-slim-bullseye (free)",
       "pod_only": false,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs"
       ]
     }
   ]

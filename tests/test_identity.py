@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 import pytest
-from hashrepo import LocalCAS
+from tensorfs import LocalCAS
 
 from torchcg import (
     ARTIFACT_KIND,

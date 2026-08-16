@@ -25,7 +25,7 @@
       "obtain": "runpod CPU pod, image python:3.13-slim-bookworm, cpu3c-2-4",
       "pod_only": true,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo safetensors"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs safetensors"
       ]
     },
     {
@@ -36,7 +36,7 @@
       "obtain": "runpod CPU pod, image python:3.13-slim-trixie, cpu3c-2-4",
       "pod_only": true,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo safetensors"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs safetensors"
       ]
     },
     {
@@ -52,7 +52,7 @@
         "test -x /opt/py312/bin/python || /usr/bin/python3 -m venv /opt/py312",
         "/opt/py312/bin/pip install --quiet --disable-pip-version-check --upgrade pip",
         "/opt/py312/bin/pip install --quiet --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.13.0",
-        "/opt/py312/bin/pip install --quiet --disable-pip-version-check hashrepo safetensors"
+        "/opt/py312/bin/pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs safetensors"
       ]
     },
     {
@@ -63,7 +63,7 @@
       "obtain": "the build pod itself, plus `pip install triton`",
       "pod_only": true,
       "setup": [
-        "pip install --quiet --disable-pip-version-check hashrepo safetensors",
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs safetensors",
         "pip install --quiet --disable-pip-version-check triton"
       ]
     },
@@ -80,7 +80,7 @@
         "test -x /opt/py311/bin/python || /usr/bin/python3 -m venv /opt/py311",
         "/opt/py311/bin/pip install --quiet --disable-pip-version-check --upgrade pip",
         "/opt/py311/bin/pip install --quiet --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.13.0",
-        "/opt/py311/bin/pip install --quiet --disable-pip-version-check hashrepo safetensors"
+        "/opt/py311/bin/pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs safetensors"
       ]
     },
     {
@@ -92,7 +92,7 @@
       "pod_only": true,
       "setup": [
         "pip install --quiet --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.12.1",
-        "pip install --quiet --disable-pip-version-check hashrepo safetensors"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs safetensors"
       ]
     },
     {
@@ -104,7 +104,7 @@
       "pod_only": true,
       "setup": [
         "pip uninstall -y -q triton || true",
-        "pip install --quiet --disable-pip-version-check hashrepo safetensors"
+        "pip install --quiet --disable-pip-version-check tensorfs@git+https://github.com/cozy-creator/tensorfs safetensors"
       ]
     }
   ]

@@ -23,6 +23,11 @@ python matrix_report.py results/*.json
 Both halves need the package importable (`PYTHONPATH=../../src` or an
 installed wheel) plus torch; `matrix_report.py` needs neither torch nor a GPU.
 
+The store dependency is `tensorfs`, installed from git (it is not on PyPI), and
+it builds a Rust extension with maturin — so a probe host needs a Rust toolchain
+before `pip install` will succeed. The `targets.*.json` bootstrap commands
+install it that way; add `rustup` to any image that lacks one.
+
 ## Axes recorded (one value each, diffable per axis)
 
 machine, os_release, glibc, libstdcxx_max_glibcxx, cxx_compiler, python_abi,

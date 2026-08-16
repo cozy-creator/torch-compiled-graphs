@@ -16,6 +16,13 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
+      # tensorfs is a git-pinned maturin package, so resolving this lock compiles
+      # a Rust extension from source. ubuntu-latest already ships rustup; this
+      # step pins the toolchain to stable so a runner image change cannot
+      # silently break the build. The compile itself is cached by setup-uv above
+      # -- uv keys the built wheel on the git rev, so only a tensorfs bump pays
+      # for it again. Measured cost of a cold build: ~40s (tcg#28).
+      - run: rustup toolchain install stable --profile minimal --no-self-update
       - run: uv sync --locked --all-extras
       - run: uv run ruff check src tests
       - run: uv run mypy

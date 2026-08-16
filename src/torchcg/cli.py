@@ -8,7 +8,7 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-from hashrepo import LocalCAS
+from tensorfs import LocalCAS
 
 from .artifact import read_metadata, unpack_artifact
 from .engine import Engine
@@ -24,7 +24,9 @@ def _parser() -> argparse.ArgumentParser:
     verify = commands.add_parser("verify", help="fully verify an artifact and its AOTI package")
     verify.add_argument("artifact", type=Path)
 
-    resolve = commands.add_parser("resolve", help="materialize one exact key from local HashRepo")
+    resolve = commands.add_parser(
+        "resolve", help="unpack one exact key from the local tensorfs store"
+    )
     resolve.add_argument("key")
     resolve.add_argument("destination", type=Path)
     resolve.add_argument("--cas-root", type=Path, required=True)
