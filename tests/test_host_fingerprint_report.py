@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -116,3 +117,54 @@ def test_a_single_host_matrix_reports_insufficient_data() -> None:
     folded = _report.report([_row()])
     assert "insufficient data" in folded["verdict"]
     assert folded["cache_hit_improvement"] == []
+
+
+_RESULTS = _HARNESS / "results"
+_RETAINED_BOUNDARY = ["cxx_compiler", "glibc", "libstdcxx_max_glibcxx", "os_release"]
+
+
+def _campaign(bundle: str) -> list[dict[str, Any]]:
+    rows = [
+        json.loads(path.read_text())
+        for path in sorted(_RESULTS.glob(f"pod-20260816-{bundle}-*.json"))
+    ]
+    assert rows, f"the committed 2026-08-16 {bundle} rows are missing"
+    return rows
+
+
+@pytest.mark.parametrize("bundle,expected_rows", [("b12", 7), ("b13", 3)])
+def test_the_measured_pod_campaign_still_retains_its_boundary(
+    bundle: str, expected_rows: int
+) -> None:
+    """The 2026-08-16 rows are the evidence tcg#4 rests on: fold them, not prose."""
+
+    folded = _report.report(_campaign(bundle))
+    assert folded["rows"] == expected_rows
+    assert folded["inconclusive_rows"] == 0
+    assert folded["failures"] == 1
+    assert folded["retain"] == _RETAINED_BOUNDARY
+    assert "insufficient data" not in folded["verdict"]
+    for axis in ("machine", "host_isa_level", "host_isa_features", "torch_cxx11_abi"):
+        assert axis in folded["unmeasured"]
+
+
+def test_both_load_directions_across_the_retained_boundary_really_failed() -> None:
+    """Each direction failed for its OWN reason; one direction proves neither."""
+
+    failures = {
+        row["build_axes"]["os_release"]: row
+        for row in _campaign("b12") + _campaign("b13")
+        if not row["load_ok"]
+    }
+    assert sorted(failures) == ["debian-12", "debian-13"]
+    assert "executable stack" in failures["debian-12"]["error"]
+    assert "GLIBC_2.38" in failures["debian-13"]["error"]
+    for row in failures.values():
+        assert sorted(row["diff_axes"]) == _RETAINED_BOUNDARY
+
+
+def test_the_axes_measured_inert_on_a_cpu_target_are_candidates_not_changes() -> None:
+    folded = _report.report(_campaign("b12"))
+    for axis in ("python_abi", "triton", "torch_version"):
+        assert axis in folded["coarsening_candidates"]
+        assert folded["contingency"][axis]["differed_failed"] == 0

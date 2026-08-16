@@ -1,0 +1,126 @@
+{
+  "rows": 3,
+  "conclusive_rows": 3,
+  "inconclusive_rows": 0,
+  "failures": 1,
+  "contingency": {
+    "cxx_compiler": {
+      "differed_failed": 1,
+      "differed_passed": 1,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "glibc": {
+      "differed_failed": 1,
+      "differed_passed": 1,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "host_isa_features": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 2
+    },
+    "host_isa_level": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 2
+    },
+    "libstdcxx_max_glibcxx": {
+      "differed_failed": 1,
+      "differed_passed": 0,
+      "same_failed": 0,
+      "same_passed": 2
+    },
+    "machine": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 2
+    },
+    "os_release": {
+      "differed_failed": 1,
+      "differed_passed": 1,
+      "same_failed": 0,
+      "same_passed": 1
+    },
+    "python_abi": {
+      "differed_failed": 0,
+      "differed_passed": 1,
+      "same_failed": 1,
+      "same_passed": 1
+    },
+    "torch_config_digest": {
+      "differed_failed": 0,
+      "differed_passed": 1,
+      "same_failed": 1,
+      "same_passed": 1
+    },
+    "torch_cxx11_abi": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 2
+    },
+    "torch_git": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 2
+    },
+    "torch_version": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 2
+    },
+    "triton": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 2
+    }
+  },
+  "coarsening_candidates": [
+    "python_abi",
+    "torch_config_digest"
+  ],
+  "retain": [
+    "cxx_compiler",
+    "glibc",
+    "libstdcxx_max_glibcxx",
+    "os_release"
+  ],
+  "unmeasured": [
+    "host_isa_features",
+    "host_isa_level",
+    "machine",
+    "torch_cxx11_abi",
+    "torch_git",
+    "torch_version",
+    "triton"
+  ],
+  "cache_hit_improvement": [
+    {
+      "dropped_axis": "python_abi",
+      "insufficient_data": false,
+      "hosts": 3,
+      "pairs": 3,
+      "already_shared": 0,
+      "newly_shared": 0,
+      "improvement": 0.0
+    },
+    {
+      "dropped_axis": "torch_config_digest",
+      "insufficient_data": false,
+      "hosts": 3,
+      "pairs": 3,
+      "already_shared": 0,
+      "newly_shared": 0,
+      "improvement": 0.0
+    }
+  ],
+  "verdict": "measured; candidates above differed without a single failure"
+}
