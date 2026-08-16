@@ -8,6 +8,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, cast
 
+from .identity import GRAPH_CLASS_BLOCK
 from .storage import StoredCompiledGraph
 
 
@@ -26,7 +27,7 @@ class _Constant:
 
 
 def _constants(graph: StoredCompiledGraph) -> tuple[_Constant, ...]:
-    graph_class = graph.metadata["graph_class"]
+    graph_class = graph.metadata[GRAPH_CLASS_BLOCK]
     assert isinstance(graph_class, Mapping)  # artifact validation owns this boundary
     rows = graph_class["constants"]
     assert isinstance(rows, list)
@@ -116,7 +117,7 @@ class CompiledGraphRunner:
         """Load one graph after Engine has resolved and admitted its exact bytes."""
 
         self = object.__new__(cls)
-        graph_class = graph.metadata["graph_class"]
+        graph_class = graph.metadata[GRAPH_CLASS_BLOCK]
         assert isinstance(graph_class, Mapping)
         self.key = graph.key
         self.graph_class = str(graph_class["name"])

@@ -11,7 +11,17 @@ KEY_SCHEME = "cg-key-v1"
 MAX_KEY_LENGTH = 96
 _DIGEST_HEX = 56
 _TOOLCHAIN_DIGEST_HEX = 16
-_REQUIRED_AXES = ("graph", "sm", "toolchain")
+
+#: The v1 identity axes, in canonical order. Public because consumers otherwise
+#: re-declare it and fence the copy; a duplicate that drifts is how a correctly
+#: named module computes wrong keys with nothing raising.
+REQUIRED_AXES: tuple[str, ...] = ("graph", "sm", "toolchain")
+
+#: The artifact-metadata block carrying graph-class facts. Public for the same
+#: reason: a consumer reading a block this package no longer writes fails at
+#: run time, not at import, and its fixtures keep the obsolete shape green.
+GRAPH_CLASS_BLOCK = "graph_class"
+
 _NOT_TOOLCHAIN = frozenset(("diffusers", "transformers", "peft"))
 _KEY_RE = re.compile(rf"[a-z0-9][a-z0-9._-]*-[0-9a-f]{{{_DIGEST_HEX}}}\Z")
 
@@ -31,9 +41,9 @@ class CompiledGraphKey:
             not isinstance(axis, tuple) or len(axis) != 2 for axis in self.axes
         ):
             raise IdentityError("compiled graph key axes must be canonical name/value tuples")
-        if tuple(name for name, _ in self.axes) != _REQUIRED_AXES:
+        if tuple(name for name, _ in self.axes) != REQUIRED_AXES:
             raise IdentityError(
-                f"compiled graph key axes must be exactly {list(_REQUIRED_AXES)!r}"
+                f"compiled graph key axes must be exactly {list(REQUIRED_AXES)!r}"
             )
         for name, value in self.axes:
             if not isinstance(value, str) or not value or value != value.strip():
@@ -79,13 +89,13 @@ def _refuse_key_as_fact(name: str, value: str) -> None:
 
 
 def from_axes(axes: Mapping[str, str]) -> CompiledGraphKey:
-    unknown = sorted(set(axes) - set(_REQUIRED_AXES))
+    unknown = sorted(set(axes) - set(REQUIRED_AXES))
     if unknown:
         raise IdentityError(
-            f"unknown identity axes {unknown!r}; v1 is exactly {list(_REQUIRED_AXES)!r}"
+            f"unknown identity axes {unknown!r}; v1 is exactly {list(REQUIRED_AXES)!r}"
         )
     clean: dict[str, str] = {}
-    for name in _REQUIRED_AXES:
+    for name in REQUIRED_AXES:
         raw = axes.get(name)
         if not isinstance(raw, str) or not raw or raw != raw.strip():
             raise IdentityError(f"compiled graph identity requires canonical string {name!r}")
@@ -119,9 +129,9 @@ def from_artifact_metadata(metadata: Mapping[str, Any]) -> CompiledGraphKey:
     sm = metadata.get("sm")
     if not isinstance(sm, str) or not sm.strip():
         raise IdentityError("artifact records no GPU compute capability")
-    graph_class = metadata.get("graph_class")
+    graph_class = metadata.get(GRAPH_CLASS_BLOCK)
     if not isinstance(graph_class, Mapping):
-        raise IdentityError("compiled graph records no graph_class object")
+        raise IdentityError(f"compiled graph records no {GRAPH_CLASS_BLOCK} object")
     graph = graph_class.get("class_hash")
     if not isinstance(graph, str) or not graph.strip():
         raise IdentityError("compiled graph records no graph-class hash")

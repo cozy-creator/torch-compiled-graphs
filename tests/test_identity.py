@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
 from hashrepo import LocalCAS
 
 from torch_compiled_graphs import (
+    GRAPH_CLASS_BLOCK,
+    REQUIRED_AXES,
     CompiledGraphKey,
     Engine,
     IdentityError,
@@ -15,7 +18,11 @@ from torch_compiled_graphs import (
     is_compiled_graph_key,
 )
 from torch_compiled_graphs.contracts import read_contract
-from torch_compiled_graphs.identity import from_axes, toolchain_axis_digest
+from torch_compiled_graphs.identity import (
+    from_artifact_metadata,
+    from_axes,
+    toolchain_axis_digest,
+)
 
 
 def test_key_is_stable_and_has_only_the_three_compilation_axes() -> None:
@@ -101,3 +108,49 @@ def test_public_resolve_refuses_noncanonical_keys(value: str, tmp_path: Path) ->
 def test_public_resolve_accepts_a_future_scheme_as_a_clean_miss(tmp_path: Path) -> None:
     key = "future-scheme-" + "0" * 56
     assert Engine(LocalCAS(tmp_path / "cas")).resolve(key, tmp_path / "graph") is None
+
+
+def _artifact_metadata(block_name: str) -> dict[str, object]:
+    """Minimal aot-inductor metadata with the graph-class facts under ``block_name``."""
+
+    return {
+        "kind": "aot-inductor",
+        "sm": "sm_89",
+        block_name: {"class_hash": "fedcba9876543210"},
+        "toolchain": {"torch": "2.13.0"},
+    }
+
+
+def test_exported_required_axes_is_the_tuple_the_derivation_enforces() -> None:
+    """The export must BE the axis set in force, not a copy that can drift.
+
+    Every input here is derived from ``REQUIRED_AXES`` rather than spelled out,
+    so the test follows a deliberate axis change but fails the moment the
+    exported tuple and the code that consumes it disagree.
+    """
+
+    facts = {name: f"{name}fact" for name in REQUIRED_AXES}
+    key = from_axes(facts)
+    assert set(key.as_dict()) == set(REQUIRED_AXES)
+
+    with pytest.raises(IdentityError, match="unknown identity axes"):
+        from_axes({**facts, "notanaxis": "value"})
+
+    for missing in REQUIRED_AXES:
+        with pytest.raises(IdentityError, match=re.escape(repr(missing))):
+            from_axes({name: value for name, value in facts.items() if name != missing})
+
+
+def test_exported_graph_class_block_is_the_block_the_reader_reads() -> None:
+    """The same facts under any other block name must refuse.
+
+    This is the pgw regression in miniature: the worker read a block named
+    ``entry`` while this package wrote ``graph_class``, and every fixture built
+    the obsolete shape, so nothing went red until production.
+    """
+
+    key = from_artifact_metadata(_artifact_metadata(GRAPH_CLASS_BLOCK))
+    assert key.as_dict()["graph"] == "fedcba9876543210"
+
+    with pytest.raises(IdentityError, match=re.escape(GRAPH_CLASS_BLOCK)):
+        from_artifact_metadata(_artifact_metadata("entry"))
