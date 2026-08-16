@@ -255,17 +255,32 @@ def test_the_shipped_inventory_parses_and_declares_its_pod_costs() -> None:
 # whose CUDA driver was too old, so ATen's `hasCUDA()` probe suppressed the
 # accelerator block entirely. The AVX512/CUDA variants below are the SAME wheel
 # as ATen would print it on a different machine.
-_SHOW_AVX2_NO_CUDA = """PyTorch built with:
-  - GCC 13.3
-  - C++ Version: 202002
-  - Intel(R) oneAPI Math Kernel Library Version 2024.2-Product Build 20240605 for Intel(R) 64 architecture applications
-  - Intel(R) MKL-DNN v3.12.0 (Git Hash 80afa71049cd69a3df32adcccb623b12cd7baa22)
-  - OpenMP 201511 (a.k.a. OpenMP 4.5)
-  - LAPACK is enabled (usually provided by MKL)
-  - NNPACK is enabled
-  - CPU capability usage: AVX2
-  - Build settings: BLAS_INFO=mkl, BUILD_TYPE=Release, COMMIT_SHA=cf30153c4c131c8164ee7798e5022d810682e2cb, CUDA_VERSION=13.0, CUDNN_VERSION=9.20.0, TORCH_VERSION=2.13.0, USE_CUDA=1, USE_MKL=ON,
-"""
+# Two of ATen's lines are far past this file's line limit in the real output, so
+# the fixture is assembled rather than pasted. The VALUES are verbatim.
+_MKL_LINE = (
+    "  - Intel(R) oneAPI Math Kernel Library Version 2024.2-Product Build"
+    " 20240605 for Intel(R) 64 architecture applications"
+)
+_BUILD_SETTINGS_LINE = (
+    "  - Build settings: BLAS_INFO=mkl, BUILD_TYPE=Release,"
+    " COMMIT_SHA=cf30153c4c131c8164ee7798e5022d810682e2cb, CUDA_VERSION=13.0,"
+    " CUDNN_VERSION=9.20.0, TORCH_VERSION=2.13.0, USE_CUDA=1, USE_MKL=ON,"
+)
+_SHOW_AVX2_NO_CUDA = "\n".join(
+    (
+        "PyTorch built with:",
+        "  - GCC 13.3",
+        "  - C++ Version: 202002",
+        _MKL_LINE,
+        "  - Intel(R) MKL-DNN v3.12.0 (Git Hash 80afa71049cd69a3df32adcccb623b12cd7baa22)",
+        "  - OpenMP 201511 (a.k.a. OpenMP 4.5)",
+        "  - LAPACK is enabled (usually provided by MKL)",
+        "  - NNPACK is enabled",
+        "  - CPU capability usage: AVX2",
+        _BUILD_SETTINGS_LINE,
+        "",
+    )
+)
 
 _SHOW_AVX512_NO_CUDA = _SHOW_AVX2_NO_CUDA.replace(
     "CPU capability usage: AVX2", "CPU capability usage: AVX512"
@@ -329,13 +344,10 @@ def test_the_kept_lines_are_exactly_the_build_facts() -> None:
     assert _axes.build_identity_lines(_SHOW_AVX512_WITH_CUDA) == [
         "GCC 13.3",
         "C++ Version: 202002",
-        "Intel(R) oneAPI Math Kernel Library Version 2024.2-Product Build 20240605"
-        " for Intel(R) 64 architecture applications",
+        _MKL_LINE.strip()[2:],
         "Intel(R) MKL-DNN v3.12.0 (Git Hash 80afa71049cd69a3df32adcccb623b12cd7baa22)",
         "OpenMP 201511 (a.k.a. OpenMP 4.5)",
         "LAPACK is enabled (usually provided by MKL)",
         "NNPACK is enabled",
-        "Build settings: BLAS_INFO=mkl, BUILD_TYPE=Release,"
-        " COMMIT_SHA=cf30153c4c131c8164ee7798e5022d810682e2cb, CUDA_VERSION=13.0,"
-        " CUDNN_VERSION=9.20.0, TORCH_VERSION=2.13.0, USE_CUDA=1, USE_MKL=ON,",
+        _BUILD_SETTINGS_LINE.strip()[2:],
     ]
