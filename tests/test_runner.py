@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from hashrepo import CASRef
+from tensorfs import CASRef
 
 import torchcg.runner as runner_module
 from torchcg import CompiledGraphRunner, ConstantBindingError

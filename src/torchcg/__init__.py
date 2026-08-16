@@ -1,4 +1,4 @@
-"""Mint and reuse verified PyTorch AOTInductor graphs through HashRepo."""
+"""Mint and reuse verified PyTorch AOTInductor graphs through tensorfs."""
 
 from .artifact import COMPILED_GRAPH_FORMAT, ArtifactError
 from .compiler import CompileError

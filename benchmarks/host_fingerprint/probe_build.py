@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import torch
 from axes import AXES_SCHEMA_VERSION, record_axes, worker_style_toolchain
-from hashrepo import LocalCAS
+from tensorfs import LocalCAS
 
 from torchcg import Engine, GraphClassSpec, RuntimeCompatibility, build_call_ingress
 
