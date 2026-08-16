@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import io
 import json
+import re
 import struct
 import tarfile
 import zipfile
@@ -14,6 +15,7 @@ import pytest
 
 import torch_compiled_graphs.artifact as artifact_module
 from torch_compiled_graphs import (
+    ARTIFACT_KIND,
     COMPILED_GRAPH_FORMAT,
     ArtifactError,
     CallIngress,
@@ -76,7 +78,7 @@ def duplicate_metadata(payload: bytes, *, nested: bool) -> tuple[bytes, str]:
             ),
             "target",
         )
-    return b'{"kind":"aot-inductor",' + payload[1:], "kind"
+    return b'{"kind":"' + ARTIFACT_KIND.encode() + b'",' + payload[1:], "kind"
 
 
 def replace_metadata(artifact: Path, target: Path, payload: bytes) -> Path:
@@ -202,6 +204,25 @@ def aoti_package(
         archive.writestr(f"{root}/model.wrapper.cpp", wrapper)
         archive.writestr(f"{root}/model.so", shared_object)
     return path
+
+
+def test_exported_artifact_kind_is_the_kind_validation_writes_and_refuses() -> None:
+    """The export must BE the kind this package stamps and enforces.
+
+    ``ARTIFACT_KIND`` is now defined once in ``identity`` and imported here,
+    because two hand-typed copies are how a rename splits two readers with
+    nothing going red — the ``entry``/``graph_class`` outage, one field over.
+    Every value below is derived from the export, so this follows a deliberate
+    rename and fails only when the export and this reader disagree.
+    ``identity``'s half of the pair is fenced in ``test_identity.py``.
+    """
+
+    stamped = metadata()
+    assert stamped["kind"] == ARTIFACT_KIND
+    assert validate_metadata(stamped)["kind"] == ARTIFACT_KIND
+
+    with pytest.raises(ArtifactError, match=re.escape(repr(ARTIFACT_KIND))):
+        validate_metadata({**stamped, "kind": ARTIFACT_KIND + "-not"})
 
 
 def test_artifact_is_deterministic_and_unpacks_atomically(tmp_path: Path) -> None:

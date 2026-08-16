@@ -16,7 +16,12 @@ from typing import Any, BinaryIO, cast
 
 from .declaration import DeclarationError, GraphClassDeclaration, _update_literal_digest
 from .host_isa import HostISAError, _validate_host_facts
-from .identity import GRAPH_CLASS_BLOCK, from_artifact_metadata, is_compiled_graph_key
+from .identity import (
+    ARTIFACT_KIND,
+    GRAPH_CLASS_BLOCK,
+    from_artifact_metadata,
+    is_compiled_graph_key,
+)
 from .introspection import (
     PackageIntrospectionError,
     _package_entry_names,
@@ -26,7 +31,6 @@ from .introspection import (
 
 COMPILED_GRAPH_FORMAT = 1
 _COMPILED_GRAPH_FORMAT_AXIS = "compiled_graph_format"
-ARTIFACT_KIND = "aot-inductor"
 METADATA_NAME = "metadata.json"
 PACKAGE_NAME = "model.pt2"
 LITERALS_NAME = "constants.safetensors"

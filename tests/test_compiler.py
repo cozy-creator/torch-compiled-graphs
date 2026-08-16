@@ -80,6 +80,7 @@ def test_compile_context_is_derived_from_real_graph_metadata(dynamic: bool) -> N
 
 def test_compile_surface_has_no_output_changing_callbacks() -> None:
     assert set(torch_compiled_graphs.__all__) == {
+        "ARTIFACT_KIND",
         "AdmissionError",
         "ArtifactError",
         "CompileError",

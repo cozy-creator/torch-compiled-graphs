@@ -15,6 +15,7 @@ from .engine import (
     EnsureResult,
 )
 from .identity import (
+    ARTIFACT_KIND,
     GRAPH_CLASS_BLOCK,
     REQUIRED_AXES,
     CompiledGraphKey,
@@ -38,6 +39,7 @@ from .storage import (
 )
 
 __all__ = [
+    "ARTIFACT_KIND",
     "AdmissionError",
     "ArtifactError",
     "CompileError",
