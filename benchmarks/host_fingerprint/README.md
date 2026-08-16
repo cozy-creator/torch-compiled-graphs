@@ -114,6 +114,73 @@ needs GPU pods and is a separate campaign. Collect every row, run
 `matrix_report.py`, and only then open the follow-up issue that removes or
 coarsens axes — with regression cases per retained boundary, per tcg#4.
 
+## The 2026-08-16 pod campaign — what the matrix actually measured
+
+Three RunPod CPU pods (cpu3c, 2 vCPU, $0.06/hr; **$0.035 for the campaign**),
+inventory in `targets.pod-2026-08-16.json`, rows in `results/pod-20260816-*`.
+**10 conclusive rows, 0 inconclusive, 2 real failures, 3 distinct hosts** — the
+two-host bar is cleared. Every verdict below is CPU-target only; the CUDA
+images were not run.
+
+Two bundles were built, one per OS, because a single bundle proves one
+direction and **the two directions fail for different reasons**:
+
+| build host | load host | result |
+|---|---|---|
+| debian-12 / glibc-2.36 / g++ 12.2 | debian-13 / glibc-2.41 | **FAIL** `dlopen: cannot enable executable stack as shared object requires` |
+| debian-13 / glibc-2.41 / g++ 14.2 | debian-12 / glibc-2.36 | **FAIL** `libc.so.6: version 'GLIBC_2.38' not found` |
+| either | ubuntu-24.04 / glibc-2.39 | pass, exact output |
+
+**RETAIN — `os_release`, `glibc`, `libstdcxx_max_glibcxx`, `cxx_compiler`.**
+A differing row failed, in both directions, with two unrelated mechanisms. The
+boundary is real but narrow: the intermediate glibc-2.39 host loaded *both*
+bundles, so this is not "any glibc step breaks". The four axes move together
+because a base image pins them together and the matrix cannot separate them —
+and `cxx_compiler` is a *build-time* fact recorded on the *load* host, so a row
+varying it alone would prove nothing about the artifact. Fail closed on all four.
+
+**COARSENING CANDIDATES — differed, never failed:**
+
+- `python_abi` — cp313→cp311 alone (same OS, same torch wheel), and cp312 on
+  the ubuntu host. Loads, executes, matches. The AOTI `.so` links libtorch, not
+  libpython.
+- `triton` — absent→3.7.1 alone. No effect on a CPU target. Triton's own
+  targets are **unmeasured**; this is not licence to drop it for CUDA.
+- `torch_version` / `torch_git` / `torch_config_digest` — a 2.13.0-built
+  artifact loaded, executed and matched on torch 2.12.1, with those three axes
+  differing alone. **One direction, one minor step.** The reverse is
+  unobtainable: torch 2.12.1 cannot compile with this package at all
+  (`torch._inductor.config` has no `cpp.march`, so the host ISA policy raises),
+  and no second 2.13 patch is published on the cpu index. Do not read this as
+  "torch does not matter".
+
+**`torch_config_digest` is host-dependent, not build-dependent.**
+`torch.__config__.show()` carries a runtime-detected `CPU capability usage:`
+line. The same wheel (2.13.0+cpu, git `cf30153c`) digests `5f31e143bbf0b632` on
+an EPYC 7713 (AVX2) and `76efcb828dca63fb` on an EPYC 9655P (AVX512), so the
+axis fragments the cache by CPU model for no portability reason. Meanwhile
+`host_isa_*` is blind to exactly that difference: compiles clamp to
+`x86-64-v3`, so every v3-or-better x86 host records identical ISA facts (the
+v3 artifact ran correctly on the AVX512 host). The fix is to stabilise the
+digest, not to drop the axis.
+
+**UNMEASURED, fail-closed — `machine`, `host_isa_level`, `host_isa_features`,
+`torch_cxx11_abi`.** No row ever saw them differ, and the ISA pair *cannot*
+differ between two v3+ x86 hosts, which is why no avx512-vs-v3 pod pair was
+rented.
+
+Measured cache-hit improvement over the 7 observed host identities (21 pairs,
+a sample of hosts and not a fleet): dropping `triton` newly shares 2 pairs
+(+9.5%), `python_abi` 1 pair (+4.8%), each torch axis 0 pairs — no two hosts
+here are separated by torch alone.
+
+**No axis changed on this evidence, deliberately.** This package's canonical
+key is exactly `("graph", "sm", "toolchain")`; the toolchain block's *members*
+are supplied by the caller. Every coarsening candidate above is a
+worker-supplied member, and the only fingerprint facts this package owns —
+`machine` and `host_isa_*` — are unmeasured. The coarsening decision therefore
+belongs to the worker lane; this repo owns the evidence.
+
 ## results/
 
 - `local-<hostname-hash>.json` — the phase-1 single-host arm (all axes equal,
@@ -124,6 +191,12 @@ coarsens axes — with regression cases per retained boundary, per tcg#4.
 - `census-synthetic.json`, `fleet-export-synthetic.jsonl` — the projection
   pipeline's synthetic input and output. Synthetic, deliberately correlated,
   and not production data.
+- `pod-20260816-b12-*.json` / `pod-20260816-b13-*.json` — the campaign above,
+  named for the bundle's build host (b12 = debian-12, b13 = debian-13), with
+  `report-pod-20260816-b12.json` and `-b13.json` the folds. These are the only
+  committed rows that say anything about portability.
 
 **No fingerprint axis changes until the matrix holds conclusive rows from at
-least two distinct hosts.** Nothing committed here clears that bar yet.
+least two distinct hosts.** The pod campaign clears that bar; the axes it
+cleared are not this package's to change, and the ones this package owns stay
+fail-closed.

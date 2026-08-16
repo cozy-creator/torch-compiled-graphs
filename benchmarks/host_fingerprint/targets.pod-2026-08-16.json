@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "note": [
+    "The hosts the 2026-08-16 pod campaign actually ran, as data. Three RunPod CPU",
+    "pods (cpu3c, 2 vCPU, $0.06/hr each; $0.035 for the whole campaign). Endpoints",
+    "are ssh_config aliases because RunPod maps sshd to a random external port,",
+    "which the harness's bare `ssh <endpoint>` cannot express.",
+    "",
+    "TWO bundles were built, one per OS: probe_build.py ran on tcg4-old (debian-12)",
+    "and on tcg4-new (debian-13), and each bundle was run on every host. A single",
+    "bundle only ever proves one direction, and the two directions failed for",
+    "DIFFERENT reasons -- see the harness README.",
+    "",
+    "Rows 4-7 of the debian-12 bundle vary ONE axis group each on the build pod",
+    "itself, so the OS-level axes are held exactly equal and the contingency can",
+    "attribute a pass or a failure. Run them in listed order: triton is additive,",
+    "python311 is an isolated venv, torch-2.12.1 replaces the system torch."
+  ],
+  "targets": [
+    {
+      "name": "pod-debian12-glibc236",
+      "transport": "ssh",
+      "endpoint": "tcg4-old",
+      "axis_intent": "debian-12 / glibc-2.36 / GLIBCXX_3.4.30 / g++ 12.2 host",
+      "obtain": "runpod CPU pod, image python:3.13-slim-bookworm, cpu3c-2-4",
+      "pod_only": true,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo safetensors"
+      ]
+    },
+    {
+      "name": "pod-debian13-glibc241",
+      "transport": "ssh",
+      "endpoint": "tcg4-new",
+      "axis_intent": "debian-13 / glibc-2.41 / GLIBCXX_3.4.33 / g++ 14.2 host",
+      "obtain": "runpod CPU pod, image python:3.13-slim-trixie, cpu3c-2-4",
+      "pod_only": true,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo safetensors"
+      ]
+    },
+    {
+      "name": "pod-ubuntu2404-glibc239",
+      "transport": "ssh",
+      "endpoint": "tcg4-mid",
+      "python": "/opt/py312/bin/python",
+      "axis_intent": "glibc-2.39 / GLIBCXX_3.4.33 / g++ 13.3 \u2014 one step either side of both build hosts",
+      "obtain": "runpod CPU pod, image ubuntu:24.04, cpu3c-2-4, torch==2.13.0+cpu in a venv",
+      "pod_only": true,
+      "setup": [
+        "export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y -qq python3 python3-venv >/dev/null 2>&1",
+        "test -x /opt/py312/bin/python || /usr/bin/python3 -m venv /opt/py312",
+        "/opt/py312/bin/pip install --quiet --disable-pip-version-check --upgrade pip",
+        "/opt/py312/bin/pip install --quiet --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.13.0",
+        "/opt/py312/bin/pip install --quiet --disable-pip-version-check hashrepo safetensors"
+      ]
+    },
+    {
+      "name": "pod-debian12-triton-present",
+      "transport": "ssh",
+      "endpoint": "tcg4-old",
+      "axis_intent": "triton \u2014 absent on the build host, present here; every other axis identical",
+      "obtain": "the build pod itself, plus `pip install triton`",
+      "pod_only": true,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check hashrepo safetensors",
+        "pip install --quiet --disable-pip-version-check triton"
+      ]
+    },
+    {
+      "name": "pod-debian12-python311",
+      "transport": "ssh",
+      "endpoint": "tcg4-old",
+      "python": "/opt/py311/bin/python",
+      "axis_intent": "python_abi cp313 -> cp311 with the OS and the torch build held identical",
+      "obtain": "the build pod's distro python 3.11 in a venv with the same torch==2.13.0+cpu",
+      "pod_only": true,
+      "setup": [
+        "export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y -qq python3-venv >/dev/null 2>&1",
+        "test -x /opt/py311/bin/python || /usr/bin/python3 -m venv /opt/py311",
+        "/opt/py311/bin/pip install --quiet --disable-pip-version-check --upgrade pip",
+        "/opt/py311/bin/pip install --quiet --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.13.0",
+        "/opt/py311/bin/pip install --quiet --disable-pip-version-check hashrepo safetensors"
+      ]
+    },
+    {
+      "name": "pod-debian12-torch-2.12.1",
+      "transport": "ssh",
+      "endpoint": "tcg4-old",
+      "axis_intent": "torch_version/torch_git/torch_config_digest one MINOR below the build host (2.13.0 is the only 2.13 patch published on the cpu index, so a patch step is unobtainable)",
+      "obtain": "the build pod, `pip install torch==2.12.1` from the cpu index",
+      "pod_only": true,
+      "setup": [
+        "pip install --quiet --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.12.1",
+        "pip install --quiet --disable-pip-version-check hashrepo safetensors"
+      ]
+    },
+    {
+      "name": "pod-debian12-torch-2.12.1-no-triton",
+      "transport": "ssh",
+      "endpoint": "tcg4-old",
+      "axis_intent": "torch axes ALONE one minor below the build host (triton removed so the row is not confounded)",
+      "obtain": "the build pod on torch==2.12.1 with triton uninstalled",
+      "pod_only": true,
+      "setup": [
+        "pip uninstall -y -q triton || true",
+        "pip install --quiet --disable-pip-version-check hashrepo safetensors"
+      ]
+    }
+  ]
+}
