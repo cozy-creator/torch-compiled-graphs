@@ -54,14 +54,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv venv --python 3.12 /tmp/torch-compiled-graphs-wheel
-          uv pip install --python /tmp/torch-compiled-graphs-wheel/bin/python dist/torch_compiled_graphs-*.whl
+          uv venv --python 3.12 /tmp/torchcg-wheel
+          uv pip install --python /tmp/torchcg-wheel/bin/python dist/torchcg-*.whl
           cd /tmp
-          /tmp/torch-compiled-graphs-wheel/bin/python - <<'PY'
+          /tmp/torchcg-wheel/bin/python - <<'PY'
           import sys
 
-          from torch_compiled_graphs import is_compiled_graph_key
-          from torch_compiled_graphs.contracts import read_contract
+          from torchcg import is_compiled_graph_key
+          from torchcg.contracts import read_contract
 
           assert is_compiled_graph_key("cg-key-v1-" + "0" * 56)
           assert read_contract("compiled_graph_key_vectors.json")
@@ -106,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          url="https://pypi.org/pypi/torch-compiled-graphs/${version}/json"
+          url="https://pypi.org/pypi/torchcg/${version}/json"
           for attempt in {1..12}; do
             if curl --fail --silent --show-error "${url}" > release.json; then
               python3 - <<'PY'
@@ -122,5 +122,5 @@ jobs:
             fi
             sleep 5
           done
-          echo "PyPI did not expose torch-compiled-graphs ${version} within 60 seconds" >&2
+          echo "PyPI did not expose torchcg ${version} within 60 seconds" >&2
           exit 1

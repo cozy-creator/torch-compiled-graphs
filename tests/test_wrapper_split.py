@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from torch_compiled_graphs import _wrapper_split as ws
+from torchcg import _wrapper_split as ws
 
 CXX = shutil.which("g++")
 

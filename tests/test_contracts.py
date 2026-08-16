@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from torch_compiled_graphs.contracts import CONTRACT_FILES, read_contract
+from torchcg.contracts import CONTRACT_FILES, read_contract
 
 _LEGACY_PEER_PROJECTION = (
     "KEY_GRAMMAR_DIGEST",

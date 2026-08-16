@@ -27,7 +27,7 @@ import torch
 from axes import AXES_SCHEMA_VERSION, record_axes, worker_style_toolchain
 from hashrepo import LocalCAS
 
-from torch_compiled_graphs import Engine, GraphClassSpec, RuntimeCompatibility, build_call_ingress
+from torchcg import Engine, GraphClassSpec, RuntimeCompatibility, build_call_ingress
 
 PROBE_LENGTH = 64
 RTOL = 1e-5

@@ -17,10 +17,10 @@ from typing import Any, cast
 import pytest
 from hashrepo import CASRef, LocalCAS
 
-import torch_compiled_graphs._wrapper_split as wrapper_split_module
-import torch_compiled_graphs.engine as engine_module
-import torch_compiled_graphs.host_isa as host_isa_module
-from torch_compiled_graphs import (
+import torchcg._wrapper_split as wrapper_split_module
+import torchcg.engine as engine_module
+import torchcg.host_isa as host_isa_module
+from torchcg import (
     AdmissionError,
     ConstantBindingError,
     Engine,
@@ -32,9 +32,9 @@ from torch_compiled_graphs import (
     StoreOutcome,
     build_call_ingress,
 )
-from torch_compiled_graphs.artifact import pack_artifact, read_metadata, unpack_artifact
-from torch_compiled_graphs.identity import from_axes
-from torch_compiled_graphs.storage import _CompiledGraphStore, _quarantine_ref
+from torchcg.artifact import pack_artifact, read_metadata, unpack_artifact
+from torchcg.identity import from_axes
+from torchcg.storage import _CompiledGraphStore, _quarantine_ref
 
 torch: Any = pytest.importorskip("torch")
 
@@ -332,7 +332,7 @@ def test_fresh_engine_reuses_local_hashrepo_without_compiling(tmp_path: Path) ->
 import sys
 from pathlib import Path
 from hashrepo import LocalCAS
-from torch_compiled_graphs import Engine, EnsureOutcome
+from torchcg import Engine, EnsureOutcome
 assert "torch" not in sys.modules
 def forbidden_recipe():
     raise AssertionError("cache hit invoked recipe")
@@ -360,7 +360,7 @@ assert "torch" not in sys.modules
         [
             sys.executable,
             "-m",
-            "torch_compiled_graphs",
+            "torchcg",
             "resolve",
             "--cas-root",
             str(cas_root),
@@ -778,7 +778,7 @@ from pathlib import Path
 
 import torch
 from hashrepo import LocalCAS
-from torch_compiled_graphs import Engine
+from torchcg import Engine
 
 runner = Engine(LocalCAS(Path(sys.argv[1]))).runner(sys.argv[2], Path(sys.argv[3]))
 assert runner is not None
@@ -829,7 +829,7 @@ from pathlib import Path
 
 import torch
 from hashrepo import LocalCAS
-from torch_compiled_graphs import CallIngress, Engine
+from torchcg import CallIngress, Engine
 
 engine = Engine(LocalCAS(Path(sys.argv[1])))
 resolved = engine.resolve(sys.argv[2], Path(sys.argv[3]) / "resolved")
@@ -1140,7 +1140,7 @@ def test_two_process_resolves_converge_on_one_destination(tmp_path: Path) -> Non
     command = [
         sys.executable,
         "-m",
-        "torch_compiled_graphs",
+        "torchcg",
         "resolve",
         "--cas-root",
         str(cas_root),

@@ -1,6 +1,6 @@
-# torch-compiled-graphs
+# torchcg
 
-`torch-compiled-graphs` mints and reuses verified PyTorch AOTInductor graphs.
+`torchcg` mints and reuses verified PyTorch AOTInductor graphs.
 It is independent of `python-gen-worker`: applications supply one exported
 program plus the worker-recorded compiler-content block, while HashRepo is the
 sole local content-addressed storage and chunking layer.
@@ -9,7 +9,7 @@ sole local content-addressed storage and chunking layer.
 
 ```python
 from hashrepo import LocalCAS
-from torch_compiled_graphs import (
+from torchcg import (
     Engine,
     GraphClassSpec,
     RuntimeCompatibility,
@@ -122,12 +122,12 @@ populate the same HashRepo objects/manifests, then call
 local-first and transport-independent.
 
 The versioned identity corpora used by non-Python consumers ship under
-`torch_compiled_graphs.contracts`. `read_contract(name)` reads their canonical
+`torchcg.contracts`. `read_contract(name)` reads their canonical
 bytes from an installed wheel; consumers pin the package version and corpus
 SHA-256 rather than fetching a moving source branch.
 
 The versioned compile-span partition lives in
-`torch_compiled_graphs.spans`. Its three totals each have one explicit
+`torchcg.spans`. Its three totals each have one explicit
 residual, and `check()` must be run by the measurement owner before emitting a
 table. Triton, autotune, and device-lock timing are overlays, never partition
 members.
@@ -135,9 +135,9 @@ members.
 ## CLI
 
 ```bash
-torch-compiled-graphs inspect compiled_graph.tar.gz
-torch-compiled-graphs verify compiled_graph.tar.gz
-torch-compiled-graphs resolve --cas-root /var/cache/graphs CG_KEY DESTINATION
+torchcg inspect compiled_graph.tar.gz
+torchcg verify compiled_graph.tar.gz
+torchcg resolve --cas-root /var/cache/graphs CG_KEY DESTINATION
 ```
 
 `inspect` validates and prints metadata. `verify` additionally checks the
@@ -209,7 +209,7 @@ compatibility aliases, or migration paths for abandoned pre-launch formats.
 - `Engine.runner` returns a gated `CompiledGraphRunner`; exact constant-table
   binding, by-reference lifetime, and one-class call binding are library-owned,
   while multi-class selection and eager fallback remain worker policy.
-- `torch_compiled_graphs.spans` owns the compile attribution vocabulary and
+- `torchcg.spans` owns the compile attribution vocabulary and
   closure invariant used across the worker child boundary.
 
 The package root exposes only the engine lifecycle, graph-class declarations,
@@ -220,7 +220,7 @@ modules rather than being re-exported as a second facade.
 The release workflow is exactly `.github/workflows/publish.yaml`. It requires
 a `v<project version>` tag on `main`, rebuilds and smoke-tests the wheel, uses
 PyPI Trusted Publishing through the `pypi` environment, and verifies the exact
-`torch-compiled-graphs` version endpoint.
+`torchcg` version endpoint.
 
 ## License
 

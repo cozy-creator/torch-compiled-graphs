@@ -13,8 +13,8 @@ from typing import cast
 
 import pytest
 
-import torch_compiled_graphs.artifact as artifact_module
-from torch_compiled_graphs import (
+import torchcg.artifact as artifact_module
+from torchcg import (
     ARTIFACT_KIND,
     COMPILED_GRAPH_FORMAT,
     ArtifactError,
@@ -22,7 +22,7 @@ from torch_compiled_graphs import (
     CallInput,
     GraphClassDeclaration,
 )
-from torch_compiled_graphs.artifact import (
+from torchcg.artifact import (
     _verify_materialized,
     build_metadata,
     pack_artifact,
@@ -30,7 +30,7 @@ from torch_compiled_graphs.artifact import (
     unpack_artifact,
     validate_metadata,
 )
-from torch_compiled_graphs.cli import main
+from torchcg.cli import main
 
 
 def literal_digest(

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-import torch_compiled_graphs.host_isa as host_isa
+import torchcg.host_isa as host_isa
 
 torch: Any = pytest.importorskip("torch")
 

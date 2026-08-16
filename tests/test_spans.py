@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from torch_compiled_graphs import spans
+from torchcg import spans
 
 
 def _closed_table() -> dict[str, float]:
@@ -83,7 +83,7 @@ def test_phase_delta_keeps_overlays_out_of_the_partition() -> None:
 
 def test_span_ledger_always_records_the_residual(monkeypatch: pytest.MonkeyPatch) -> None:
     ticks = iter((10.0, 12.0, 15.0, 15.0))
-    monkeypatch.setattr("torch_compiled_graphs.spans.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("torchcg.spans.time.monotonic", lambda: next(ticks))
     ledger = spans.SpanLedger()
     with ledger.span("work_s"):
         pass
