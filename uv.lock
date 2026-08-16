@@ -193,11 +193,7 @@ wheels = [
 [[package]]
 name = "hashrepo"
 version = "0.3.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/dc/5a/50245200737dea160cf162de44ce3aeaa100084a9dfc429f14befabe72fd/hashrepo-0.3.1.tar.gz", hash = "sha256:b08f5c8c31427d5a0aa981002c50e4d601041e5031c145ffaa22ffe720e5eab4", size = 23520, upload-time = "2026-08-14T09:24:23.029Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/67/61fb63a28e7ea6243d6a3bc4e520850f59afdf794d7c41631f02ba5a503d/hashrepo-0.3.1-py3-none-any.whl", hash = "sha256:c9450e07c96b0a060db5ab420b9202f0e1efabaa1690c66f03f56ff7b7b3847a", size = 23348, upload-time = "2026-08-14T09:24:21.734Z" },
-]
+source = { git = "https://github.com/cozy-creator/tensorfs?rev=0d0437570aac241ed234b741e66af8c79492d872#0d0437570aac241ed234b741e66af8c79492d872" }
 
 [[package]]
 name = "iniconfig"
@@ -1001,7 +997,7 @@ torch = [
 
 [package.metadata]
 requires-dist = [
-    { name = "hashrepo", specifier = ">=0.3,<0.4" },
+    { name = "hashrepo", git = "https://github.com/cozy-creator/tensorfs?rev=0d0437570aac241ed234b741e66af8c79492d872" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "numpy", marker = "extra == 'torch'", specifier = ">=1.26,<2.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0" },

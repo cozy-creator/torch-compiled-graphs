@@ -67,3 +67,12 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+# The hashrepo PyPI project was deleted permanently (DESIGN-RULINGS "Release
+# policy", 2026-08-16): internal consumption is git-pinned, and nothing
+# publishes to PyPI as a side effect of development. This rev is the contents
+# of the last published 0.3.1, so the resolution is unchanged — only its source
+# is. tcg#28 replaces it with a pin at CURRENT tensorfs when it repins the
+# imports; update the rev there rather than deleting this entry.
+[tool.uv.sources]
+hashrepo = { git = "https://github.com/cozy-creator/tensorfs", rev = "0d0437570aac241ed234b741e66af8c79492d872" }
