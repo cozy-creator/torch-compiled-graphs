@@ -94,6 +94,17 @@ that content to the 16-hex `toolchain` axis; trace-only `diffusers`,
 `transformers`, and `peft` records are excluded because their effects already
 ride the graph. Host ISA requirements are recorded and admitted separately.
 
+**Every toolchain member must be a BUILD fact, never a HOST fact** (tcg#26).
+The block's members are the caller's to choose, so this is a contract on the
+caller: a member whose value moves when the same artifacts run on a different
+machine fragments the cache by machine, and it does so on a dimension the ISA
+axis deliberately clamps flat — the fingerprint then contradicts itself.
+Content digests of installed files (wheel RECORDs, library bytes, tool
+binaries) satisfy this by construction. Strings a runtime *probes* do not:
+`torch.__config__.show()` is the measured example, since ATen interleaves
+build settings with the dispatched CPU ISA and with accelerator blocks emitted
+only when a live driver probe succeeds.
+
 `Engine.export_artifact(key, path)` emits the exact verified artifact envelope
 selected by the local HashRepo manifest for a remote adapter.
 `Engine.import_artifact(key, path)` validates its metadata and host requirement

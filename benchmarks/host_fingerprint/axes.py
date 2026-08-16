@@ -19,7 +19,15 @@ from ctypes import util as ctypes_util
 from pathlib import Path
 from typing import Any
 
-AXES_SCHEMA_VERSION = 1
+# 1 -> 2 (tcg#26): `torch_config_digest` changed derivation, so a v1 build_axes
+# compared against a v2 host_axes would report a diff on an axis that did not
+# move. The bump makes that mix a REFUSAL in `validate_row` instead of a false
+# reading; the v1 rows under `results/` stay as the record of what was measured.
+AXES_SCHEMA_VERSION = 2
+
+#: Every schema version whose rows are still READABLE. A recorded row stays
+#: valid evidence after a bump; only mixing derivations across a bump is unsafe.
+KNOWN_SCHEMA_VERSIONS: tuple[int, ...] = (1, 2)
 
 # The axes the matrix records, in report order. `sm`, `graph` and the packaged
 # host_isa facts ride the artifact itself; these are the host-side facts the
@@ -92,6 +100,76 @@ def _cxx_compiler() -> str:
     return "absent"
 
 
+# tcg#26 — THE RULE: this axis states BUILD identity, never HOST identity.
+#
+# `torch.__config__.show()` is not a build manifest. ATen's `show_config()`
+# interleaves compile-time facts with two kinds of line that describe the
+# machine the process happens to be running on:
+#
+#   * `CPU capability usage: <ISA>` — the ISA the running process dispatched
+#     to. The measured symptom: one 2.13.0+cpu wheel, git `cf30153c`, digests
+#     `5f31e143bbf0b632` on an AVX2 host and `76efcb828dca63fb` on AVX512.
+#   * the accelerator hook blocks — `show_config()` appends
+#     `getCUDAHooks().showConfig()` (and the XPU/MAIA equivalents) behind
+#     `hasCUDA()`, which is a live DRIVER probe, not a build flag. A `+cu130`
+#     wheel on a host with a too-old driver emits no CUDA block at all, while
+#     the same wheel on a working GPU host emits CUDA Runtime / NVCC
+#     architecture flags / CuDNN / Magma. That is a far wider swing than the
+#     CPU-capability line and it moves on driver state alone.
+#
+# ALLOWLIST, deliberately, rather than stripping the known-bad lines: an
+# unrecognised line is DROPPED, so a future torch release that adds another
+# runtime-probed line cannot silently re-fragment the axis. The build half is
+# not weakened by that default — `Build settings:` carries COMMIT_SHA,
+# TORCH_VERSION, CUDA_VERSION, CUDNN_VERSION, CXX_COMPILER, CXX_FLAGS and every
+# USE_* toggle, and `torch_git` pins the same commit on an axis of its own.
+#
+# KEPT (each `#if`-guarded at BUILD time in aten/src/ATen/Version.cpp):
+#   GCC / clang / MSVC, C++ Version, oneAPI MKL, MKL-DNN, OpenMP,
+#   LAPACK is enabled, NNPACK is enabled, Cross compiling on MacOSX,
+#   Build settings.
+# DROPPED: `CPU capability usage:`, the CUDA/XPU/MAIA hook blocks, the
+#   "PyTorch built with:" header (constant, carries no fact), and anything new.
+_BUILD_IDENTITY_PREFIXES = (
+    "GCC ",
+    "clang ",
+    "MSVC ",
+    "C++ Version:",
+    "Intel(R) oneAPI Math Kernel Library",
+    "Intel(R) MKL-DNN",
+    "OpenMP ",
+    "LAPACK is enabled",
+    "NNPACK is enabled",
+    "Cross compiling on MacOSX",
+    "Build settings:",
+)
+
+
+def build_identity_lines(show: str) -> list[str]:
+    """The build-identifying lines of a `torch.__config__.show()` string.
+
+    Source order is preserved and is stable: the runtime blocks ATen may or may
+    not emit are appended between the kept lines, never interleaved among them.
+    """
+
+    kept = []
+    for raw in show.splitlines():
+        line = raw.strip()
+        if not line.startswith("- "):
+            continue
+        fact = line[2:].strip()
+        if fact.startswith(_BUILD_IDENTITY_PREFIXES):
+            kept.append(fact)
+    return kept
+
+
+def torch_config_digest(show: str) -> str:
+    """Digest the BUILD identity carried by a `show()` string, so the same
+    wheel digests identically on every host that can run it."""
+
+    return _digest("\n".join(build_identity_lines(show)))
+
+
 def _torch_axes() -> dict[str, str]:
     try:
         import torch
@@ -106,7 +184,7 @@ def _torch_axes() -> dict[str, str]:
         "torch_version": str(torch.__version__),
         "torch_git": str(getattr(torch.version, "git_version", "unknown")),
         "torch_cxx11_abi": str(int(getattr(torch._C, "_GLIBCXX_USE_CXX11_ABI", -1))),
-        "torch_config_digest": _digest(torch.__config__.show()),
+        "torch_config_digest": torch_config_digest(torch.__config__.show()),
     }
 
 
@@ -157,6 +235,14 @@ def worker_style_toolchain(axes: dict[str, str]) -> dict[str, str]:
     Same member names the worker records (settings/libs/torch/triton); each
     value is a digest over the underlying axes so the folded 16-hex toolchain
     identity moves exactly when a member's facts move.
+
+    FIDELITY, stated so the matrix is not read as production (tcg#26): the
+    member NAMES match the worker's, the INPUTS do not. The real worker's
+    `torch` member is the dist-info RECORD digest of the installed wheel
+    (`gen_worker.compile_cache.toolchain_digest`) — whole-package content
+    identity, host-independent by construction. This harness substitutes the
+    version/git/abi/config axes it can probe without an install manifest. Read
+    a diff here as "these hosts differ", never as "production would re-key".
     """
 
     return {
@@ -192,8 +278,18 @@ def validate_row(row: dict[str, Any]) -> None:
     missing = required - set(row)
     if missing:
         raise ValueError(f"matrix row is missing {sorted(missing)}")
-    if row["schema"] != AXES_SCHEMA_VERSION:
-        raise ValueError(f"matrix row schema {row['schema']!r} is not {AXES_SCHEMA_VERSION}")
+    # Any KNOWN version, not just the current one (tcg#26): a row is internally
+    # consistent whatever derivation recorded it, because `diff_axes` is
+    # computed within the row from its own two sides. Pinning this to the
+    # current version would make every schema bump retroactively unread the
+    # archived campaign under `results/`, which is the evidence, not a cache.
+    # The hazard a bump actually guards — a build bundle recorded under one
+    # derivation compared against live host axes recorded under another — is
+    # refused where it arises, in `probe_run.py`'s bundle check.
+    if row["schema"] not in KNOWN_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"matrix row schema {row['schema']!r} is not one of {list(KNOWN_SCHEMA_VERSIONS)}"
+        )
     for side in ("host_axes", "build_axes"):
         axes = row[side]
         if not isinstance(axes, dict) or set(axes) != set(AXIS_NAMES):

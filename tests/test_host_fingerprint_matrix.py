@@ -247,3 +247,95 @@ def test_the_shipped_inventory_parses_and_declares_its_pod_costs() -> None:
     for target in targets:
         assert target.axis_intent, f"{target.name} must say which axis it varies"
         assert target.obtain, f"{target.name} must say how to obtain it"
+
+
+# --- tcg#26: the torch_config_digest states the BUILD, not the host ----------
+
+# One real `torch.__config__.show()`, 2.13.0, git cf30153c — captured on a host
+# whose CUDA driver was too old, so ATen's `hasCUDA()` probe suppressed the
+# accelerator block entirely. The AVX512/CUDA variants below are the SAME wheel
+# as ATen would print it on a different machine.
+_SHOW_AVX2_NO_CUDA = """PyTorch built with:
+  - GCC 13.3
+  - C++ Version: 202002
+  - Intel(R) oneAPI Math Kernel Library Version 2024.2-Product Build 20240605 for Intel(R) 64 architecture applications
+  - Intel(R) MKL-DNN v3.12.0 (Git Hash 80afa71049cd69a3df32adcccb623b12cd7baa22)
+  - OpenMP 201511 (a.k.a. OpenMP 4.5)
+  - LAPACK is enabled (usually provided by MKL)
+  - NNPACK is enabled
+  - CPU capability usage: AVX2
+  - Build settings: BLAS_INFO=mkl, BUILD_TYPE=Release, COMMIT_SHA=cf30153c4c131c8164ee7798e5022d810682e2cb, CUDA_VERSION=13.0, CUDNN_VERSION=9.20.0, TORCH_VERSION=2.13.0, USE_CUDA=1, USE_MKL=ON,
+"""
+
+_SHOW_AVX512_NO_CUDA = _SHOW_AVX2_NO_CUDA.replace(
+    "CPU capability usage: AVX2", "CPU capability usage: AVX512"
+)
+
+# The same wheel on a host whose driver works: `show_config()` appends
+# `getCUDAHooks().showConfig()` behind the live `hasCUDA()` probe.
+_SHOW_AVX512_WITH_CUDA = _SHOW_AVX512_NO_CUDA.replace(
+    "  - Build settings:",
+    "  - CUDA Runtime 13.0\n"
+    "  - NVCC architecture flags: -gencode;arch=compute_90,code=sm_90\n"
+    "  - CuDNN 9.20\n"
+    "  - Magma 2.6.1\n"
+    "  - Build settings:",
+)
+
+
+def test_one_wheel_digests_the_same_on_AVX2_and_AVX512() -> None:
+    """tcg#26's measured symptom, as a fence.
+
+    Same wheel, same commit, two hosts: the ONLY difference is the ISA the
+    running process dispatched to, which is not a fact about the build.
+    """
+    assert _axes.torch_config_digest(_SHOW_AVX2_NO_CUDA) == _axes.torch_config_digest(
+        _SHOW_AVX512_NO_CUDA
+    )
+
+
+def test_one_wheel_digests_the_same_with_and_without_a_usable_CUDA_DRIVER() -> None:
+    """The wider swing the issue did not name: the CUDA hook block is emitted
+    behind a live driver probe, so a `+cu130` wheel prints four extra lines on a
+    working GPU host and none on a host with a stale driver."""
+    assert _axes.torch_config_digest(
+        _SHOW_AVX512_NO_CUDA
+    ) == _axes.torch_config_digest(_SHOW_AVX512_WITH_CUDA)
+
+
+def test_a_DIFFERENT_BUILD_still_digests_differently() -> None:
+    """The axis is stabilised, NOT dropped (tcg#26 'What NOT to do'): a real
+    build difference must still move the digest."""
+    other_commit = _SHOW_AVX2_NO_CUDA.replace("COMMIT_SHA=cf30153c", "COMMIT_SHA=deadbeef")
+    other_gcc = _SHOW_AVX2_NO_CUDA.replace("- GCC 13.3", "- GCC 12.2")
+    other_mkldnn = _SHOW_AVX2_NO_CUDA.replace("MKL-DNN v3.12.0", "MKL-DNN v3.11.0")
+    baseline = _axes.torch_config_digest(_SHOW_AVX2_NO_CUDA)
+    for variant in (other_commit, other_gcc, other_mkldnn):
+        assert _axes.torch_config_digest(variant) != baseline
+
+
+def test_an_UNRECOGNISED_line_is_dropped_so_a_new_runtime_probe_cannot_refragment() -> None:
+    """The allowlist's whole reason to be a allowlist: torch adding another
+    host-probed line must not silently re-open tcg#26."""
+    future = _SHOW_AVX2_NO_CUDA.replace(
+        "  - Build settings:", "  - Some Future Runtime Probe: numa-node-3\n  - Build settings:"
+    )
+    assert _axes.torch_config_digest(future) == _axes.torch_config_digest(_SHOW_AVX2_NO_CUDA)
+
+
+def test_the_kept_lines_are_exactly_the_build_facts() -> None:
+    """Enumerated rather than asserted in the aggregate, so a change to the
+    allowlist has to restate what it keeps."""
+    assert _axes.build_identity_lines(_SHOW_AVX512_WITH_CUDA) == [
+        "GCC 13.3",
+        "C++ Version: 202002",
+        "Intel(R) oneAPI Math Kernel Library Version 2024.2-Product Build 20240605"
+        " for Intel(R) 64 architecture applications",
+        "Intel(R) MKL-DNN v3.12.0 (Git Hash 80afa71049cd69a3df32adcccb623b12cd7baa22)",
+        "OpenMP 201511 (a.k.a. OpenMP 4.5)",
+        "LAPACK is enabled (usually provided by MKL)",
+        "NNPACK is enabled",
+        "Build settings: BLAS_INFO=mkl, BUILD_TYPE=Release,"
+        " COMMIT_SHA=cf30153c4c131c8164ee7798e5022d810682e2cb, CUDA_VERSION=13.0,"
+        " CUDNN_VERSION=9.20.0, TORCH_VERSION=2.13.0, USE_CUDA=1, USE_MKL=ON,",
+    ]
