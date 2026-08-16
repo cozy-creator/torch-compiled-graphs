@@ -20,7 +20,7 @@ from .declaration import (
     _literal_digest_for,
 )
 from .host_isa import HostISAError, _admit_host
-from .identity import CompiledGraphKey, toolchain_axis_digest
+from .identity import GRAPH_CLASS_BLOCK, CompiledGraphKey, toolchain_axis_digest
 from .introspection import DeclaredConstant, declared_constants
 from .runner import CompiledGraphRunner
 from .storage import (
@@ -166,7 +166,7 @@ class Engine:
     @staticmethod
     def _admit(plan: _GraphClassPlan, compiled_graph: StoredCompiledGraph) -> None:
         metadata = compiled_graph.metadata
-        graph_class = metadata.get("graph_class")
+        graph_class = metadata.get(GRAPH_CLASS_BLOCK)
         if not isinstance(graph_class, Mapping):
             raise AdmissionError("compiled graph records no graph_class")
         expected_graph_class: dict[str, object] = {

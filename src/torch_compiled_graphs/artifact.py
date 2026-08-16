@@ -16,7 +16,7 @@ from typing import Any, BinaryIO, cast
 
 from .declaration import DeclarationError, GraphClassDeclaration, _update_literal_digest
 from .host_isa import HostISAError, _validate_host_facts
-from .identity import from_artifact_metadata, is_compiled_graph_key
+from .identity import GRAPH_CLASS_BLOCK, from_artifact_metadata, is_compiled_graph_key
 from .introspection import (
     PackageIntrospectionError,
     _package_entry_names,
@@ -58,7 +58,7 @@ _TOP_LEVEL_FIELDS = frozenset(
         _COMPILED_GRAPH_FORMAT_AXIS,
         "kind",
         "compiled_graph_key",
-        "graph_class",
+        GRAPH_CLASS_BLOCK,
         "sm",
         "toolchain",
         "host_isa",
@@ -185,7 +185,7 @@ def _bounded_chunks(source: BinaryIO, offset: int, size: int) -> Iterator[bytes]
 
 
 def _verify_literals(path: Path | None, metadata: Mapping[str, Any]) -> None:
-    graph_class = cast(Mapping[str, Any], metadata["graph_class"])
+    graph_class = cast(Mapping[str, Any], metadata[GRAPH_CLASS_BLOCK])
     literal_rows = {
         cast(str, row["fqn"]): row
         for row in cast(list[dict[str, Any]], graph_class["constants"])
@@ -362,7 +362,7 @@ def validate_metadata(
         _validate_host_facts(cast(dict[str, str], host_isa))
     except HostISAError as exc:
         raise ArtifactError(f"host_isa facts are invalid: {exc}") from exc
-    graph_class = metadata.get("graph_class")
+    graph_class = metadata.get(GRAPH_CLASS_BLOCK)
     if not isinstance(graph_class, dict):
         raise ArtifactError("metadata must contain one graph_class object")
     if set(graph_class) != _GRAPH_CLASS_FIELDS:
@@ -486,7 +486,7 @@ def build_metadata(
     metadata: dict[str, Any] = {
         _COMPILED_GRAPH_FORMAT_AXIS: COMPILED_GRAPH_FORMAT,
         "kind": ARTIFACT_KIND,
-        "graph_class": dict(graph_class),
+        GRAPH_CLASS_BLOCK: dict(graph_class),
         "sm": str(sm),
         "toolchain": dict(toolchain),
         "host_isa": dict(host_isa),
@@ -601,7 +601,7 @@ def verify_package(package: str | Path, metadata: Mapping[str, Any]) -> None:
 
     package_path = Path(package)
     checked = validate_metadata(metadata)
-    graph_class = cast(dict[str, Any], checked["graph_class"])
+    graph_class = cast(dict[str, Any], checked[GRAPH_CLASS_BLOCK])
     name = cast(str, graph_class["name"])
     try:
         names = _package_entry_names(package_path)

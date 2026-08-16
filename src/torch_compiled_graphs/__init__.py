@@ -15,6 +15,8 @@ from .engine import (
     EnsureResult,
 )
 from .identity import (
+    GRAPH_CLASS_BLOCK,
+    REQUIRED_AXES,
     CompiledGraphKey,
     IdentityError,
     is_compiled_graph_key,
@@ -49,9 +51,11 @@ __all__ = [
     "Engine",
     "EnsureOutcome",
     "EnsureResult",
+    "GRAPH_CLASS_BLOCK",
     "GraphClassDeclaration",
     "GraphClassSpec",
     "IdentityError",
+    "REQUIRED_AXES",
     "IngressError",
     "QuarantinedArtifact",
     "RuntimeCompatibility",
