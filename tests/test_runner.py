@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 from hashrepo import CASRef
 
-import torch_compiled_graphs.runner as runner_module
-from torch_compiled_graphs import CompiledGraphRunner, ConstantBindingError
-from torch_compiled_graphs.storage import StoredCompiledGraph
+import torchcg.runner as runner_module
+from torchcg import CompiledGraphRunner, ConstantBindingError
+from torchcg.storage import StoredCompiledGraph
 
 
 class FakePackage:

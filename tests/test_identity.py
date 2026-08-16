@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from hashrepo import LocalCAS
 
-from torch_compiled_graphs import (
+from torchcg import (
     ARTIFACT_KIND,
     GRAPH_CLASS_BLOCK,
     REQUIRED_AXES,
@@ -18,8 +18,8 @@ from torch_compiled_graphs import (
     StorageError,
     is_compiled_graph_key,
 )
-from torch_compiled_graphs.contracts import read_contract
-from torch_compiled_graphs.identity import (
+from torchcg.contracts import read_contract
+from torchcg.identity import (
     from_artifact_metadata,
     from_axes,
     toolchain_axis_digest,

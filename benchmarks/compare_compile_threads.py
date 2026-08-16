@@ -16,13 +16,13 @@ from typing import Any
 
 import torch
 
-from torch_compiled_graphs import _wrapper_split
-from torch_compiled_graphs.compiler import (
+from torchcg import _wrapper_split
+from torchcg.compiler import (
     _aot_compile,
     _compiler_options,
     _compiling_under_export_context,
 )
-from torch_compiled_graphs.host_isa import _impose_host_policy
+from torchcg.host_isa import _impose_host_policy
 
 
 class _TimestepEmbedding(torch.nn.Module):  # type: ignore[misc]

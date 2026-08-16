@@ -143,7 +143,7 @@ class _CompiledGraphStore:
 
         value = _key_value(key)
         source = Path(artifact)
-        with tempfile.TemporaryDirectory(prefix="torch-compiled-graphs-import-") as raw:
+        with tempfile.TemporaryDirectory(prefix="torchcg-import-") as raw:
             owned = Path(raw) / _COMPILED_GRAPH_PATH
             shutil.copyfile(source, owned)
             with owned.open("rb") as handle:
@@ -205,7 +205,7 @@ class _CompiledGraphStore:
 
     @staticmethod
     def _verify_archive(artifact: Path, key: str) -> None:
-        with tempfile.TemporaryDirectory(prefix="torch-compiled-graphs-export-verify-") as raw:
+        with tempfile.TemporaryDirectory(prefix="torchcg-export-verify-") as raw:
             metadata = unpack_artifact(artifact, Path(raw) / "artifact")
         if metadata.get("compiled_graph_key") != key:
             raise ArtifactError(

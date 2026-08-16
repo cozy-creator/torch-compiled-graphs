@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from torch_compiled_graphs import (
+from torchcg import (
     CallIngress,
     CallInput,
     DeclarationError,
@@ -14,8 +14,8 @@ from torch_compiled_graphs import (
     GraphClassSpec,
     RuntimeCompatibility,
 )
-from torch_compiled_graphs.contracts import read_contract
-from torch_compiled_graphs.declaration import _graph_digest
+from torchcg.contracts import read_contract
+from torchcg.declaration import _graph_digest
 
 torch: Any = pytest.importorskip("torch")
 

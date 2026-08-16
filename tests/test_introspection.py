@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from torch_compiled_graphs.introspection import (
+from torchcg.introspection import (
     DeclaredConstant,
     PackageIntrospectionError,
     _constants_in_so,

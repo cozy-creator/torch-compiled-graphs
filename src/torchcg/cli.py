@@ -15,7 +15,7 @@ from .engine import Engine
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="torch-compiled-graphs")
+    parser = argparse.ArgumentParser(prog="torchcg")
     commands = parser.add_subparsers(dest="command", required=True)
 
     inspect = commands.add_parser("inspect", help="print an artifact's validated metadata")
@@ -42,7 +42,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print(read_metadata(args.artifact))
         return 0
     if args.command == "verify":
-        with tempfile.TemporaryDirectory(prefix="torch-compiled-graphs-cli-") as raw:
+        with tempfile.TemporaryDirectory(prefix="torchcg-cli-") as raw:
             _print(unpack_artifact(args.artifact, Path(raw) / "artifact"))
         return 0
     if args.command == "resolve":

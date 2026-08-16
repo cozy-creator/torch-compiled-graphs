@@ -271,7 +271,7 @@ class Engine:
     def _mint(self, plan: _GraphClassPlan) -> StoreResult:
         """Compile, package, verify, and publish one plan into the local CAS."""
 
-        with tempfile.TemporaryDirectory(prefix="torch-compiled-graphs-mint-") as raw:
+        with tempfile.TemporaryDirectory(prefix="torchcg-mint-") as raw:
             workspace = Path(raw)
             package = _compile_package(plan, workspace)
             constants = declared_constants(package, plan.declaration.graph_class)

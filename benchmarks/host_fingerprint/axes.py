@@ -121,7 +121,7 @@ def _triton_axis() -> str:
 def _host_isa_axes() -> dict[str, str]:
     # The production requirement derivation, read for measurement only. This
     # is a deliberate private import inside the harness (never the wheel).
-    from torch_compiled_graphs.host_isa import _host_requirement
+    from torchcg.host_isa import _host_requirement
 
     facts = _host_requirement().facts()
     return {

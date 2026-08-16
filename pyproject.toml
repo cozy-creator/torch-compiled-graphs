@@ -1,6 +1,6 @@
 [project]
-name = "torch-compiled-graphs"
-version = "0.6.0"
+name = "torchcg"
+version = "0.1.0"
 description = "Mint, package, store, and reuse PyTorch AOTInductor graphs"
 readme = "README.md"
 license = "MIT"
@@ -34,18 +34,18 @@ dev = [
 ]
 
 [project.scripts]
-torch-compiled-graphs = "torch_compiled_graphs.cli:main"
+torchcg = "torchcg.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/torch_compiled_graphs"]
+packages = ["src/torchcg"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "src/torch_compiled_graphs",
+    "src/torchcg",
     "docs",
     "LICENSE",
     "README.md",

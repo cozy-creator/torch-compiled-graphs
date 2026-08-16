@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from torch_compiled_graphs import _run_impl_split as v2
+from torchcg import _run_impl_split as v2
 
 CXX = shutil.which("g++")
 

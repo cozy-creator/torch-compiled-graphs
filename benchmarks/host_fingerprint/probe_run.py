@@ -48,7 +48,7 @@ def run_probe(bundle: Path) -> dict[str, Any]:
         import torch
         from hashrepo import LocalCAS
 
-        from torch_compiled_graphs import Engine
+        from torchcg import Engine
     except Exception as error:  # noqa: BLE001 - the row reports, never raises
         # The host could not ATTEMPT the probe. That is not evidence that its
         # axes are incompatible, and counting it as a failure would mark every

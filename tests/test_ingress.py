@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from torch_compiled_graphs import CallIngress, IngressError, build_call_ingress
-from torch_compiled_graphs.contracts import read_contract
+from torchcg import CallIngress, IngressError, build_call_ingress
+from torchcg.contracts import read_contract
 
 torch: Any = pytest.importorskip("torch")
 
