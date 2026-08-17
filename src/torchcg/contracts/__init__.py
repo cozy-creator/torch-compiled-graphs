@@ -9,6 +9,7 @@ CONTRACT_FILES: Final = (
     "compiled_graph_key_vectors.json",
     "graph_class_identity_v3.json",
     "literal_identity_v1.json",
+    "recipe_v1.json",
     "toolchain_identity_v1.json",
 )
 
