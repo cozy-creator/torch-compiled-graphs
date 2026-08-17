@@ -1,6 +1,6 @@
 {
   "authority": "torchcg recipe v1",
-  "axis": "CLASS-LEVEL only, and checkpoint-free by closed field sets: buckets, graph classes, signatures, loop and scheduler are family facts identical for every checkpoint that family serves. Weight sets, checkpoint refs, tuned values and per-request defaults are unrepresentable, so a generated family class is a TYPE whose callables are reached through a fully resolved instance (family x weight-set); two handler parameters of one family type are two independent instances. See docs/RECIPE.md G11-G13.",
+  "axis": "CLASS-LEVEL only, and checkpoint-free by closed field sets: buckets, graph classes, signatures, loop and scheduler are family facts identical for every checkpoint that family serves. Weight sets, checkpoint refs, tuned values and per-request defaults are unrepresentable, so a generated family class is a TYPE whose callables are reached through a fully resolved instance (family x weight-set); two handler parameters of one family type are two independent instances. See docs/RECIPE.md G11-G16.",
   "digest": "935d16b97cdc444ce6b837051b9ebfc4",
   "digest_rule": "first 32 lowercase hex of SHA-256 over the recipe document as sorted, compact, ASCII, finite JSON -- the same rule CallIngress v1 uses",
   "host_loop_digest": "ab0c40a70740ffad33708fd9fc1b49eb",
