@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "note": [
+    "The hosts the 2026-08-16 CUDA campaign actually ran, as data. Two RunPod",
+    "secure-cloud RTX A4000 pods (sm_86, $0.25/hr each), same GPU type on purpose",
+    "so no row confounds an OS axis with a CUDA-architecture change. Endpoints",
+    "were ssh host:port pairs assigned by RunPod at boot; pods are gone.",
+    "",
+    "The pair holds torch at 2.13.0+cu126 on BOTH sides. That wheel choice is",
+    "itself a measured constraint: 2.13.0+cu130 initialised on pod A",
+    "(driver 580.126, CUDA 13) and REFUSED on pod B (driver 12080-class),",
+    "so the one wheel that runs on both fleets' drivers is the cu126 build.",
+    "",
+    "Pod A additionally ran the same-host arm twice, once per wheel",
+    "(+cu130 and +cu126), and the anchor captures for the wrapper-transform",
+    "campaign (see tests/test_real_cuda_wrapper.py)."
+  ],
+  "targets": [
+    {
+      "name": "pod-cuda-a-ubuntu2204",
+      "transport": "ssh",
+      "endpoint": "tcg4-cuda-a",
+      "axis_intent": "CUDA build+load host: ubuntu-22.04 / glibc-2.35 / GLIBCXX_3.4.30 / g++ 11.4 / cp311, RTX A4000 sm_86",
+      "obtain": "runpod secure A4000, image runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04, torch 2.13.0+cu126",
+      "pod_only": true,
+      "setup": [
+        "pip install --quiet --index-url https://download.pytorch.org/whl/cu126 --extra-index-url https://pypi.org/simple torch==2.13.0",
+        "pip install --quiet safetensors numpy /root/tensorfs-src"
+      ]
+    },
+    {
+      "name": "pod-cuda-b-ubuntu2404",
+      "transport": "ssh",
+      "endpoint": "tcg4-cuda-b",
+      "axis_intent": "os_release/glibc/libstdcxx/cxx_compiler/python_abi vary together (ubuntu-24.04 / glibc-2.39 / g++ 13.3 / cp312); torch and GPU held equal",
+      "obtain": "runpod secure A4000, image runpod/pytorch:1.1.0-rc.154-cu1281-torch280-ubuntu2404, torch 2.13.0+cu126",
+      "pod_only": true,
+      "setup": [
+        "pip install --break-system-packages --quiet --index-url https://download.pytorch.org/whl/cu126 --extra-index-url https://pypi.org/simple torch==2.13.0",
+        "pip install --break-system-packages --quiet safetensors numpy /root/tensorfs-src"
+      ]
+    }
+  ]
+}

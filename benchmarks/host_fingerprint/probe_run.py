@@ -7,7 +7,8 @@ comparison, and emits exactly one matrix row.
 Run:  python probe_run.py <bundle-dir> --output <row.json>
 
 The row never hides a failure: load/exec/output are separate booleans and the
-first failing stage carries its error text.
+first failing stage carries its error text. The bundle's recorded `target`
+decides the execution device: `sm_NN` binds and runs on `cuda`, else `cpu`.
 """
 
 from __future__ import annotations
@@ -31,9 +32,12 @@ def run_probe(bundle: Path) -> dict[str, Any]:
         raise SystemExit(f"bundle schema {probe['schema']} != {AXES_SCHEMA_VERSION}")
     host_axes = record_axes()
     build_axes = probe["build_axes"]
+    target = probe.get("target", "cpu")
+    device = "cuda" if target.startswith("sm_") else "cpu"
     row: dict[str, Any] = {
         "schema": AXES_SCHEMA_VERSION,
         "key": probe["key"],
+        "target": target,
         "build_axes": build_axes,
         "host_axes": host_axes,
         "diff_axes": sorted(
@@ -68,22 +72,23 @@ def run_probe(bundle: Path) -> dict[str, Any]:
                 row["error"] = "load: runner resolved to None for the probe key"
                 return row
             constants = {
-                name: torch.tensor(values) for name, values in probe["constants"].items()
+                name: torch.tensor(values, device=device)
+                for name, values in probe["constants"].items()
             }
-            runner.bind(constants, device="cpu")
+            runner.bind(constants, device=device)
             row["load_ok"] = True
         except Exception as error:  # noqa: BLE001
             row["error"] = f"load: {error}"
             return row
 
         try:
-            actual = runner(torch.tensor(probe["input"]))
+            actual = runner(torch.tensor(probe["input"], device=device))
             row["exec_ok"] = True
         except Exception as error:  # noqa: BLE001
             row["error"] = f"exec: {error}"
             return row
 
-        expected = torch.tensor(probe["expected"])
+        expected = torch.tensor(probe["expected"], device=device)
         try:
             torch.testing.assert_close(
                 actual, expected, rtol=probe["rtol"], atol=probe["atol"]

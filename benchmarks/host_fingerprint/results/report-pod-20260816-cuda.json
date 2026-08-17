@@ -1,0 +1,106 @@
+{
+  "rows": 4,
+  "conclusive_rows": 4,
+  "inconclusive_rows": 0,
+  "failures": 1,
+  "contingency": {
+    "cxx_compiler": {
+      "differed_failed": 1,
+      "differed_passed": 1,
+      "same_failed": 0,
+      "same_passed": 2
+    },
+    "glibc": {
+      "differed_failed": 1,
+      "differed_passed": 1,
+      "same_failed": 0,
+      "same_passed": 2
+    },
+    "host_isa_features": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 3
+    },
+    "host_isa_level": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 3
+    },
+    "libstdcxx_max_glibcxx": {
+      "differed_failed": 1,
+      "differed_passed": 1,
+      "same_failed": 0,
+      "same_passed": 2
+    },
+    "machine": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 3
+    },
+    "os_release": {
+      "differed_failed": 1,
+      "differed_passed": 1,
+      "same_failed": 0,
+      "same_passed": 2
+    },
+    "python_abi": {
+      "differed_failed": 1,
+      "differed_passed": 1,
+      "same_failed": 0,
+      "same_passed": 2
+    },
+    "torch_config_digest": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 3
+    },
+    "torch_cxx11_abi": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 3
+    },
+    "torch_git": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 3
+    },
+    "torch_version": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 3
+    },
+    "triton": {
+      "differed_failed": 0,
+      "differed_passed": 0,
+      "same_failed": 1,
+      "same_passed": 3
+    }
+  },
+  "coarsening_candidates": [],
+  "retain": [
+    "cxx_compiler",
+    "glibc",
+    "libstdcxx_max_glibcxx",
+    "os_release",
+    "python_abi"
+  ],
+  "unmeasured": [
+    "host_isa_features",
+    "host_isa_level",
+    "machine",
+    "torch_config_digest",
+    "torch_cxx11_abi",
+    "torch_git",
+    "torch_version",
+    "triton"
+  ],
+  "cache_hit_improvement": [],
+  "verdict": "measured; candidates above differed without a single failure"
+}
