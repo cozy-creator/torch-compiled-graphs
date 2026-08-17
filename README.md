@@ -177,11 +177,10 @@ compiled pipeline, the loop between them, and the scheduler block that loop runs
 under — including an autoregressive family's `loop.kind: host`, which states the
 per-step classes and the session-state owner and says outright that the
 data-dependent iteration is the host's. It is a vocabulary, not a DSL, and it is
-deliberately class-level — it
-pins each class by class hash, its exact `CallIngress` value, and the
-tensor-layout contract it was traced against, never by a `cg-key-v1` value and
-never by a checkpoint, so one machine-independent digest is valid on every SKU
-and the key is folded at adopt time. Typed bindings are generated from a
+deliberately class-level: it pins each class by class hash, its exact
+`CallIngress` value, and the tensor-layout contract it was traced against, never
+by a `cg-key-v1` value and never by a checkpoint, so one machine-independent
+digest is valid on every SKU and the key is folded at adopt time. Typed bindings are generated from a
 declaration-time export rather than from the recipe; the recipe is the drift
 assertion against that declaration and the adopt-time name-to-identity
 reference. `docs/RECIPE.md` states the document, the digest rule, how it rides
@@ -192,6 +191,39 @@ The versioned compile-span partition lives in `torchcg.spans`. Its three totals
 each have one explicit residual, and `check()` must be run by the measurement
 owner before emitting a table. Triton, autotune, and device-lock timing are
 overlays, never partition members.
+
+## Ingress selection
+
+`CallIngress` states what one graph class accepts. `torchcg.selection` states
+what a serve host does with several of them, as the versioned
+`ingress_selection_v1` corpus plus the reference implementation that produces
+it. A second serve host reads the corpus instead of reverse-engineering Python.
+
+- **Admission is all-or-nothing.** A class admits a call exactly when it has no
+  miss; every miss disqualifies and none merely ranks. Two admitting classes are
+  `class_ambiguous` — a declaration that failed to discriminate them by ingress
+  is a defect to surface, never a coin to flip.
+- **Ranking orders the classes that already lost.** `miss_distance` is the
+  sorted rung tuple, so the class matching every declared dimension and
+  disagreeing about one scalar fact sorts ahead of one the call does not fit;
+  among equals, fewer complaints wins, and an exact tie breaks on the class
+  name. The rungs are ordinal only — nothing may read their values as a score.
+- **Two normalizations, and only two.** A `recast` converts an integer rank-0
+  feed to a declared `float32`/`float64` — value-preserving, and the only
+  normalization that moves admission. A `realign` stages a non-contiguous or
+  non-16-byte-aligned feed; alignment is a performance fact and never
+  disqualifies a class. Per feed at most one applies, and a recast subsumes the
+  realign it implies. Producing the plan is this contract's; performing it, with
+  its buffers and their lifetime, is the host's.
+- **A total miss is `no_class_admits` and a ranking.** What a host does about it
+  — eager fallback, sticky de-arm, shape-growth reporting, event emission,
+  refusal wording — is host policy. The candidate set is the host's too:
+  selection never asks why a class is absent, unarmed, or pending a compile.
+
+Selection reads four facts per feed (dtype, shape, contiguity, pointer
+alignment), so the contract is executable without torch and expressible as JSON.
+`describe_call` is the adapter that reads them off a real call, replaying each
+declared input's recorded param/path coordinate.
 
 ## CLI
 
@@ -274,8 +306,15 @@ wheel, and publishes through PyPI Trusted Publishing.
   process-wide capped at `x86-64-v3`; other architectures carry a conservative
   native feature requirement. Unstamped or unsupported artifacts fail closed.
 - `Engine.runner` returns a gated `CompiledGraphRunner`; exact constant-table
-  binding, by-reference lifetime, and one-class call binding are library-owned,
-  while multi-class selection and eager fallback remain worker policy.
+  binding, by-reference lifetime, and one-class call binding are library-owned.
+- `torchcg.selection` owns multi-class selection as the versioned
+  `ingress_selection_v1` corpus: admission, the miss-rung ranking, the two
+  permitted feed normalizations, and the total-miss outcome. Its typed values
+  are closed — `MissReason`, `NormalizationKind` and `SelectionOutcome` are
+  enums with no default member, and the rung table is total over the first.
+  What a host does with an outcome stays with the host: eager fallback, sticky
+  de-arm, shape-growth reporting, event emission and refusal wording are worker
+  policy and no part of this package.
 - `torchcg.spans` owns the compile attribution vocabulary and closure invariant
   used across the worker child boundary.
 - `torchcg.recipe` owns the `recipe_v1` composition vocabulary: validated
