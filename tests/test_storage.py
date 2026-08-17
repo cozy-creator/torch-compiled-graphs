@@ -13,8 +13,10 @@ own path.
 
 from __future__ import annotations
 
+import dataclasses
 import errno
 import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -26,10 +28,14 @@ from test_artifact import aoti_package, metadata
 import torchcg.storage as storage_module
 from torchcg.artifact import pack_artifact, read_metadata, unpack_artifact
 from torchcg.storage import (
+    _REF_PREFIX,
     QuarantinedArtifact,
+    StoredCompiledGraph,
     StoreOutcome,
+    StoreResult,
     _CompiledGraphStore,
     _graph_ref,
+    _quarantine_ref,
 )
 
 # Every gate below is asserted this many times over independent stores. One pass
@@ -283,3 +289,81 @@ def test_a_destination_write_failure_does_not_quarantine(
     monkeypatch.undo()
     # The bytes were never in question, so nothing may have been quarantined.
     assert store.resolve(key, tmp_path / "healthy") is not None
+
+
+# --------------------------------------------------------------------------
+# tcg#39: the store namespace is frozen for v1.
+#
+# `_REF_PREFIX` and the two ref shapes built from it are the ADDRESS every
+# compiled graph the fleet has ever published is filed under. They are storage
+# identity, not prose, and the 2026-08-17 rename proved it the expensive way:
+# `torch-compiled-graphs/v1` -> `torchcg/v1` orphaned every stored ref in the
+# fleet, and Paul's ruling paid for it by wiping the store and re-minting rather
+# than by reverting. That cost is what these tests exist to make visible BEFORE
+# the edit lands, and it is why an old-name literal sweep must exempt storage
+# and wire identity strings rather than rename them.
+# --------------------------------------------------------------------------
+
+_FROZEN_COST = (
+    "This is a STORAGE RE-KEY, not an edit. Every compiled-graph ref the fleet "
+    "has published is filed under the frozen name; changing it orphans all of "
+    "them and costs a full store wipe plus a fleet-wide re-mint (tcg#39). If "
+    "that is genuinely intended, take the ruling first, then move this "
+    "assertion in the same commit as the purge."
+)
+
+
+def test_the_ref_prefix_is_frozen_for_v1() -> None:
+    """The store namespace is identity: two revs disagreeing on it share nothing."""
+
+    assert _REF_PREFIX == "torchcg/v1", _FROZEN_COST
+
+
+def test_the_ref_shapes_are_frozen_for_v1() -> None:
+    """Freezing the constant is not enough -- the emitted addresses are the identity."""
+
+    key = "cg-key-v1-" + "0" * 56
+    digest = "1" * 64
+    assert _graph_ref(key) == f"torchcg/v1/graphs/{key}", _FROZEN_COST
+    assert (
+        _quarantine_ref(key, CASRef(digest)) == f"torchcg/v1/quarantine/{key}/{digest}"
+    ), _FROZEN_COST
+
+
+def test_the_custody_result_field_names_are_frozen_for_v1() -> None:
+    """`artifact` names a blob. Renaming it is the same re-key wearing a field name."""
+
+    assert tuple(f.name for f in dataclasses.fields(StoreResult)) == (
+        "outcome",
+        "key",
+        "artifact",
+    ), _FROZEN_COST
+    assert tuple(f.name for f in dataclasses.fields(StoredCompiledGraph)) == (
+        "key",
+        "directory",
+        "metadata",
+        "artifact",
+    ), _FROZEN_COST
+
+
+@pytest.mark.parametrize("run", range(_GATE_RUNS))
+def test_a_stored_graph_is_addressed_by_the_frozen_name(run: int, tmp_path: Path) -> None:
+    """The freeze is proved by a real store, not only by reading the constant."""
+
+    artifact, key = _artifact(tmp_path)
+    store, cas = _store(tmp_path / "cas")
+    result = store.store(key, artifact)
+
+    assert cas.read_ref(f"torchcg/v1/graphs/{key}") == result.artifact, _FROZEN_COST
+    # The orphaning, demonstrated: the retired name resolves to nothing, which
+    # is what every already-published ref would become if the frozen name moved.
+    assert cas.read_ref(f"torch-compiled-graphs/v1/graphs/{key}") is None, _FROZEN_COST
+
+    # The quarantine marker is written INTO the store, so its ref name and its
+    # payload keys are on-disk format and move only with the prefix above.
+    store.quarantine(key, result.artifact)
+    marker_ref = cas.read_ref(f"torchcg/v1/quarantine/{key}/{result.artifact.digest}")
+    assert marker_ref is not None, _FROZEN_COST
+    marker = json.loads(cas.object_path(marker_ref).read_bytes())
+    assert sorted(marker) == ["artifact", "format", "key", "marker"], _FROZEN_COST
+    assert marker["artifact"] == str(result.artifact), _FROZEN_COST
