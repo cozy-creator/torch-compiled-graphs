@@ -9,6 +9,23 @@ Proven on GPU: a split-compiled artifact compiles, partial-links, loads and
 executes on a real sm_86 pod with output bitwise-identical to the unsplit
 compile and to eager (PR #33, `d7a0beb`).
 
+## Install
+
+Not on PyPI. Depend on it by git pin, at an exact rev:
+
+```toml
+# pyproject.toml -- resolves under uv, pip, and an exported requirements file
+dependencies = [
+    "torchcg @ git+https://github.com/cozy-creator/torchcg@<rev>",
+]
+```
+
+Prefer that PEP 508 direct reference over a `[tool.uv.sources]` entry: a
+`uv.sources` pin binds only to the project that declares it, so it is dropped
+by `uv export`, by `pip install`, and by anything consuming your built wheel.
+`torch` is an extra (`torchcg[torch]`), and resolving the lock builds `tensorfs`
+from source, which needs a Rust toolchain on the resolving machine.
+
 ## V1 lifecycle
 
 ```python
