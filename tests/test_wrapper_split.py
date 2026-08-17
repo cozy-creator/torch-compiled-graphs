@@ -166,7 +166,7 @@ def test_everything_outside_the_statement_run_is_untouched() -> None:
     source = _wrapper(400)
     split, outcome = ws.split_constants_constructor(source)
     assert outcome.applied
-    marker = "// torch-compiled-graphs: constants_info_ moved out of the constructor."
+    marker = "// torchcg: constants_info_ moved out of the constructor."
     assert (
         split[: split.index(marker)]
         == source[: source.index("AOTInductorModel::AOTInductorModel(std::shared_ptr<ConstantMap>")]
