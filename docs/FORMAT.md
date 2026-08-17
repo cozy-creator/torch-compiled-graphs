@@ -73,8 +73,8 @@ as model state and belong in the separately bound repository snapshot. Declared
 oversize members, a compressed input above the total plus a one-percent deflate
 margin, multiple gzip members, non-canonical tar extensions or tails, truncated
 compression streams, and bytes beyond the uncompressed ceiling fail as
-`ArtifactError`; an unsuccessful import publishes neither a destination nor a
-HashRepo ref.
+`ArtifactError`; an unsuccessful import publishes neither a destination nor an
+exact-key ref.
 
 The `host_isa` object must include `machine`, `host_isa_level`,
 `host_isa_features`, `cpp_march`, and `cpp_simdlen`. x86-64 writers cap `cpp_march` at
@@ -103,5 +103,5 @@ replaced in place; the package does not carry dual readers or writers.
 
 A compiled graph contains one graph class. This format therefore emits no
 bundle list. Any layer that groups several compiled graphs names that list
-`compiled_graph_manifest`; HashRepo's generic `RepositoryManifest` remains a
+`compiled_graph_manifest`; tensorfs's generic `RepositoryManifest` remains a
 byte-storage record and is not the compiled-graph bundle contract.

@@ -31,7 +31,7 @@ from .artifact import ArtifactError, _fsync_dir, unpack_artifact
 from .identity import CompiledGraphKey, is_compiled_graph_key
 
 _COMPILED_GRAPH_PATH = "compiled_graph.tar.gz"
-_REF_PREFIX = "torch-compiled-graphs/v1"
+_REF_PREFIX = "torchcg/v1"
 _READ_BUFFER = 1 << 20
 
 

@@ -20,7 +20,7 @@
       "axis_intent": "the build host itself — all axes equal, the control row",
       "obtain": "this machine",
       "pod_only": false,
-      "python": "/home/fidika/cozy/torch-compiled-graphs/.venv/bin/python"
+      "python": "/home/fidika/cozy/torchcg/.venv/bin/python"
     },
     {
       "name": "local-demo-debian12",
