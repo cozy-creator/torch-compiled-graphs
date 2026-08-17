@@ -128,6 +128,29 @@ class RepeatKind(StrEnum):
     COUNTED = "counted"
 
 
+class LoopKind(StrEnum):
+    """Whether the recipe states the loop, or states that it cannot.
+
+    ``staged`` is a composition the vocabulary fully describes: an ordered list
+    of stages, each running once or a declared number of times.  ``host`` is the
+    data-dependent loop of an autoregressive family — the recipe names the
+    per-step graph classes and who owns session state, and says outright that
+    the iteration is host-owned.  The vocabulary never pretends to describe a
+    loop it cannot express.
+    """
+
+    STAGED = "staged"
+    HOST = "host"
+
+
+class SessionState(StrEnum):
+    """Who owns the state threaded between steps of a loop."""
+
+    NONE = "none"
+    HOST = "host"
+    GRAPH = "graph"
+
+
 class RuntimeAxes(Protocol):
     """The two machine axes a recipe deliberately does not carry.
 
@@ -616,6 +639,75 @@ class LoopStep:
 
 
 @dataclass(frozen=True, slots=True)
+class Loop:
+    """The loop between a family's classes, or the declaration that it is host-owned.
+
+    An autoregressive family's iteration is data-dependent: it runs until the
+    model says stop, and no count in a document can say that.  ``kind: host``
+    is how the vocabulary says so out loud.  The recipe still states everything
+    it CAN: the per-step graph classes in order, and who owns the state threaded
+    between steps.  What it will not do is pretend a host loop is a counted one.
+    """
+
+    kind: LoopKind
+    stages: tuple[LoopStep, ...]
+    session_state: SessionState = SessionState.NONE
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, LoopKind) or not isinstance(
+            self.session_state, SessionState
+        ):
+            raise RecipeError(
+                RecipeRefusal.LOOP_INVALID, "loop kind and session_state must be v1 values"
+            )
+        if not isinstance(self.stages, tuple) or not self.stages:
+            raise RecipeError(RecipeRefusal.LOOP_INVALID, "a loop must declare its stages")
+        if self.kind is LoopKind.HOST and any(
+            step.repeat is not RepeatKind.ONCE for step in self.stages
+        ):
+            raise RecipeError(
+                RecipeRefusal.LOOP_INVALID,
+                "a host-owned loop states its per-step classes, never a repeat count; "
+                "the iteration is data-dependent and belongs to the host",
+            )
+
+    @property
+    def parameters(self) -> frozenset[ParameterName]:
+        return frozenset(
+            step.parameter for step in self.stages if step.parameter is not None
+        )
+
+    @property
+    def runners(self) -> frozenset[RunnerName]:
+        return frozenset(step.runner for step in self.stages)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind.value,
+            "session_state": self.session_state.value,
+            "stages": [step.as_dict() for step in self.stages],
+        }
+
+    @classmethod
+    def decode(cls, raw: object) -> Loop:
+        row = _fields("loop", raw, frozenset(("kind", "session_state", "stages")))
+        kind, session_state, stages = row["kind"], row["session_state"], row["stages"]
+        if kind not in tuple(item.value for item in LoopKind):
+            raise RecipeError(RecipeRefusal.LOOP_INVALID, f"unknown loop kind {kind!r}")
+        if session_state not in tuple(item.value for item in SessionState):
+            raise RecipeError(
+                RecipeRefusal.LOOP_INVALID, f"unknown session state {session_state!r}"
+            )
+        if not isinstance(stages, list):
+            raise RecipeError(RecipeRefusal.LOOP_INVALID, "loop stages must be an array")
+        return cls(
+            kind=LoopKind(kind),
+            stages=tuple(LoopStep.decode(step) for step in stages),
+            session_state=SessionState(session_state),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RecipeParameter:
     """One integer count a counted stage reads, with its inclusive bounds."""
 
@@ -752,7 +844,7 @@ class Recipe:
     family: FamilyName
     buckets: tuple[BucketAxis, ...]
     runners: tuple[RecipeRunner, ...]
-    loop: tuple[LoopStep, ...]
+    loop: Loop
     parameters: tuple[RecipeParameter, ...] = ()
     scheduler: Scheduler | None = None
 
@@ -799,9 +891,9 @@ class Recipe:
                     f"runner {runner.name!r} declares no variant for bucket "
                     f"{dict(missing[0])!r}; a generated closed type must be total",
                 )
-        if not isinstance(self.loop, tuple) or not self.loop:
+        if not isinstance(self.loop, Loop):
             raise RecipeError(RecipeRefusal.LOOP_INVALID, "a recipe must declare its loop")
-        staged = {step.runner for step in self.loop}
+        staged = self.loop.runners
         unknown_runner = sorted(staged - set(runner_names))
         if unknown_runner:
             raise RecipeError(
@@ -819,7 +911,7 @@ class Recipe:
             raise RecipeError(
                 RecipeRefusal.PARAMETER_INVALID, "parameters must be sorted by name and unique"
             )
-        counted = {step.parameter for step in self.loop if step.parameter is not None}
+        counted = self.loop.parameters
         unknown_parameter = sorted(counted - set(parameter_names))
         if unknown_parameter:
             raise RecipeError(
@@ -855,7 +947,7 @@ class Recipe:
             "family": str(self.family),
             "buckets": [axis.as_dict() for axis in self.buckets],
             "runners": [runner.as_dict() for runner in self.runners],
-            "loop": [step.as_dict() for step in self.loop],
+            "loop": self.loop.as_dict(),
             "parameters": [parameter.as_dict() for parameter in self.parameters],
         }
         if self.scheduler is not None:
@@ -903,7 +995,7 @@ class Recipe:
                 RecipeRefusal.RECIPE_VERSION_UNSUPPORTED,
                 f"recipe v={version!r} is not v{RECIPE_VERSION}; this reader has one version",
             )
-        for field in ("buckets", "runners", "loop", "parameters"):
+        for field in ("buckets", "runners", "parameters"):
             if not isinstance(row[field], list):
                 raise RecipeError(
                     RecipeRefusal.RECIPE_FIELDS_INVALID, f"recipe {field} must be an array"
@@ -913,7 +1005,7 @@ class Recipe:
             family=parse_family_name(row["family"]),
             buckets=tuple(BucketAxis.decode(axis) for axis in row["buckets"]),
             runners=tuple(RecipeRunner.decode(runner) for runner in row["runners"]),
-            loop=tuple(LoopStep.decode(step) for step in row["loop"]),
+            loop=Loop.decode(row["loop"]),
             parameters=tuple(RecipeParameter.decode(item) for item in row["parameters"]),
             scheduler=None if scheduler is None else Scheduler.decode(scheduler),
         )
@@ -948,6 +1040,8 @@ __all__ = [
     "GraphClassHash",
     "GraphClassVariant",
     "IngressDigest",
+    "Loop",
+    "LoopKind",
     "LoopStep",
     "ParameterKind",
     "ParameterName",
@@ -964,6 +1058,7 @@ __all__ = [
     "Scheduler",
     "SchedulerName",
     "SchedulerValue",
+    "SessionState",
     "SignatureLeaf",
     "SignatureParameter",
     "bucket_of",

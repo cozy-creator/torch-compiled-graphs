@@ -16,6 +16,8 @@ from torchcg.recipe import (
     RESERVED_IDENTIFIERS,
     BucketAxis,
     GraphClassVariant,
+    Loop,
+    LoopKind,
     LoopStep,
     ParameterKind,
     Recipe,
@@ -26,6 +28,7 @@ from torchcg.recipe import (
     RecipeRunner,
     RepeatKind,
     Scheduler,
+    SessionState,
     bucket_of,
     call_signature,
     parse_bucket_axis_name,
@@ -153,14 +156,17 @@ def canonical_recipe() -> Recipe:
                 variants=(_variant("text_encoder", 0, _text_encoder_ingress()),),
             ),
         ),
-        loop=(
-            LoopStep(runner=parse_runner_name("text_encoder")),
-            LoopStep(
-                runner=parse_runner_name("denoiser"),
-                repeat=RepeatKind.COUNTED,
-                parameter=parse_parameter_name("steps"),
+        loop=Loop(
+            kind=LoopKind.STAGED,
+            stages=(
+                LoopStep(runner=parse_runner_name("text_encoder")),
+                LoopStep(
+                    runner=parse_runner_name("denoiser"),
+                    repeat=RepeatKind.COUNTED,
+                    parameter=parse_parameter_name("steps"),
+                ),
+                LoopStep(runner=parse_runner_name("decoder")),
             ),
-            LoopStep(runner=parse_runner_name("decoder")),
         ),
         parameters=(
             RecipeParameter(name=parse_parameter_name("steps"), minimum=1, maximum=100),
@@ -172,6 +178,69 @@ def canonical_recipe() -> Recipe:
                 (parse_parameter_name("shift"), 3.0),
                 (parse_parameter_name("use_karras_sigmas"), False),
             ),
+        ),
+    )
+
+
+_AR_CLASS_HASHES = {"prefill": "6f7a3b1c8d20e594", "decode": "7809c4d21be3f6a5"}
+
+
+def autoregressive_recipe() -> Recipe:
+    """The second document in the corpus: an AR family whose loop is host-owned.
+
+    LLMs and VLMs are first-class, and their iteration is data-dependent — it
+    runs until the model says stop.  No count in a document can say that, so the
+    recipe says ``kind: host`` instead of pretending.
+    """
+
+    prefill = _ingress(
+        ("input_ids",),
+        (("input_ids", (), "int64", (1, "prompt_tokens")),),
+        (("prompt_tokens", (1, 4096)),),
+    )
+    decode = _ingress(
+        ("input_ids", "kv_cache"),
+        (
+            ("input_ids", (), "int64", (1, 1)),
+            ("kv_cache", (0,), "float16", (1, 8, "context", 64)),
+            ("kv_cache", (1,), "float16", (1, 8, "context", 64)),
+        ),
+        (("context", (1, 4096)),),
+    )
+    return Recipe(
+        family=parse_family_name("toy_llm"),
+        buckets=(),
+        runners=(
+            RecipeRunner(
+                name=parse_runner_name("decode"),
+                axes=(),
+                variants=(
+                    GraphClassVariant(
+                        class_hash=parse_class_hash(_AR_CLASS_HASHES["decode"]),
+                        ingress_digest=parse_ingress_digest(decode.digest()),
+                        ingress=decode,
+                    ),
+                ),
+            ),
+            RecipeRunner(
+                name=parse_runner_name("prefill"),
+                axes=(),
+                variants=(
+                    GraphClassVariant(
+                        class_hash=parse_class_hash(_AR_CLASS_HASHES["prefill"]),
+                        ingress_digest=parse_ingress_digest(prefill.digest()),
+                        ingress=prefill,
+                    ),
+                ),
+            ),
+        ),
+        loop=Loop(
+            kind=LoopKind.HOST,
+            stages=(
+                LoopStep(runner=parse_runner_name("prefill")),
+                LoopStep(runner=parse_runner_name("decode")),
+            ),
+            session_state=SessionState.HOST,
         ),
     )
 
@@ -195,6 +264,9 @@ def test_shipped_corpus_is_the_canonical_document() -> None:
     assert corpus["recipe"] == recipe.as_dict()
     assert corpus["digest"] == str(recipe.digest())
     assert corpus["reference"] == recipe.reference().as_dict()
+    autoregressive = autoregressive_recipe()
+    assert corpus["host_loop_recipe"] == autoregressive.as_dict()
+    assert corpus["host_loop_digest"] == str(autoregressive.digest())
     assert corpus["identifier_grammar"] == IDENTIFIER_GRAMMAR
     assert corpus["reserved_identifiers"] == sorted(RESERVED_IDENTIFIERS)
     assert [row["reason"] for row in corpus["refusals"]] == sorted(
@@ -263,6 +335,30 @@ def test_the_document_cannot_state_a_checkpoint_level_fact() -> None:
         with pytest.raises(RecipeError) as caught:
             Recipe.decode(document)
         assert caught.value.reason is RecipeRefusal.RECIPE_FIELDS_INVALID, level
+
+
+def test_a_host_owned_loop_is_a_legal_declaration() -> None:
+    recipe = autoregressive_recipe()
+    assert recipe.loop.kind is LoopKind.HOST
+    assert recipe.loop.session_state is SessionState.HOST
+    assert [step.runner for step in recipe.loop.stages] == ["prefill", "decode"]
+    assert Recipe.loads(recipe.canonical()) == recipe
+    assert recipe.digest() != canonical_recipe().digest()
+    # The per-step classes and the session-state owner are stated; the iteration
+    # is not, and the vocabulary refuses to fake it with a count.
+    with pytest.raises(RecipeError) as caught:
+        Loop(
+            kind=LoopKind.HOST,
+            stages=(
+                LoopStep(
+                    runner=parse_runner_name("decode"),
+                    repeat=RepeatKind.COUNTED,
+                    parameter=parse_parameter_name("steps"),
+                ),
+            ),
+            session_state=SessionState.HOST,
+        )
+    assert caught.value.reason is RecipeRefusal.LOOP_INVALID
 
 
 def test_bucket_lookup_is_exact_and_never_ranks() -> None:
@@ -349,11 +445,13 @@ def _patch(mutate: Callable[[dict[str, Any]], None]) -> Callable[[], object]:
 
 
 def _drop_loop_stage(document: dict[str, Any]) -> None:
-    document["loop"] = [step for step in document["loop"] if step["runner"] != "decoder"]
+    document["loop"]["stages"] = [
+        step for step in document["loop"]["stages"] if step["runner"] != "decoder"
+    ]
 
 
 def _unknown_stage(document: dict[str, Any]) -> None:
-    document["loop"][2]["runner"] = "vae"
+    document["loop"]["stages"][2]["runner"] = "vae"
 
 
 def _swap_runners(document: dict[str, Any]) -> None:
@@ -384,7 +482,7 @@ def _wrong_digest(document: dict[str, Any]) -> None:
 
 
 def _unknown_repeat(document: dict[str, Any]) -> None:
-    document["loop"][1]["repeat"] = "twice"
+    document["loop"]["stages"][1]["repeat"] = "twice"
 
 
 def _bad_bounds(document: dict[str, Any]) -> None:
@@ -392,11 +490,11 @@ def _bad_bounds(document: dict[str, Any]) -> None:
 
 
 def _unknown_parameter(document: dict[str, Any]) -> None:
-    document["loop"][1]["parameter"] = "cycles"
+    document["loop"]["stages"][1]["parameter"] = "cycles"
 
 
 def _idle_parameter(document: dict[str, Any]) -> None:
-    document["loop"][1] = {"runner": "denoiser", "repeat": "once"}
+    document["loop"]["stages"][1] = {"runner": "denoiser", "repeat": "once"}
 
 
 def _bad_scheduler(document: dict[str, Any]) -> None:

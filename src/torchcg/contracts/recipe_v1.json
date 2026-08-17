@@ -1,8 +1,147 @@
 {
   "authority": "torchcg recipe v1",
   "axis": "CLASS-LEVEL only, and checkpoint-free by closed field sets: buckets, graph classes, signatures, loop and scheduler are family facts identical for every checkpoint that family serves. Weight sets, checkpoint refs, tuned values and per-request defaults are unrepresentable, so a generated family class is a TYPE whose callables are reached through a fully resolved instance (family x weight-set); two handler parameters of one family type are two independent instances. See docs/RECIPE.md G11-G13.",
-  "digest": "3748604c45104fc6a7c953680fdd1d57",
+  "digest": "f37739a6853a302ae03158b610cdf6a5",
   "digest_rule": "first 32 lowercase hex of SHA-256 over the recipe document as sorted, compact, ASCII, finite JSON -- the same rule CallIngress v1 uses",
+  "host_loop_digest": "8cb2e4cc420452f33e4ea8ca0ef96ece",
+  "host_loop_note": "The second document. LLMs and VLMs are first class and their iteration is data-dependent -- it runs until the model says stop -- so `loop.kind` is `host`: the recipe states the per-step graph classes in order and who owns the state threaded between them, and states outright that the iteration is the host's. A counted stage under a host loop is refused. The vocabulary never pretends to describe a loop it cannot express.",
+  "host_loop_recipe": {
+    "buckets": [],
+    "family": "toy_llm",
+    "loop": {
+      "kind": "host",
+      "session_state": "host",
+      "stages": [
+        {
+          "repeat": "once",
+          "runner": "prefill"
+        },
+        {
+          "repeat": "once",
+          "runner": "decode"
+        }
+      ]
+    },
+    "parameters": [],
+    "runners": [
+      {
+        "axes": [],
+        "name": "decode",
+        "variants": [
+          {
+            "bucket": {},
+            "class_hash": "7809c4d21be3f6a5",
+            "ingress": {
+              "excluded_inputs": [],
+              "flat_arity": 3,
+              "inputs": [
+                {
+                  "dtype": "int64",
+                  "exported_name": "input_ids",
+                  "name": "input_ids",
+                  "param": "input_ids",
+                  "param_position": 0,
+                  "path": [],
+                  "position": 0,
+                  "shape": [
+                    1,
+                    1
+                  ]
+                },
+                {
+                  "dtype": "float16",
+                  "exported_name": "kv_cache_0",
+                  "name": "kv_cache.0",
+                  "param": "kv_cache",
+                  "param_position": 1,
+                  "path": [
+                    0
+                  ],
+                  "position": 1,
+                  "shape": [
+                    1,
+                    8,
+                    "context",
+                    64
+                  ]
+                },
+                {
+                  "dtype": "float16",
+                  "exported_name": "kv_cache_1",
+                  "name": "kv_cache.1",
+                  "param": "kv_cache",
+                  "param_position": 1,
+                  "path": [
+                    1
+                  ],
+                  "position": 2,
+                  "shape": [
+                    1,
+                    8,
+                    "context",
+                    64
+                  ]
+                }
+              ],
+              "parameters": [
+                "input_ids",
+                "kv_cache"
+              ],
+              "symbols": {
+                "context": [
+                  1,
+                  4096
+                ]
+              },
+              "v": 1
+            },
+            "ingress_digest": "d336a6217cf5d6dbf768340d65b73418"
+          }
+        ]
+      },
+      {
+        "axes": [],
+        "name": "prefill",
+        "variants": [
+          {
+            "bucket": {},
+            "class_hash": "6f7a3b1c8d20e594",
+            "ingress": {
+              "excluded_inputs": [],
+              "flat_arity": 1,
+              "inputs": [
+                {
+                  "dtype": "int64",
+                  "exported_name": "input_ids",
+                  "name": "input_ids",
+                  "param": "input_ids",
+                  "param_position": 0,
+                  "path": [],
+                  "position": 0,
+                  "shape": [
+                    1,
+                    "prompt_tokens"
+                  ]
+                }
+              ],
+              "parameters": [
+                "input_ids"
+              ],
+              "symbols": {
+                "prompt_tokens": [
+                  1,
+                  4096
+                ]
+              },
+              "v": 1
+            },
+            "ingress_digest": "78e9000acf3c493edffceb2878605a20"
+          }
+        ]
+      }
+    ],
+    "v": 1
+  },
   "identifier_grammar": "[a-z][a-z0-9_]*, 1..48 bytes",
   "note": "recipe_v1 is a VOCABULARY, not a DSL: it names which graph classes compose one family, the loop between them, and the scheduler block that loop runs under. It pins class identity (class hash + CallIngress v1) and never a cg-key-v1 value, so one digest is valid on every SKU; the exact key is folded at adopt from the pod's own sm and toolchain axes. Selecting a bucket for a live call is ingress_selection_v1, not this contract.",
   "recipe": {
@@ -16,21 +155,25 @@
       }
     ],
     "family": "toy_diffusion",
-    "loop": [
-      {
-        "repeat": "once",
-        "runner": "text_encoder"
-      },
-      {
-        "parameter": "steps",
-        "repeat": "counted",
-        "runner": "denoiser"
-      },
-      {
-        "repeat": "once",
-        "runner": "decoder"
-      }
-    ],
+    "loop": {
+      "kind": "staged",
+      "session_state": "none",
+      "stages": [
+        {
+          "repeat": "once",
+          "runner": "text_encoder"
+        },
+        {
+          "parameter": "steps",
+          "repeat": "counted",
+          "runner": "denoiser"
+        },
+        {
+          "repeat": "once",
+          "runner": "decoder"
+        }
+      ]
+    },
     "parameters": [
       {
         "maximum": 100,
@@ -341,7 +484,7 @@
     "v": 1
   },
   "reference": {
-    "digest": "3748604c45104fc6a7c953680fdd1d57",
+    "digest": "f37739a6853a302ae03158b610cdf6a5",
     "family": "toy_diffusion",
     "v": 1
   },
@@ -379,7 +522,7 @@
       "reason": "ingress_invalid"
     },
     {
-      "note": "The loop is empty, a stage's repeat is not `once` or `counted`, a counted stage names no parameter, or a once stage carries one.",
+      "note": "The loop declares an unknown kind or session state, is empty, carries a stage whose repeat is not `once` or `counted`, has a counted stage naming no parameter or a once stage carrying one -- or states a repeat count under a host-owned loop, whose iteration is data-dependent and therefore not the recipe's to state.",
       "reason": "loop_invalid"
     },
     {

@@ -174,7 +174,10 @@ renaming it would rekey corpora that peers pin byte-for-byte.
 `torchcg.recipe` is the reference implementation of `recipe_v1`, the versioned
 vocabulary for one family's composition: which graph classes make one endpoint's
 compiled pipeline, the loop between them, and the scheduler block that loop runs
-under. It is a vocabulary, not a DSL, and it is deliberately class-level — it
+under — including an autoregressive family's `loop.kind: host`, which states the
+per-step classes and the session-state owner and says outright that the
+data-dependent iteration is the host's. It is a vocabulary, not a DSL, and it is
+deliberately class-level — it
 pins each class by class hash plus its exact `CallIngress` value, never by a
 `cg-key-v1` value and never by a checkpoint, so one machine-independent digest
 is valid on every SKU and the key is folded at adopt time. `docs/RECIPE.md`

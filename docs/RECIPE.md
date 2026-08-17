@@ -25,11 +25,15 @@ is the corpus a non-Python consumer reads.
        "ingress": { /* the exact CallIngress v1 value */ }}
     ]}
   ],
-  "loop": [
-    {"runner": "text_encoder", "repeat": "once"},
-    {"runner": "denoiser", "repeat": "counted", "parameter": "steps"},
-    {"runner": "decoder", "repeat": "once"}
-  ],
+  "loop": {
+    "kind": "staged",
+    "session_state": "none",
+    "stages": [
+      {"runner": "text_encoder", "repeat": "once"},
+      {"runner": "denoiser", "repeat": "counted", "parameter": "steps"},
+      {"runner": "decoder", "repeat": "once"}
+    ]
+  },
   "parameters": [{"name": "steps", "minimum": 1, "maximum": 100}],
   "scheduler": {"name": "euler_discrete", "parameters": {"shift": 3.0}}
 }
@@ -39,11 +43,11 @@ is the corpus a non-Python consumer reads.
   it varies on, and one variant per bucket. A variant pins a class by its 16-hex
   `class_hash` — the key's `graph` axis — plus the exact `CallIngress` v1 value
   and its digest.
-- **Loop structure** is `loop`: an ordered list of stages, each naming a runner
-  and running `once` or `counted` by a declared integer parameter. There are no
-  conditionals, expressions, or data-flow wiring; a stage's inputs and outputs
-  are host code. The order is significant and is the only thing the loop states
-  besides repetition.
+- **Loop structure** is `loop`: a `kind`, a `session_state` owner, and an
+  ordered list of stages, each naming a runner and running `once` or `counted`
+  by a declared integer parameter. There are no conditionals, expressions, or
+  data-flow wiring; a stage's inputs and outputs are host code. The order is
+  significant and is the only thing the loop states besides repetition.
 - **The scheduler block** is a name plus finite JSON scalars. torchcg validates
   its shape and never interprets it: the host implements the named scheduler.
   It rides inside the digest because two otherwise identical compositions under
@@ -52,6 +56,27 @@ is the corpus a non-Python consumer reads.
 Display class names are deliberately absent. Identity is `class_hash` +
 `ingress_digest`; a cosmetic rename must not move a pin that consumers build
 against.
+
+## `loop.kind: host` — the loop the vocabulary refuses to fake
+
+LLMs and VLMs are first-class families, and their iteration is **data-dependent**:
+it runs until the model says stop. No count in a document can say that. So a
+loop declares one of two kinds:
+
+- **`staged`** — the composition the vocabulary fully describes. Stages run
+  `once` or `counted` by a bounded parameter, in the stated order.
+- **`host`** — an autoregressive family. The recipe states everything it *can*:
+  the per-step graph classes in order (`prefill`, then `decode`), and
+  `session_state`, which names who owns the state threaded between steps
+  (`none`, `host` when the caller passes the KV cache in and out as tensors, or
+  `graph` when the artifact carries it). It then says outright that the
+  iteration itself is the host's. **A repeat count under a host loop is refused**
+  (`loop_invalid`).
+
+The corpus ships one of each: `recipe` is staged, `host_loop_recipe` is an AR
+family. The vocabulary never pretends to describe a loop it cannot express —
+that refusal is the feature, because a fabricated count would be read by a
+second implementation as a real bound.
 
 ## Identity and the key
 
@@ -187,11 +212,19 @@ weights and independent tuned values, sharing one artifact and one generated
 type. A generated singleton, module-level registry, or process-global default
 breaks this and is a codegen defect, not a recipe extension.
 
+**G14 — A host-owned loop generates the same typed callables, and no iteration.**
+`loop.kind` is a generated class-level fact, not a behaviour: for `host`, a
+generator emits the per-step runners' typed callables and the `session_state`
+owner, and emits **no** driver, no step count, and no termination condition. An
+AR family's iteration is host code. A generator that synthesizes a loop bound
+for a host loop has invented a fact the recipe deliberately refused to state.
+
 ## What this contract deliberately does not say
 
 Ingress ranking and feed normalization (`ingress_selection_v1`, tcg#37), eager
 fallback and sticky de-arm, residency and execution groups, hub communication,
-scheduler mathematics, and anything that would make this a language.
+scheduler mathematics, an autoregressive loop's termination condition, and
+anything else that would make this a language.
 
 It also says nothing **checkpoint-level**, by construction (G11): weight sets and
 checkpoint refs, the tuned-value struct and its schema (declared on the family in
