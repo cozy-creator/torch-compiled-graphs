@@ -97,6 +97,26 @@ the contiguous raw uint8 tensor bytes. There are no separators after dtype or
 shape. The same routine validates `constants.safetensors`; changing name,
 dtype, shape, or value rekeys, while state-dict weight bytes do not.
 
+## Store namespace — frozen
+
+A stored compiled graph is addressed by two ref names, and both are v1 identity:
+
+```text
+torchcg/v1/graphs/<compiled_graph_key>
+torchcg/v1/quarantine/<compiled_graph_key>/<artifact digest>
+```
+
+`torchcg/v1` is frozen. It is the address every published compiled graph is
+filed under, so moving it does not rename anything — it orphans every ref in
+every store at once and costs a store wipe plus a fleet-wide re-mint. The
+package once learned this the expensive way: a 2026-08-17 rename from
+`torch-compiled-graphs/v1` orphaned the whole fleet's cache and was paid for by
+purging and re-minting (tcg#39). `tests/test_storage.py` pins the prefix, both
+ref shapes, the quarantine marker's keys, and the `artifact` field on
+`StoreResult`/`StoredCompiledGraph` for the same reason. A rename sweep over
+this package must exempt storage and wire identity strings rather than update
+them.
+
 Package release versions are ordinary SemVer and start at `0.1.0`. They are
 independent from this internal v1. Before launch, this one accepted v1 may be
 replaced in place; the package does not carry dual readers or writers.
