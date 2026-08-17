@@ -15,6 +15,7 @@ from torchcg.recipe import (
     IDENTIFIER_GRAMMAR,
     RESERVED_IDENTIFIERS,
     BucketAxis,
+    DeclaredRunner,
     GraphClassVariant,
     Loop,
     LoopKind,
@@ -35,6 +36,7 @@ from torchcg.recipe import (
     parse_class_hash,
     parse_family_name,
     parse_ingress_digest,
+    parse_layout_contract,
     parse_parameter_name,
     parse_recipe_digest,
     parse_runner_name,
@@ -105,19 +107,27 @@ def _decoder_ingress(side: int) -> CallIngress:
 
 
 _CLASS_HASHES = {
-    ("text_encoder", 0): "1c0e7a4b39d5f682",
-    ("denoiser", 64): "2f91b8c40ae7d135",
-    ("denoiser", 128): "3ab47de205c1986f",
-    ("decoder", 64): "4d5c1e93b6720af8",
-    ("decoder", 128): "5e6f2a08c9143b7d",
+    ("text_encoder", 0, "bf16"): "1c0e7a4b39d5f682",
+    ("denoiser", 64, "bf16"): "2f91b8c40ae7d135",
+    ("denoiser", 128, "bf16"): "3ab47de205c1986f",
+    ("denoiser", 64, "fp8_rowwise"): "8b1d5f36c07a294e",
+    ("denoiser", 128, "fp8_rowwise"): "9c2e604718fb35a0",
+    ("decoder", 64, "bf16"): "4d5c1e93b6720af8",
+    ("decoder", 128, "bf16"): "5e6f2a08c9143b7d",
 }
 
+_BF16 = parse_layout_contract("bf16")
+_FP8 = parse_layout_contract("fp8_rowwise")
 
-def _variant(runner: str, side: int, ingress: CallIngress) -> GraphClassVariant:
+
+def _variant(
+    runner: str, side: int, ingress: CallIngress, layout: str = "bf16"
+) -> GraphClassVariant:
     return GraphClassVariant(
-        class_hash=parse_class_hash(_CLASS_HASHES[(runner, side)]),
+        class_hash=parse_class_hash(_CLASS_HASHES[(runner, side, layout)]),
         ingress_digest=parse_ingress_digest(ingress.digest()),
         ingress=ingress,
+        layout=parse_layout_contract(layout),
         bucket=bucket_of((("resolution", side),)) if side else (),
     )
 
@@ -147,7 +157,9 @@ def canonical_recipe() -> Recipe:
                 name=parse_runner_name("denoiser"),
                 axes=(parse_bucket_axis_name("resolution"),),
                 variants=tuple(
-                    _variant("denoiser", side, _denoiser_ingress(side)) for side in (64, 128)
+                    _variant("denoiser", side, _denoiser_ingress(side), layout)
+                    for side in (64, 128)
+                    for layout in ("bf16", "fp8_rowwise")
                 ),
             ),
             RecipeRunner(
@@ -219,6 +231,7 @@ def autoregressive_recipe() -> Recipe:
                         class_hash=parse_class_hash(_AR_CLASS_HASHES["decode"]),
                         ingress_digest=parse_ingress_digest(decode.digest()),
                         ingress=decode,
+                        layout=_BF16,
                     ),
                 ),
             ),
@@ -230,6 +243,7 @@ def autoregressive_recipe() -> Recipe:
                         class_hash=parse_class_hash(_AR_CLASS_HASHES["prefill"]),
                         ingress_digest=parse_ingress_digest(prefill.digest()),
                         ingress=prefill,
+                        layout=_BF16,
                     ),
                 ),
             ),
@@ -297,7 +311,7 @@ def test_reference_pins_the_document_and_refuses_a_stranger() -> None:
 def test_recipe_digest_is_machine_independent_and_the_key_is_not() -> None:
     recipe = canonical_recipe()
     variant = recipe.runner(parse_runner_name("denoiser")).variant(
-        {parse_bucket_axis_name("resolution"): 64}
+        {parse_bucket_axis_name("resolution"): 64}, _BF16
     )
     ampere = _Runtime("sm_86", {"torch": "a" * 16})
     hopper = _Runtime("sm_90", {"torch": "a" * 16})
@@ -364,9 +378,14 @@ def test_a_host_owned_loop_is_a_legal_declaration() -> None:
 def test_bucket_lookup_is_exact_and_never_ranks() -> None:
     runner = canonical_recipe().runner(parse_runner_name("denoiser"))
     resolution = parse_bucket_axis_name("resolution")
-    assert runner.variant({resolution: 128}).class_hash == _CLASS_HASHES[("denoiser", 128)]
+    assert runner.variant({resolution: 128}, _BF16).class_hash == _CLASS_HASHES[
+        ("denoiser", 128, "bf16")
+    ]
+    assert runner.variant({resolution: 128}, _FP8).class_hash == _CLASS_HASHES[
+        ("denoiser", 128, "fp8_rowwise")
+    ]
     with pytest.raises(RecipeError) as caught:
-        runner.variant({resolution: 96})
+        runner.variant({resolution: 96}, _BF16)
     assert caught.value.reason is RecipeRefusal.BUCKET_INVALID
 
 
@@ -426,6 +445,58 @@ def test_every_generated_symbol_is_a_legal_identifier_in_both_languages() -> Non
         assert caught.value.reason is RecipeRefusal.IDENTIFIER_INVALID
 
 
+def test_layout_is_an_axis_of_the_class_row() -> None:
+    """fp8-rowwise and bf16 traces are different graphs, so the row names which."""
+
+    runner = canonical_recipe().runner(parse_runner_name("denoiser"))
+    assert runner.layouts == ("bf16", "fp8_rowwise")
+    resolution = parse_bucket_axis_name("resolution")
+    assert runner.variant({resolution: 64}, _BF16).class_hash != runner.variant(
+        {resolution: 64}, _FP8
+    ).class_hash
+    # Two layouts and no layout named is a refusal, never a guess: choosing one
+    # is the hub's join with per-checkpoint layout metadata, a separate document.
+    with pytest.raises(RecipeError) as caught:
+        runner.variant({resolution: 64})
+    assert caught.value.reason is RecipeRefusal.LAYOUT_INVALID
+    # A runner with one layout resolves without naming it; that is not a choice.
+    decoder = canonical_recipe().runner(parse_runner_name("decoder"))
+    assert decoder.layouts == ("bf16",)
+    assert decoder.variant({resolution: 64}).layout == _BF16
+
+
+def test_the_recipe_asserts_the_declaration_rather_than_replacing_it() -> None:
+    """Bindings generate from the declaration; this document proves no drift."""
+
+    recipe = canonical_recipe()
+    declared = [
+        DeclaredRunner(
+            name=runner.name,
+            ingress_digests=tuple(variant.ingress_digest for variant in runner.variants),
+        )
+        for runner in recipe.runners
+    ]
+    recipe.assert_declaration(declared)
+    drifted = [
+        DeclaredRunner(
+            name=runner.name,
+            ingress_digests=(
+                (parse_ingress_digest("0" * 32),)
+                if runner.name == "denoiser"
+                else tuple(variant.ingress_digest for variant in runner.variants)
+            ),
+        )
+        for runner in recipe.runners
+    ]
+    with pytest.raises(RecipeError) as caught:
+        recipe.assert_declaration(drifted)
+    assert caught.value.reason is RecipeRefusal.DECLARATION_DRIFT
+    assert "denoiser" in str(caught.value)
+    with pytest.raises(RecipeError) as absent:
+        recipe.assert_declaration(declared[:2])
+    assert absent.value.reason is RecipeRefusal.DECLARATION_DRIFT
+
+
 def _mutate(**changes: Any) -> Callable[[], object]:
     def build() -> object:
         document = _document()
@@ -462,11 +533,8 @@ def _swap_runners(document: dict[str, Any]) -> None:
 
 
 def _undeclared_bucket_value(document: dict[str, Any]) -> None:
-    document["runners"][1]["variants"][1]["bucket"]["resolution"] = 96
-
-
-def _incomplete_coverage(document: dict[str, Any]) -> None:
-    document["runners"][0]["variants"] = document["runners"][0]["variants"][:1]
+    for variant in document["runners"][1]["variants"][2:]:
+        variant["bucket"]["resolution"] = 96
 
 
 def _broken_ingress(document: dict[str, Any]) -> None:
@@ -528,7 +596,23 @@ def _disagreeing_variants() -> object:
     )
 
 
+def _drop_one_layout(document: dict[str, Any]) -> None:
+    variants = document["runners"][1]["variants"]
+    document["runners"][1]["variants"] = [variants[0], variants[1], variants[2]]
+
+
 _REFUSALS: dict[RecipeRefusal, Callable[[], object]] = {
+    RecipeRefusal.LAYOUT_INVALID: lambda: canonical_recipe()
+    .runner(parse_runner_name("denoiser"))
+    .variant({parse_bucket_axis_name("resolution"): 64}),
+    RecipeRefusal.DECLARATION_DRIFT: lambda: canonical_recipe().assert_declaration(
+        [
+            DeclaredRunner(
+                name=parse_runner_name("denoiser"),
+                ingress_digests=(parse_ingress_digest("0" * 32),),
+            )
+        ]
+    ),
     RecipeRefusal.RECIPE_VERSION_UNSUPPORTED: _mutate(v=2),
     RecipeRefusal.RECIPE_FIELDS_INVALID: _patch(_missing_field),
     RecipeRefusal.IDENTIFIER_INVALID: _mutate(family="Toy Diffusion"),
@@ -536,7 +620,7 @@ _REFUSALS: dict[RecipeRefusal, Callable[[], object]] = {
     RecipeRefusal.DIGEST_INVALID: _patch(_short_digest),
     RecipeRefusal.BUCKET_AXIS_INVALID: _patch(_unsorted_axis),
     RecipeRefusal.BUCKET_INVALID: _patch(_undeclared_bucket_value),
-    RecipeRefusal.BUCKET_COVERAGE_INCOMPLETE: _patch(_incomplete_coverage),
+    RecipeRefusal.BUCKET_COVERAGE_INCOMPLETE: _patch(_drop_one_layout),
     RecipeRefusal.INGRESS_INVALID: _patch(_broken_ingress),
     RecipeRefusal.INGRESS_DIGEST_MISMATCH: _patch(_wrong_digest),
     RecipeRefusal.SIGNATURE_DISAGREEMENT: _disagreeing_variants,

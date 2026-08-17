@@ -20,6 +20,7 @@ is the corpus a non-Python consumer reads.
   "runners": [
     {"name": "denoiser", "axes": ["resolution"], "variants": [
       {"bucket": {"resolution": 64},
+       "layout": "bf16",
        "class_hash": "2f91b8c40ae7d135",
        "ingress_digest": "…32 hex…",
        "ingress": { /* the exact CallIngress v1 value */ }}
@@ -40,9 +41,9 @@ is the corpus a non-Python consumer reads.
 ```
 
 - **Family composition** is `runners`: an author-facing handle, the bucket axes
-  it varies on, and one variant per bucket. A variant pins a class by its 16-hex
-  `class_hash` — the key's `graph` axis — plus the exact `CallIngress` v1 value
-  and its digest.
+  it varies on, and one variant per bucket per layout. A variant pins a class by
+  its 16-hex `class_hash` — the key's `graph` axis — plus the exact `CallIngress`
+  v1 value, its digest, and the tensor-layout contract it was traced against.
 - **Loop structure** is `loop`: a `kind`, a `session_state` owner, and an
   ordered list of stages, each naming a runner and running `once` or `counted`
   by a declared integer parameter. There are no conditionals, expressions, or
@@ -56,6 +57,29 @@ is the corpus a non-Python consumer reads.
 Display class names are deliberately absent. Identity is `class_hash` +
 `ingress_digest`; a cosmetic rename must not move a pin that consumers build
 against.
+
+## Tensor layout is an axis of the class row
+
+An fp8-rowwise trace and a bf16 trace are **different graphs**, so `layout` is a
+fact of the class row, not a property of weights bound to it later. Every variant
+names the layout contract it was traced against; a runner may offer several, and
+bucket coverage must be total **per layout**, so a generated closed type stays
+exhaustive whichever layout is in play.
+
+**What this contract does with a layout: records it.** It does not enumerate the
+token set, interpret it, or fork §1.32/§1.33's vocabulary, and it produces no
+verdict. The recipe and per-checkpoint layout metadata are deliberately
+**separate hub documents** — they have different axes and different lifecycles: a
+re-mint regenerates recipes, a new checkpoint adds layout rows, and merging them
+would rekey every family document on every upload. The hub **joins** them at
+rebind and at invoke to answer COMPATIBLE / CONVERTIBLE / PRODUCIBLE /
+INCOMPATIBLE ahead of time, extending §1.32(b) to the compiled path.
+
+The runtime consequence, stated here because it is what makes the row load-
+bearing: **a compiled backing accepts exactly its traced layout.** An eager
+backing follows the fit ladder, which is host policy. `variant(bucket, layout)`
+therefore refuses when a runner has more than one layout and none is named — the
+choice belongs to that join, not to a lookup.
 
 ## `loop.kind: host` — the loop the vocabulary refuses to fake
 
@@ -120,6 +144,13 @@ package's.
 
 These are the contract for a binding generator (pgw#1332 in Python, `build.rs`
 in Rust). They are numbered so a generator can cite them.
+
+**Read G16 first — it fixes the direction.** Typed bindings are generated from a
+**declaration-time fake-tensor export**, not from this document. The recipe a
+mint emits is the **drift assertion** against that declaration and the
+**adopt-time reference** from a name to a class identity. Everything below is
+therefore two things at once: the facts a binding needs, and the facts this
+document must state identically for the assertion to mean anything.
 
 **G1 — Names are generatable by construction.** Every family, runner,
 bucket-axis, call-parameter, scheduler, and scheduler-parameter name matches
@@ -219,6 +250,25 @@ owner, and emits **no** driver, no step count, and no termination condition. An
 AR family's iteration is host code. A generator that synthesizes a loop bound
 for a host loop has invented a fact the recipe deliberately refused to state.
 
+**G15 — Layout is generated as a second closed axis, never inferred.** A runner's
+layouts are a closed set exactly as its bucket values are, and coverage is total
+per layout, so `Literal["bf16", "fp8_rowwise"]` or a Rust enum is exhaustive.
+A generator emits the traced layout on each class and emits **no** conversion,
+fallback, or preference between layouts: a compiled backing accepts exactly its
+traced layout, and choosing one is the hub's join with per-checkpoint layout
+metadata.
+
+**G16 — The declaration is the binding source; the recipe is the assertion.**
+Bindings generate from a declaration-time fake-tensor export, so a family types
+correctly before anything is minted and codegen never waits on a compile. The
+mint emits this document, and `Recipe.assert_declaration(...)` refuses
+(`declaration_drift`) when the runners or their ingress digests differ from what
+the bindings were generated against — a missing runner, an extra one, or a class
+minted against a different call. Equal ingress digests imply equal signatures,
+because the signature is a projection of the ingress. A generator that reads this
+document *instead of* the declaration has inverted the dependency and loses the
+assertion: there is then nothing left to compare against.
+
 ## What this contract deliberately does not say
 
 Ingress ranking and feed normalization (`ingress_selection_v1`, tcg#37), eager
@@ -227,7 +277,9 @@ scheduler mathematics, an autoregressive loop's termination condition, and
 anything else that would make this a language.
 
 It also says nothing **checkpoint-level**, by construction (G11): weight sets and
-checkpoint refs, the tuned-value struct and its schema (declared on the family in
-the SDK, stamped per release slot), and per-request defaults. A family is the
+checkpoint refs, per-checkpoint tensor-layout metadata (a separate hub document
+it is joined with, never merged into), the tuned-value struct and its schema
+(declared on the family in the SDK, stamped per release slot), and per-request
+defaults. A family is the
 graph level; an instance is family × weight-set; a request is neither. Those
 three axes do not cross, and this document is entirely the first one.

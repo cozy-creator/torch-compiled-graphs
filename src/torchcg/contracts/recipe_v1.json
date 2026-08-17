@@ -1,9 +1,9 @@
 {
   "authority": "torchcg recipe v1",
   "axis": "CLASS-LEVEL only, and checkpoint-free by closed field sets: buckets, graph classes, signatures, loop and scheduler are family facts identical for every checkpoint that family serves. Weight sets, checkpoint refs, tuned values and per-request defaults are unrepresentable, so a generated family class is a TYPE whose callables are reached through a fully resolved instance (family x weight-set); two handler parameters of one family type are two independent instances. See docs/RECIPE.md G11-G13.",
-  "digest": "f37739a6853a302ae03158b610cdf6a5",
+  "digest": "935d16b97cdc444ce6b837051b9ebfc4",
   "digest_rule": "first 32 lowercase hex of SHA-256 over the recipe document as sorted, compact, ASCII, finite JSON -- the same rule CallIngress v1 uses",
-  "host_loop_digest": "8cb2e4cc420452f33e4ea8ca0ef96ece",
+  "host_loop_digest": "ab0c40a70740ffad33708fd9fc1b49eb",
   "host_loop_note": "The second document. LLMs and VLMs are first class and their iteration is data-dependent -- it runs until the model says stop -- so `loop.kind` is `host`: the recipe states the per-step graph classes in order and who owns the state threaded between them, and states outright that the iteration is the host's. A counted stage under a host loop is refused. The vocabulary never pretends to describe a loop it cannot express.",
   "host_loop_recipe": {
     "buckets": [],
@@ -95,7 +95,8 @@
               },
               "v": 1
             },
-            "ingress_digest": "d336a6217cf5d6dbf768340d65b73418"
+            "ingress_digest": "d336a6217cf5d6dbf768340d65b73418",
+            "layout": "bf16"
           }
         ]
       },
@@ -135,7 +136,8 @@
               },
               "v": 1
             },
-            "ingress_digest": "78e9000acf3c493edffceb2878605a20"
+            "ingress_digest": "78e9000acf3c493edffceb2878605a20",
+            "layout": "bf16"
           }
         ]
       }
@@ -143,7 +145,7 @@
     "v": 1
   },
   "identifier_grammar": "[a-z][a-z0-9_]*, 1..48 bytes",
-  "note": "recipe_v1 is a VOCABULARY, not a DSL: it names which graph classes compose one family, the loop between them, and the scheduler block that loop runs under. It pins class identity (class hash + CallIngress v1) and never a cg-key-v1 value, so one digest is valid on every SKU; the exact key is folded at adopt from the pod's own sm and toolchain axes. Selecting a bucket for a live call is ingress_selection_v1, not this contract.",
+  "note": "recipe_v1 is a VOCABULARY, not a DSL: it names which graph classes compose one family, the loop between them, and the scheduler block that loop runs under. It pins class identity (class hash + CallIngress v1) and never a cg-key-v1 value, so one digest is valid on every SKU; the exact key is folded at adopt from the pod's own sm and toolchain axes. Selecting a bucket for a live call is ingress_selection_v1, not this contract. Each class row also NAMES the tensor-layout contract it was traced against (an fp8-rowwise trace and a bf16 trace are different graphs); per-checkpoint layout metadata is a separate hub document, and the hub JOINS the two for the ahead-of-time compatibility verdict. Typed bindings generate from the DECLARATION-time export, and this document asserts the mint did not drift from it.",
   "recipe": {
     "buckets": [
       {
@@ -219,7 +221,8 @@
               "symbols": {},
               "v": 1
             },
-            "ingress_digest": "d2700be6cfafda5f2d40994eb9f21cc4"
+            "ingress_digest": "d2700be6cfafda5f2d40994eb9f21cc4",
+            "layout": "bf16"
           },
           {
             "bucket": {
@@ -252,7 +255,8 @@
               "symbols": {},
               "v": 1
             },
-            "ingress_digest": "f2e9f616da2c4dddd97634c9957c70c3"
+            "ingress_digest": "f2e9f616da2c4dddd97634c9957c70c3",
+            "layout": "bf16"
           }
         ]
       },
@@ -344,7 +348,93 @@
               },
               "v": 1
             },
-            "ingress_digest": "f68ee5d7671799b69ebecf9d9112bbd3"
+            "ingress_digest": "f68ee5d7671799b69ebecf9d9112bbd3",
+            "layout": "bf16"
+          },
+          {
+            "bucket": {
+              "resolution": 64
+            },
+            "class_hash": "8b1d5f36c07a294e",
+            "ingress": {
+              "excluded_inputs": [],
+              "flat_arity": 4,
+              "inputs": [
+                {
+                  "dtype": "float16",
+                  "exported_name": "latents",
+                  "name": "latents",
+                  "param": "latents",
+                  "param_position": 0,
+                  "path": [],
+                  "position": 0,
+                  "shape": [
+                    1,
+                    4,
+                    64,
+                    64
+                  ]
+                },
+                {
+                  "dtype": "float32",
+                  "exported_name": "timestep",
+                  "name": "timestep",
+                  "param": "timestep",
+                  "param_position": 1,
+                  "path": [],
+                  "position": 1,
+                  "shape": [
+                    1
+                  ]
+                },
+                {
+                  "dtype": "float16",
+                  "exported_name": "conditioning_prompt",
+                  "name": "prompt",
+                  "param": "conditioning",
+                  "param_position": 2,
+                  "path": [
+                    "prompt"
+                  ],
+                  "position": 2,
+                  "shape": [
+                    1,
+                    "tokens",
+                    768
+                  ]
+                },
+                {
+                  "dtype": "float16",
+                  "exported_name": "conditioning_negative_prompt",
+                  "name": "negative_prompt",
+                  "param": "conditioning",
+                  "param_position": 2,
+                  "path": [
+                    "negative_prompt"
+                  ],
+                  "position": 3,
+                  "shape": [
+                    1,
+                    "tokens",
+                    768
+                  ]
+                }
+              ],
+              "parameters": [
+                "latents",
+                "timestep",
+                "conditioning"
+              ],
+              "symbols": {
+                "tokens": [
+                  1,
+                  77
+                ]
+              },
+              "v": 1
+            },
+            "ingress_digest": "f68ee5d7671799b69ebecf9d9112bbd3",
+            "layout": "fp8_rowwise"
           },
           {
             "bucket": {
@@ -428,7 +518,93 @@
               },
               "v": 1
             },
-            "ingress_digest": "3a719ed0979e308917ff4eee1cc081bd"
+            "ingress_digest": "3a719ed0979e308917ff4eee1cc081bd",
+            "layout": "bf16"
+          },
+          {
+            "bucket": {
+              "resolution": 128
+            },
+            "class_hash": "9c2e604718fb35a0",
+            "ingress": {
+              "excluded_inputs": [],
+              "flat_arity": 4,
+              "inputs": [
+                {
+                  "dtype": "float16",
+                  "exported_name": "latents",
+                  "name": "latents",
+                  "param": "latents",
+                  "param_position": 0,
+                  "path": [],
+                  "position": 0,
+                  "shape": [
+                    1,
+                    4,
+                    128,
+                    128
+                  ]
+                },
+                {
+                  "dtype": "float32",
+                  "exported_name": "timestep",
+                  "name": "timestep",
+                  "param": "timestep",
+                  "param_position": 1,
+                  "path": [],
+                  "position": 1,
+                  "shape": [
+                    1
+                  ]
+                },
+                {
+                  "dtype": "float16",
+                  "exported_name": "conditioning_prompt",
+                  "name": "prompt",
+                  "param": "conditioning",
+                  "param_position": 2,
+                  "path": [
+                    "prompt"
+                  ],
+                  "position": 2,
+                  "shape": [
+                    1,
+                    "tokens",
+                    768
+                  ]
+                },
+                {
+                  "dtype": "float16",
+                  "exported_name": "conditioning_negative_prompt",
+                  "name": "negative_prompt",
+                  "param": "conditioning",
+                  "param_position": 2,
+                  "path": [
+                    "negative_prompt"
+                  ],
+                  "position": 3,
+                  "shape": [
+                    1,
+                    "tokens",
+                    768
+                  ]
+                }
+              ],
+              "parameters": [
+                "latents",
+                "timestep",
+                "conditioning"
+              ],
+              "symbols": {
+                "tokens": [
+                  1,
+                  77
+                ]
+              },
+              "v": 1
+            },
+            "ingress_digest": "3a719ed0979e308917ff4eee1cc081bd",
+            "layout": "fp8_rowwise"
           }
         ]
       },
@@ -468,7 +644,8 @@
               },
               "v": 1
             },
-            "ingress_digest": "e144f3ba52634672875ce8e0205d76ce"
+            "ingress_digest": "e144f3ba52634672875ce8e0205d76ce",
+            "layout": "bf16"
           }
         ]
       }
@@ -484,7 +661,7 @@
     "v": 1
   },
   "reference": {
-    "digest": "f37739a6853a302ae03158b610cdf6a5",
+    "digest": "935d16b97cdc444ce6b837051b9ebfc4",
     "family": "toy_diffusion",
     "v": 1
   },
@@ -500,6 +677,10 @@
     {
       "note": "A variant does not pin exactly its runner's declared axes, pins a value the axis does not declare, duplicates a bucket, is out of bucket order, or is looked up with a bucket no variant declares.",
       "reason": "bucket_invalid"
+    },
+    {
+      "note": "The mint-emitted recipe does not match the declaration typed bindings were generated from: a runner is missing, extra, or was minted against a different call. The declaration is the binding source; this document is the drift assertion.",
+      "reason": "declaration_drift"
     },
     {
       "note": "A class hash (16 hex), ingress digest (32 hex), or recipe digest (32 hex) is not exactly that many lowercase hexadecimal characters.",
@@ -520,6 +701,10 @@
     {
       "note": "A variant's embedded CallIngress v1 value is not decodable, or one of its parameters mixes container kinds and therefore has no generatable type.",
       "reason": "ingress_invalid"
+    },
+    {
+      "note": "A layout token is outside the identifier grammar, or a variant lookup left the layout unnamed on a runner that has classes for more than one. Choosing a layout is the hub's join of this document with per-checkpoint layout metadata (a SEPARATE document, different lifecycle); this contract refuses rather than guess.",
+      "reason": "layout_invalid"
     },
     {
       "note": "The loop declares an unknown kind or session state, is empty, carries a stage whose repeat is not `once` or `counted`, has a counted stage naming no parameter or a once stage carrying one -- or states a repeat count under a host-owned loop, whose iteration is data-dependent and therefore not the recipe's to state.",

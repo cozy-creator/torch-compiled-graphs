@@ -178,11 +178,15 @@ under — including an autoregressive family's `loop.kind: host`, which states t
 per-step classes and the session-state owner and says outright that the
 data-dependent iteration is the host's. It is a vocabulary, not a DSL, and it is
 deliberately class-level — it
-pins each class by class hash plus its exact `CallIngress` value, never by a
-`cg-key-v1` value and never by a checkpoint, so one machine-independent digest
-is valid on every SKU and the key is folded at adopt time. `docs/RECIPE.md`
-states the document, the digest rule, how it rides beside `endpoint.lock`, and
-the numbered requirements a typed-binding generator implements against.
+pins each class by class hash, its exact `CallIngress` value, and the
+tensor-layout contract it was traced against, never by a `cg-key-v1` value and
+never by a checkpoint, so one machine-independent digest is valid on every SKU
+and the key is folded at adopt time. Typed bindings are generated from a
+declaration-time export rather than from the recipe; the recipe is the drift
+assertion against that declaration and the adopt-time name-to-identity
+reference. `docs/RECIPE.md` states the document, the digest rule, how it rides
+beside `endpoint.lock`, and the numbered requirements a binding generator
+implements against.
 
 The versioned compile-span partition lives in `torchcg.spans`. Its three totals
 each have one explicit residual, and `check()` must be run by the measurement

@@ -72,6 +72,7 @@ RunnerName = NewType("RunnerName", str)
 BucketAxisName = NewType("BucketAxisName", str)
 ParameterName = NewType("ParameterName", str)
 SchedulerName = NewType("SchedulerName", str)
+LayoutContract = NewType("LayoutContract", str)
 GraphClassHash = NewType("GraphClassHash", str)
 IngressDigest = NewType("IngressDigest", str)
 RecipeDigest = NewType("RecipeDigest", str)
@@ -90,6 +91,8 @@ class RecipeRefusal(StrEnum):
     BUCKET_AXIS_INVALID = "bucket_axis_invalid"
     BUCKET_INVALID = "bucket_invalid"
     BUCKET_COVERAGE_INCOMPLETE = "bucket_coverage_incomplete"
+    LAYOUT_INVALID = "layout_invalid"
+    DECLARATION_DRIFT = "declaration_drift"
     INGRESS_INVALID = "ingress_invalid"
     INGRESS_DIGEST_MISMATCH = "ingress_digest_mismatch"
     SIGNATURE_DISAGREEMENT = "signature_disagreement"
@@ -218,6 +221,19 @@ def parse_scheduler_name(value: object) -> SchedulerName:
     """Parse a scheduler handle."""
 
     return SchedulerName(_identifier("scheduler name", value))
+
+
+def parse_layout_contract(value: object) -> LayoutContract:
+    """Parse the tensor-layout contract token a graph class was traced against.
+
+    The token set is the platform's tensor-layout vocabulary (DESIGN-RULINGS
+    §1.32/§1.33). This contract records which one a class was traced against and
+    never enumerates, interprets, or forks it: the COMPATIBLE / CONVERTIBLE /
+    PRODUCIBLE / INCOMPATIBLE verdict is the hub's join of this document with
+    per-checkpoint layout metadata, which is a SEPARATE document.
+    """
+
+    return LayoutContract(_identifier("layout contract", value))
 
 
 def _hex(kind: str, value: object, width: int) -> str:
@@ -393,15 +409,24 @@ class BucketAxis:
 
 @dataclass(frozen=True, slots=True)
 class GraphClassVariant:
-    """One graph class of one runner, pinned by identity and by its bucket."""
+    """One graph class of one runner, pinned by identity, layout, and bucket.
+
+    ``layout`` names the tensor-layout contract this class was TRACED against.
+    An fp8-rowwise trace and a bf16 trace are different graphs, so layout is an
+    axis of the class row, not a property of the weights bound to it later. The
+    compiled backing accepts exactly its traced layout; an eager backing follows
+    the fit ladder, which is host policy.
+    """
 
     class_hash: GraphClassHash
     ingress_digest: IngressDigest
     ingress: CallIngress
+    layout: LayoutContract
     bucket: tuple[tuple[BucketAxisName, int], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "class_hash", parse_class_hash(self.class_hash))
+        object.__setattr__(self, "layout", parse_layout_contract(self.layout))
         object.__setattr__(self, "ingress_digest", parse_ingress_digest(self.ingress_digest))
         if not isinstance(self.ingress, CallIngress):
             raise RecipeError(
@@ -441,18 +466,27 @@ class GraphClassVariant:
             }
         )
 
+    @property
+    def selector(self) -> tuple[tuple[tuple[BucketAxisName, int], ...], LayoutContract]:
+        """The exact pair a lookup resolves by."""
+
+        return (self.bucket, self.layout)
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "bucket": {str(name): value for name, value in self.bucket},
             "class_hash": str(self.class_hash),
             "ingress": self.ingress.as_dict(),
             "ingress_digest": str(self.ingress_digest),
+            "layout": str(self.layout),
         }
 
     @classmethod
     def decode(cls, raw: object) -> GraphClassVariant:
         row = _fields(
-            "variant", raw, frozenset(("bucket", "class_hash", "ingress", "ingress_digest"))
+            "variant",
+            raw,
+            frozenset(("bucket", "class_hash", "ingress", "ingress_digest", "layout")),
         )
         bucket = row["bucket"]
         if not isinstance(bucket, Mapping):
@@ -467,6 +501,7 @@ class GraphClassVariant:
             class_hash=parse_class_hash(row["class_hash"]),
             ingress_digest=parse_ingress_digest(row["ingress_digest"]),
             ingress=ingress,
+            layout=parse_layout_contract(row["layout"]),
             bucket=tuple(
                 sorted(
                     (parse_bucket_axis_name(name), value) for name, value in bucket.items()
@@ -523,16 +558,16 @@ class RecipeRunner:
                 RecipeRefusal.BUCKET_INVALID,
                 f"runner {self.name!r} variants must pin exactly its declared axes",
             )
-        pinned = [variant.bucket for variant in self.variants]
+        pinned = [variant.selector for variant in self.variants]
         if len(set(pinned)) != len(pinned):
             raise RecipeError(
                 RecipeRefusal.BUCKET_INVALID,
-                f"runner {self.name!r} declares two variants for one bucket",
+                f"runner {self.name!r} declares two variants for one bucket and layout",
             )
         if pinned != sorted(pinned):
             raise RecipeError(
                 RecipeRefusal.BUCKET_INVALID,
-                f"runner {self.name!r} variants must be sorted by bucket",
+                f"runner {self.name!r} variants must be sorted by bucket, then layout",
             )
         shapes = {_signature_shape(variant.ingress) for variant in self.variants}
         if len(shapes) != 1:
@@ -544,24 +579,51 @@ class RecipeRunner:
 
     @property
     def signature(self) -> CallSignature:
-        """The one signature every variant of this runner shares."""
+        """The one signature every variant of this runner shares.
+
+        Across layouts too: one runner is one generated binding, so a trace whose
+        layout changes the CALL (not just the weights) is a different runner.
+        """
 
         return self.variants[0].signature
 
-    def variant(self, bucket: Mapping[BucketAxisName, int]) -> GraphClassVariant:
-        """Resolve one variant by EXACT bucket.  This never ranks or approximates.
+    @property
+    def layouts(self) -> tuple[LayoutContract, ...]:
+        """The tensor-layout contracts this runner has classes for."""
 
-        Choosing a bucket for a call is ingress selection, which is a separate
-        versioned contract (``ingress_selection_v1``); this is a lookup.
+        return tuple(sorted({variant.layout for variant in self.variants}))
+
+    def variant(
+        self,
+        bucket: Mapping[BucketAxisName, int],
+        layout: LayoutContract | None = None,
+    ) -> GraphClassVariant:
+        """Resolve one variant by EXACT bucket and layout.  This never ranks.
+
+        Choosing a bucket for a live call is ingress selection, a separate
+        versioned contract (``ingress_selection_v1``); choosing a layout is the
+        hub's join of this document with per-checkpoint layout metadata. This is
+        a lookup, and it refuses rather than guess.
         """
 
         wanted = tuple(sorted((parse_bucket_axis_name(k), v) for k, v in bucket.items()))
+        layouts = self.layouts
+        if layout is None:
+            if len(layouts) != 1:
+                raise RecipeError(
+                    RecipeRefusal.LAYOUT_INVALID,
+                    f"runner {self.name!r} has classes for {[str(item) for item in layouts]!r}; "
+                    "name the traced layout rather than leaving it to a lookup",
+                )
+            layout = layouts[0]
+        selector = (wanted, parse_layout_contract(layout))
         for variant in self.variants:
-            if variant.bucket == wanted:
+            if variant.selector == selector:
                 return variant
         raise RecipeError(
             RecipeRefusal.BUCKET_INVALID,
-            f"runner {self.name!r} declares no variant for bucket {dict(wanted)!r}",
+            f"runner {self.name!r} declares no variant for bucket {dict(wanted)!r} "
+            f"at layout {str(layout)!r}",
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -802,6 +864,30 @@ class Scheduler:
 
 
 @dataclass(frozen=True, slots=True)
+class DeclaredRunner:
+    """What a DECLARATION-time fake-tensor export states for one runner.
+
+    Typed bindings are generated from the declaration, not from this document.
+    The recipe a mint emits is the DRIFT ASSERTION against it and the adopt-time
+    reference: same runners, same classes, same ingresses, or the mint compiled
+    something the bindings do not describe.
+    """
+
+    name: RunnerName
+    ingress_digests: tuple[IngressDigest, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", parse_runner_name(self.name))
+        digests = tuple(parse_ingress_digest(value) for value in self.ingress_digests)
+        if not digests:
+            raise RecipeError(
+                RecipeRefusal.DECLARATION_DRIFT,
+                f"declared runner {self.name!r} states no ingress",
+            )
+        object.__setattr__(self, "ingress_digests", tuple(sorted(digests)))
+
+
+@dataclass(frozen=True, slots=True)
 class RecipeReference:
     """The digest-pinned reference an endpoint lock or crate embeds."""
 
@@ -884,13 +970,18 @@ class Recipe:
                 tuple(zip(runner.axes, combination, strict=True))
                 for combination in product(*(axes[name] for name in runner.axes))
             }
-            missing = sorted(expected - {variant.bucket for variant in runner.variants})
-            if missing:
-                raise RecipeError(
-                    RecipeRefusal.BUCKET_COVERAGE_INCOMPLETE,
-                    f"runner {runner.name!r} declares no variant for bucket "
-                    f"{dict(missing[0])!r}; a generated closed type must be total",
-                )
+            for layout in runner.layouts:
+                built = {
+                    variant.bucket for variant in runner.variants if variant.layout == layout
+                }
+                missing = sorted(expected - built)
+                if missing:
+                    raise RecipeError(
+                        RecipeRefusal.BUCKET_COVERAGE_INCOMPLETE,
+                        f"runner {runner.name!r} at layout {str(layout)!r} declares no variant "
+                        f"for bucket {dict(missing[0])!r}; a generated closed type must be "
+                        "total for every layout it offers",
+                    )
         if not isinstance(self.loop, Loop):
             raise RecipeError(RecipeRefusal.LOOP_INVALID, "a recipe must declare its loop")
         staged = self.loop.runners
@@ -969,6 +1060,44 @@ class Recipe:
 
         return RecipeReference(family=self.family, digest=self.digest())
 
+    def assert_declaration(self, declared: Sequence[DeclaredRunner]) -> None:
+        """Refuse a recipe that drifted from the declaration bindings came from.
+
+        The direction matters and is the point of this method: the DECLARATION
+        is the binding source, and this document asserts that what the mint
+        actually compiled still matches it. Equal ingress digests imply equal
+        signatures, because the signature is a projection of the ingress.
+        """
+
+        stated = {
+            runner.name: tuple(sorted(variant.ingress_digest for variant in runner.variants))
+            for runner in self.runners
+        }
+        expected = {runner.name: runner.ingress_digests for runner in declared}
+        if len(expected) != len(declared):
+            raise RecipeError(
+                RecipeRefusal.DECLARATION_DRIFT, "a declaration names one runner twice"
+            )
+        missing = sorted(set(expected) - set(stated))
+        if missing:
+            raise RecipeError(
+                RecipeRefusal.DECLARATION_DRIFT,
+                f"the declaration states runner {str(missing[0])!r} and the recipe does not",
+            )
+        extra = sorted(set(stated) - set(expected))
+        if extra:
+            raise RecipeError(
+                RecipeRefusal.DECLARATION_DRIFT,
+                f"the recipe states runner {str(extra[0])!r} and the declaration does not",
+            )
+        for name, digests in sorted(expected.items()):
+            if stated[name] != digests:
+                raise RecipeError(
+                    RecipeRefusal.DECLARATION_DRIFT,
+                    f"runner {str(name)!r} was minted against a different call than it was "
+                    f"declared with: declared {list(digests)!r}, recipe {list(stated[name])!r}",
+                )
+
     def verify(self, reference: RecipeReference) -> None:
         """Refuse a reference that does not name this exact document."""
 
@@ -1036,10 +1165,12 @@ __all__ = [
     "BucketAxis",
     "BucketAxisName",
     "CallSignature",
+    "DeclaredRunner",
     "FamilyName",
     "GraphClassHash",
     "GraphClassVariant",
     "IngressDigest",
+    "LayoutContract",
     "Loop",
     "LoopKind",
     "LoopStep",
@@ -1067,6 +1198,7 @@ __all__ = [
     "parse_class_hash",
     "parse_family_name",
     "parse_ingress_digest",
+    "parse_layout_contract",
     "parse_parameter_name",
     "parse_recipe_digest",
     "parse_runner_name",
