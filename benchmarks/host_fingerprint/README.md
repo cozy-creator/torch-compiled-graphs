@@ -114,8 +114,9 @@ Keep torch identical to the build host wherever the intent is to isolate an
 OS-level axis; if torch moves too, several axes differ at once and the
 contingency can only fail closed across all of them.
 
-CPU pods (~$0.03–0.50) suffice for CPU-target probes; a CUDA-target matrix
-needs GPU pods and is a separate campaign. Collect every row, run
+CPU pods (~$0.03–0.50) suffice for CPU-target probes; the CUDA-target matrix
+ran 2026-08-16 on GPU pods (see below, ~$0.75 including the wrapper-transform
+anchor captures). Collect every row, run
 `matrix_report.py`, and only then open the follow-up issue that removes or
 coarsens axes — with regression cases per retained boundary, per tcg#4.
 
@@ -207,6 +208,48 @@ worker-supplied member, and the only fingerprint facts this package owns —
 `machine` and `host_isa_*` — are unmeasured. The coarsening decision therefore
 belongs to the worker lane; this repo owns the evidence.
 
+## The 2026-08-16 CUDA campaign — the GPU-target half
+
+Two RunPod secure RTX A4000 pods (sm_86, $0.25/hr), inventory in
+`targets.pod-2026-08-16-cuda.json`, rows in `results/pod-20260816-cuda-*`,
+fold in `report-pod-20260816-cuda.json`. **4 conclusive rows, 0 inconclusive,
+1 real failure, 2 distinct hosts** — the first conclusive GPU-target rows.
+Same GPU type on both pods on purpose, so no row confounds an OS axis with a
+CUDA-architecture change; `sm` itself stays unmeasured and fail-closed.
+
+| build host | load host | diff axes | result |
+|---|---|---|---|
+| ubuntu-22.04 / glibc-2.35 / g++ 11.4 / cp311 (+cu130) | same pod | — | pass, exact output |
+| ubuntu-22.04 (+cu126) | same pod | — | pass, exact output |
+| ubuntu-22.04 / glibc-2.35 (+cu126) | ubuntu-24.04 / glibc-2.39 / g++ 13.3 / cp312 | os_release, glibc, libstdcxx, cxx_compiler, python_abi | pass, exact output |
+| ubuntu-24.04 / glibc-2.39 (+cu126) | ubuntu-22.04 / glibc-2.35 | same five | **FAIL** `libc.so.6: version 'GLIBC_2.38' not found` |
+
+**The CPU campaign's libs boundary holds on CUDA targets, same mechanism and
+same asymmetry**: newer-glibc-built refuses to load on older glibc, while the
+older-built artifact loads, executes and output-matches on the newer host.
+`python_abi` lands in this fold's retain set only because the pair could not
+vary it alone — cp311/cp312 moved together with the OS group; the CPU campaign
+did vary it alone and cleared it. Torch axes were held equal (2.13.0+cu126,
+git `cf30153c` both sides), so torch/triton stay unmeasured *for CUDA targets*.
+
+Two facts worth their price:
+
+- **Wheel-vs-driver is a real fleet constraint**: `2.13.0+cu130` initialised
+  on the driver-580 pod and REFUSED CUDA outright on the driver-550 pod
+  (`The NVIDIA driver on your system is too old (found version 12080)`), which
+  is why the pair holds torch at `+cu126` — the one 2.13.0 build that runs on
+  both. This is the driver-probe host-dependence tcg#26's audit predicted,
+  observed live.
+- **The tcg#26 fix holds on GPU wheels**: with the schema-2 allowlist digest,
+  the same `+cu126` wheel digests `77a5c89481229a5c` on both pods — different
+  OS, different python, one digest — so `torch_config_digest` sits in this
+  fold's *unmeasured* set instead of fragmenting it.
+
+The same pods anchored the wrapper transforms to real CUDA inductor output —
+capture, structural analysis, and a full split mint executed with
+bitwise-identical output on both hosts; that evidence lives in
+`tests/test_real_cuda_wrapper.py` and its fixture.
+
 ## results/
 
 - `local-<hostname-hash>.json` — the phase-1 single-host arm (all axes equal,
@@ -219,8 +262,11 @@ belongs to the worker lane; this repo owns the evidence.
   and not production data.
 - `pod-20260816-b12-*.json` / `pod-20260816-b13-*.json` — the campaign above,
   named for the bundle's build host (b12 = debian-12, b13 = debian-13), with
-  `report-pod-20260816-b12.json` and `-b13.json` the folds. These are the only
-  committed rows that say anything about portability.
+  `report-pod-20260816-b12.json` and `-b13.json` the folds.
+- `pod-20260816-cuda-*.json` — the CUDA campaign above (schema 2; the
+  `-samehost.json` row is the `+cu130` arm, the rest hold `+cu126`), with
+  `report-pod-20260816-cuda.json` the fold. Together with the b12/b13 rows,
+  these are the only committed rows that say anything about portability.
 
 **No fingerprint axis changes until the matrix holds conclusive rows from at
 least two distinct hosts.** The pod campaign clears that bar; the axes it

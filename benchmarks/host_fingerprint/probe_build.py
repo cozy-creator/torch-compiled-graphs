@@ -8,7 +8,11 @@ verified artifact, and writes a self-contained probe bundle:
       probe.json        key, per-axis build-host record, pinned input,
                         expected output, tolerances, binding constants
 
-Run:  python probe_build.py --output <bundle-dir>
+Run:  python probe_build.py --output <bundle-dir> [--target sm_NN]
+
+`--target` defaults to `cpu`; a concrete `sm_NN` builds the same probe as a
+CUDA graph on the visible device, and the bundle records the target so
+`probe_run.py` binds and executes on the matching device.
 """
 
 from __future__ import annotations
@@ -46,12 +50,13 @@ class ProbeBlock(torch.nn.Module):  # type: ignore[misc]
         return torch.nn.functional.relu(value * 2.0 + 1.0) * self.scale
 
 
-def build_bundle(output: Path) -> None:
+def build_bundle(output: Path, target: str = "cpu") -> None:
     output.mkdir(parents=True, exist_ok=True)
     axes = record_axes()
+    device = "cuda" if target.startswith("sm_") else "cpu"
 
-    module = ProbeBlock()
-    example = torch.linspace(-3.0, 3.0, PROBE_LENGTH)
+    module = ProbeBlock().to(device)
+    example = torch.linspace(-3.0, 3.0, PROBE_LENGTH, device=device)
     program = torch.export.export(module, (example,))
     ingress = build_call_ingress(program, ("value",), (example,), {})
     spec = GraphClassSpec(
@@ -65,7 +70,7 @@ def build_bundle(output: Path) -> None:
             "specialization": {},
         },
     )
-    runtime = RuntimeCompatibility("cpu", toolchain=worker_style_toolchain(axes))
+    runtime = RuntimeCompatibility(target, toolchain=worker_style_toolchain(axes))
 
     with tempfile.TemporaryDirectory(prefix="tfs-probe-") as scratch:
         scratch_path = Path(scratch)
@@ -79,12 +84,13 @@ def build_bundle(output: Path) -> None:
     probe = {
         "schema": AXES_SCHEMA_VERSION,
         "key": key,
+        "target": target,
         "build_axes": axes,
-        "input": example.tolist(),
-        "expected": expected.tolist(),
+        "input": example.cpu().tolist(),
+        "expected": expected.cpu().tolist(),
         "rtol": RTOL,
         "atol": ATOL,
-        "constants": {"scale": module.scale.tolist()},
+        "constants": {"scale": module.scale.cpu().tolist()},
     }
     (output / "probe.json").write_text(json.dumps(probe, indent=2) + "\n")
     print(f"probe bundle: {output}")
@@ -95,7 +101,9 @@ def build_bundle(output: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="bundle directory")
-    build_bundle(parser.parse_args().output)
+    parser.add_argument("--target", default="cpu", help="'cpu' (default) or a concrete 'sm_NN'")
+    arguments = parser.parse_args()
+    build_bundle(arguments.output, arguments.target)
 
 
 if __name__ == "__main__":
