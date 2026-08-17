@@ -23,6 +23,7 @@ from torchcg import (
     GraphClassDeclaration,
 )
 from torchcg.artifact import (
+    ARTIFACT_METADATA_FIELDS,
     _verify_materialized,
     build_metadata,
     pack_artifact,
@@ -455,6 +456,30 @@ def test_v1_refuses_retired_artifact_shapes(retired: str) -> None:
     raw[retired] = 3 if retired == "format" else {}
     with pytest.raises(ArtifactError, match="metadata fields must be exactly"):
         validate_metadata(raw)
+
+
+def test_the_exported_metadata_vocabulary_is_the_one_validation_enforces() -> None:
+    """tcg#40: the public set is the ENFORCED set, proved by running the validator.
+
+    A consumer that re-declares this set fences a copy, and a copy drifts. The
+    failure is silent in the worst way: a consumer that assumes a field this
+    package does not write reads `None`, and `None` compares unequal to a real
+    runtime fact forever. So the constant is exported — and this asserts it
+    against `validate_metadata`'s actual behaviour rather than against the
+    private name it aliases, which would pass on a tree where the two parted.
+    """
+
+    accepted = metadata()
+    assert set(accepted) == ARTIFACT_METADATA_FIELDS
+    validate_metadata(accepted)
+
+    for field in sorted(ARTIFACT_METADATA_FIELDS):
+        short = {k: v for k, v in accepted.items() if k != field}
+        with pytest.raises(ArtifactError, match="metadata fields must be exactly"):
+            validate_metadata(short)
+
+    with pytest.raises(ArtifactError, match="metadata fields must be exactly"):
+        validate_metadata({**accepted, "family": "micro-diffusion"})
 
 
 def test_unexpected_archive_member_is_refused_without_destination(tmp_path: Path) -> None:
