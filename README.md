@@ -171,6 +171,22 @@ than fetching a moving source branch. Their `authority` strings still read
 `torch-compiled-graphs` — the pre-rename name is the historical authority, and
 renaming it would rekey corpora that peers pin byte-for-byte.
 
+`torchcg.recipe` is the reference implementation of `recipe_v1`, the versioned
+vocabulary for one family's composition: which graph classes make one endpoint's
+compiled pipeline, the loop between them, and the scheduler block that loop runs
+under — including an autoregressive family's `loop.kind: host`, which states the
+per-step classes and the session-state owner and says outright that the
+data-dependent iteration is the host's. It is a vocabulary, not a DSL, and it is
+deliberately class-level: it pins each class by class hash, its exact
+`CallIngress` value, and the tensor-layout contract it was traced against, never
+by a `cg-key-v1` value and never by a checkpoint, so one machine-independent
+digest is valid on every SKU and the key is folded at adopt time. Typed bindings are generated from a
+declaration-time export rather than from the recipe; the recipe is the drift
+assertion against that declaration and the adopt-time name-to-identity
+reference. `docs/RECIPE.md` states the document, the digest rule, how it rides
+beside `endpoint.lock`, and the numbered requirements a binding generator
+implements against.
+
 The versioned compile-span partition lives in `torchcg.spans`. Its three totals
 each have one explicit residual, and `check()` must be run by the measurement
 owner before emitting a table. Triton, autotune, and device-lock timing are
@@ -301,6 +317,12 @@ wheel, and publishes through PyPI Trusted Publishing.
   policy and no part of this package.
 - `torchcg.spans` owns the compile attribution vocabulary and closure invariant
   used across the worker child boundary.
+- `torchcg.recipe` owns the `recipe_v1` composition vocabulary: validated
+  identifier types rather than bare strings, one closed refusal enum, a document
+  that refuses any unknown version or field, and a `CallSignature` projection
+  that is a pure function of `CallIngress`. It imports neither Torch nor the
+  declaration module, and it decides nothing: bucket lookup is exact rather than
+  ranked, and selection stays with `ingress_selection_v1`.
 
 The package root exposes only the engine lifecycle, graph-class declarations,
 result/value types, error types, the single `COMPILED_GRAPH_FORMAT` authority,

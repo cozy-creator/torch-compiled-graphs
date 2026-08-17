@@ -21,6 +21,7 @@ def test_canonical_contracts_are_importable_package_data() -> None:
         "graph_class_identity_v3.json",
         "ingress_selection_v1.json",
         "literal_identity_v1.json",
+        "recipe_v1.json",
         "toolchain_identity_v1.json",
     )
     for name in CONTRACT_FILES:
