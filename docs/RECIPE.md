@@ -188,20 +188,21 @@ bounds as runtime assertions. A symbolic dimension is never a type.
 **G6 — Bucket sets generate closed types, and coverage is total.** A runner's
 axes are a sorted subset of the family axes; a variant pins exactly those axes
 with values the axis declares; and every combination of its axes' values has a
-variant. So `Literal[64, 128]` in Python or an enum in Rust is exhaustive and
-every selection resolves. A gap is refused as `bucket_coverage_incomplete`.
+variant **at every layout that runner offers**. So `Literal[64, 128]` in Python
+or an enum in Rust is exhaustive and every selection resolves. A gap is refused
+as `bucket_coverage_incomplete`.
 
-**G7 — Names never key, so no generated code holds a string lookup.** Runner
-handles resolve through the recipe at **generation** time to `class_hash` +
-`ingress_digest`. Generated code carries the identity, not the name.
-`Recipe.runner(name)` exists for the generator and for diagnostics; a handler
-that reaches a runner through a string it typed is exactly what codegen makes
-unrepresentable.
+**G7 — Names never key, so no generated code holds a string lookup.** A runner
+handle is resolved to `class_hash` + `ingress_digest` **before anything runs** —
+by the declaration at generation time, and by this document at adopt time — so
+generated code carries the identity, never the name. `Recipe.runner(name)` exists
+for that resolution and for diagnostics; a handler that reaches a runner through
+a string it typed is exactly what codegen makes unrepresentable.
 
-**G8 — Bucket lookup is exact, never ranked.** `RecipeRunner.variant(bucket)`
-matches a bucket exactly or refuses. Choosing which bucket serves a live call is
-`ingress_selection_v1` (tcg#37), a separate contract — this one never
-approximates.
+**G8 — Lookup is exact, never ranked.** `RecipeRunner.variant(bucket, layout)`
+matches both exactly or refuses. Choosing which bucket serves a live call is
+`ingress_selection_v1` (tcg#37) and choosing a layout is the hub's join — both
+separate contracts. This one never approximates.
 
 **G9 — Incompatible re-mints break builds, not pods.** The recipe digest moves
 whenever any class hash, ingress, bucket set, loop, or scheduler block moves. A
@@ -280,6 +281,6 @@ It also says nothing **checkpoint-level**, by construction (G11): weight sets an
 checkpoint refs, per-checkpoint tensor-layout metadata (a separate hub document
 it is joined with, never merged into), the tuned-value struct and its schema
 (declared on the family in the SDK, stamped per release slot), and per-request
-defaults. A family is the
-graph level; an instance is family × weight-set; a request is neither. Those
-three axes do not cross, and this document is entirely the first one.
+defaults. A family is the graph level; an instance is family × weight-set; a
+request is neither. Those three axes do not cross, and this document is entirely
+the first one.
