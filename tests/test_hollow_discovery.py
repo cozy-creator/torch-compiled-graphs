@@ -56,7 +56,8 @@ def _hollow_document(tree: Path, *, torch_dtype: object = None) -> GraphSetDocum
         pipe = StableDiffusionPipeline.from_pretrained(tree, torch_dtype=torch_dtype)
         pipe.to("cuda")  # author code as-is; the session remaps to cpu
         lane = discover_lane(
-            sd15_tiny.BF16_LANE,
+            sd15_tiny.LANE_CONTRACT,
+            sd15_tiny.COMPILE_TARGETS,
             pipe.components,
             lambda: pipe(
                 prompt="a cat",

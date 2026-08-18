@@ -16,9 +16,11 @@ import torch  # noqa: E402
 
 from torchcg.discovery import discover_lane  # noqa: E402
 from torchcg.document import LaneGraphs  # noqa: E402
-from torchcg.lane import Lane  # noqa: E402
 
-LANE = Lane(name="l", compile=("host.inner",), contract="c")
+  # noqa: E402
+
+LANE = "unit.identity-fp32@1"
+TARGETS = ("host.inner",)
 
 
 class Scale(torch.nn.Module):
@@ -64,7 +66,7 @@ class Host(torch.nn.Module):
 
 def discovered(inner: torch.nn.Module, sample: torch.Tensor) -> LaneGraphs:
     host = Host(inner)
-    return discover_lane(LANE, {"host": host}, lambda: host(sample))
+    return discover_lane(LANE, TARGETS, {"host": host}, lambda: host(sample))
 
 
 def test_identical_traces_from_different_code_spellings_dedup() -> None:
@@ -94,7 +96,7 @@ def test_two_observed_shapes_are_two_graph_classes() -> None:
         host(torch.zeros(2, 4))
         host(torch.zeros(2, 4))  # repeat: dedup, not a third class
 
-    lane = discover_lane(LANE, {"host": host}, drive)
+    lane = discover_lane(LANE, TARGETS, {"host": host}, drive)
     assert len(lane.graphs) == 2
     assert len({record.graph for record in lane.graphs}) == 2
 
@@ -114,7 +116,7 @@ def test_fake_tensor_observation_states_the_same_identity() -> None:
         with mode:
             host(mode.from_tensor(sample))
 
-    fake = discover_lane(LANE, {"host": host}, drive)
+    fake = discover_lane(LANE, TARGETS, {"host": host}, drive)
     assert [record.graph for record in fake.graphs] == [
         record.graph for record in real.graphs
     ]

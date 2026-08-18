@@ -15,7 +15,7 @@ from tensorfs import LocalCAS
 from torchcg.document import DocumentError, GraphRecord, GraphSetDocument, LaneGraphs
 from torchcg.graph_identity import EnvIdentity, closure_hash
 from torchcg.ingress import CallIngress, CallInput
-from torchcg.lane import Lane, LaneError, resolve_target
+from torchcg.lane import LaneError, LaneRef, require_targets, resolve_target
 from torchcg.requirements import RequirementsManifest
 from torchcg.store import LocalGraphStore, PublishOutcome, StoreError, holes
 
@@ -48,8 +48,7 @@ def graph(letter: str) -> str:
 
 def lane_graphs(*letters: str) -> LaneGraphs:
     return LaneGraphs(
-        name="bf16",
-        contract="diffusers/sd15/bf16",
+        contract="sd15.diffusers-bf16@1",
         targets=("pipe.unet", "pipe.vae.decoder"),
         graphs=tuple(
             GraphRecord(graph=graph(letter), target="pipe.unet", ingress=ingress())
@@ -61,20 +60,23 @@ def lane_graphs(*letters: str) -> LaneGraphs:
 
 class TestLane:
     def test_accepts_the_contract_file_spelling(self) -> None:
-        lane = Lane("bf16", compile=("unet",), contract="plain.bf16@1", dtype="bf16-stand-in")
-        assert lane.name == "bf16"
-        assert lane.compile == ("unet",)
+        lane = LaneRef("sdxl.diffusers-bf16@1", dtype="bf16-stand-in")
+        assert lane.contract == "sdxl.diffusers-bf16@1"
         assert lane.dtype == "bf16-stand-in"
 
     def test_refuses_noncanonical_declarations(self) -> None:
         with pytest.raises(LaneError):
-            Lane(name="bf16", compile=(), contract="c")
+            LaneRef("not a contract")
         with pytest.raises(LaneError):
-            Lane(name="bf16", compile=("vae.1bad",), contract="c")
+            LaneRef("missing-version")
         with pytest.raises(LaneError):
-            Lane(name="bf16", compile=("unet", "unet"), contract="c")
+            LaneRef("producer.format@0")
         with pytest.raises(LaneError):
-            Lane(name="", compile=("unet",), contract="c")
+            require_targets(())
+        with pytest.raises(LaneError):
+            require_targets(("vae.1bad",))
+        with pytest.raises(LaneError):
+            require_targets(("unet", "unet"))
 
     def test_resolves_paths_and_names_the_failing_segment(self) -> None:
         class Leaf:
@@ -104,8 +106,7 @@ class TestDocument:
     def test_every_declared_target_must_be_stated(self) -> None:
         with pytest.raises(DocumentError, match="says nothing about"):
             LaneGraphs(
-                name="bf16",
-                contract="c",
+                contract="unit.c@1",
                 targets=("pipe.unet", "pipe.vae.decoder"),
                 graphs=(),
                 unobserved_targets=("pipe.unet",),
