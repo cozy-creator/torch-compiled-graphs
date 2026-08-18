@@ -32,6 +32,13 @@ from .graph_identity import (
     installed_closure,
     is_graph_hash,
 )
+from .hollow import (
+    HollowError,
+    HollowSession,
+    hollow_session,
+    observation_shims,
+    virtualize_parameters,
+)
 from .identity import (
     ARTIFACT_KIND,
     GRAPH_CLASS_BLOCK,
@@ -102,6 +109,8 @@ __all__ = [
     "GraphRecord",
     "GraphSetDocument",
     "GraphStore",
+    "HollowError",
+    "HollowSession",
     "LaneError",
     "LaneGraphs",
     "LocalGraphStore",
@@ -114,10 +123,13 @@ __all__ = [
     "discover_lane",
     "graph_hash",
     "holes",
+    "hollow_session",
     "installed_closure",
     "is_graph_hash",
+    "observation_shims",
     "rank",
     "resolve_target",
+    "virtualize_parameters",
     "CompiledGraphKey",
     "CompiledGraphRunner",
     "CallIngress",
