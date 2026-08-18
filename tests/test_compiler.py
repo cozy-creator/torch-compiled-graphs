@@ -80,6 +80,45 @@ def test_compile_context_is_derived_from_real_graph_metadata(dynamic: bool) -> N
 
 def test_compile_surface_has_no_output_changing_callbacks() -> None:
     assert set(torchcg.__all__) == {
+        # tcg#52/#53 -- the transform-pass mechanism and its two instances.
+        # `call`/`key` on PrecomputeAndFree are DOMAIN callbacks (how to
+        # evaluate the folded submodule, what a domain point is), and they run
+        # in the PASS phase before any graph exists; they cannot change a
+        # compiled graph's output because the graph is derived AFTER them.
+        "SIDE_TABLE_FORMAT",
+        "CallInputs",
+        "KeptModule",
+        "ModuleSelect",
+        "OffDomain",
+        "PrecomputeAndFree",
+        "Precomputed",
+        "Produced",
+        "QuantPlan",
+        "QuantRecipe",
+        "RecipeError",
+        "RecipeQuantize",
+        "SideTableStore",
+        "TransformError",
+        "TransformMode",
+        "TransformOrderError",
+        "TransformPass",
+        "TransformPlan",
+        "TransformReport",
+        "TransformSession",
+        "TransformSet",
+        "applied_lane_row",
+        "canonical_key",
+        "handle",
+        "installed_passes",
+        "is_resident",
+        "module_bytes",
+        "plan_quant",
+        "register_pass",
+        "registered_passes",
+        "require_pass_ref",
+        "require_passes",
+        "resolve_pass",
+        "tensor_bytes",
         "ARTIFACT_KIND",
         "ARTIFACT_METADATA_FIELDS",
         "AdmissionError",
