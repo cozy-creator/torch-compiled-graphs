@@ -9,6 +9,7 @@ runtime's job and needs the target GPU; the seam is the point.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,11 +19,11 @@ from tensorfs import LocalCAS
 
 from torchcg.adopt import HOLE_MISS, AdoptError, adopt_lane
 from torchcg.discovery import discover_lane
-from torchcg.document import GraphSetDocument
+from torchcg.document import GraphRecord, GraphSetDocument
 from torchcg.graph_identity import EnvIdentity, closure_hash
 from torchcg.lane import Lane
 from torchcg.requirements import EnvironmentMismatch, RequirementsManifest
-from torchcg.store import LocalGraphStore, StoreError
+from torchcg.store import LocalGraphStore, PublishOutcome, StoreError
 
 SM = "sm_89"
 INSTALLED = {"torch": torch.__version__, "example-lib": "1.0.0"}
@@ -35,7 +36,7 @@ class TinyUnet(torch.nn.Module):
         self.proj = torch.nn.Linear(4, 4)
 
     def forward(self, sample: torch.Tensor, doubled: bool = False) -> torch.Tensor:
-        out = self.proj(sample)
+        out: torch.Tensor = self.proj(sample)
         return out * 2 if doubled else out
 
 
@@ -76,13 +77,15 @@ def publish(store: LocalGraphStore, tmp_path: Path, graph: str, payload: bytes) 
     return artifact
 
 
-def stub_loader(markers: dict[str, torch.Tensor]):
+def stub_loader(
+    markers: dict[str, torch.Tensor],
+) -> Callable[[Path, GraphRecord], Callable[..., torch.Tensor]]:
     """A loader whose 'compiled graph' returns a per-graph sentinel tensor."""
 
-    def load(path: Path, record):
+    def load(path: Path, record: GraphRecord) -> Callable[..., torch.Tensor]:
         sentinel = markers.setdefault(record.graph, torch.full((1,), float(len(markers) + 1)))
 
-        def compiled(*args, **kwargs):
+        def compiled(*args: object, **kwargs: object) -> torch.Tensor:
             return sentinel
 
         return compiled
@@ -177,13 +180,37 @@ def test_an_unreadable_store_row_is_a_hole_not_a_boot_failure(
     publish(store, tmp_path, first.graph, b"good")
 
     class OneBadRow:
-        def __getattr__(self, name):
-            return getattr(store, name)
+        """The real store with exactly one unreadable artifact row."""
 
-        def fetch_artifact(self, graph, env, destination):
+        def get_graphs(self, name: str) -> GraphSetDocument | None:
+            return store.get_graphs(name)
+
+        def put_graphs(self, name: str, document: GraphSetDocument) -> None:
+            store.put_graphs(name, document)
+
+        def has_artifact(self, graph: str, env: EnvIdentity) -> bool:
+            return store.has_artifact(graph, env)
+
+        def fetch_artifact(
+            self, graph: str, env: EnvIdentity, destination: str | Path
+        ) -> Path | None:
             if graph == second.graph:
                 raise StoreError("synthetic corruption")
             return store.fetch_artifact(graph, env, destination)
+
+        def publish_artifact(
+            self,
+            graph: str,
+            env: EnvIdentity,
+            artifact: str | Path,
+            manifest: RequirementsManifest,
+        ) -> PublishOutcome:
+            return store.publish_artifact(graph, env, artifact, manifest)
+
+        def get_manifest(
+            self, graph: str, env: EnvIdentity
+        ) -> RequirementsManifest | None:
+            return store.get_manifest(graph, env)
 
     markers: dict[str, torch.Tensor] = {}
     adoption = adopt_lane(
