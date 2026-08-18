@@ -23,7 +23,6 @@ from torchcg.adopt import HOLE_MISS, AdoptError, AdoptSession
 from torchcg.discovery import discover_lane
 from torchcg.document import GraphRecord, GraphSetDocument
 from torchcg.graph_identity import EnvIdentity, closure_hash
-from torchcg.lane import Lane
 from torchcg.requirements import EnvironmentMismatch, RequirementsManifest
 from torchcg.store import LocalGraphStore, PublishOutcome, StoreError
 
@@ -59,7 +58,7 @@ def pipe() -> SimpleNamespace:
     return SimpleNamespace(unet=TinyUnet())
 
 
-LANE = Lane("bf16", compile=("pipe.unet",), contract="plain.fp32@1", dtype=torch.float32)
+CONTRACT = "tiny.plain-fp32@1"
 
 
 def discover(pipe: SimpleNamespace, *, flags: tuple[bool, ...] = (False,)) -> GraphSetDocument:
@@ -70,7 +69,7 @@ def discover(pipe: SimpleNamespace, *, flags: tuple[bool, ...] = (False,)) -> Gr
             pipe.unet(torch.zeros(1, 4), doubled=flag)
             pipe.unet(torch.zeros(2, 4), doubled=flag)
 
-    lane_graphs = discover_lane(LANE, {"pipe": pipe}, drive)
+    lane_graphs = discover_lane(CONTRACT, ("pipe.unet",), {"pipe": pipe}, drive)
     return GraphSetDocument(closure=CLOSURE, lanes=(lane_graphs,))
 
 
@@ -114,7 +113,7 @@ def session_for(
     installed: dict[str, str] | None = None,
 ) -> AdoptSession:
     return AdoptSession(
-        store, document, "bf16", SM,
+        store, document, CONTRACT, SM,
         loader=stub_loader(markers), artifacts_dir=tmp_path / "adopted",
         installed=installed if installed is not None else INSTALLED,
     )
@@ -261,7 +260,7 @@ def test_an_unreadable_store_row_is_a_hole_not_a_boot_failure(
 
     markers: dict[str, torch.Tensor] = {}
     session = AdoptSession(
-        OneBadRow(), document, "bf16", SM,
+        OneBadRow(), document, CONTRACT, SM,
         loader=stub_loader(markers), artifacts_dir=tmp_path / "adopted",
         installed=INSTALLED,
     )
@@ -275,12 +274,12 @@ def test_missing_lane_and_eager_permanent_documents_refuse_typed(
     pipe: SimpleNamespace, store: LocalGraphStore, tmp_path: Path
 ) -> None:
     document = discover(pipe)
-    with pytest.raises(AdoptError, match="no lane 'fp8'"):
-        AdoptSession(store, document, "fp8", SM, loader=stub_loader({}),
+    with pytest.raises(AdoptError, match="no lane 'other.fp8@1'"):
+        AdoptSession(store, document, "other.fp8@1", SM, loader=stub_loader({}),
                      artifacts_dir=tmp_path / "a", installed=INSTALLED)
     eager = GraphSetDocument(closure=CLOSURE, lanes=())
     with pytest.raises(AdoptError, match="eager-permanent"):
-        AdoptSession(store, eager, "bf16", SM, loader=stub_loader({}),
+        AdoptSession(store, eager, CONTRACT, SM, loader=stub_loader({}),
                      artifacts_dir=tmp_path / "a", installed=INSTALLED)
 
 
