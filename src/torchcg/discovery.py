@@ -28,12 +28,15 @@ import contextlib
 import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .document import GraphRecord, LaneGraphs
 from .graph_identity import GraphIdentityError, graph_hash
 from .ingress import IngressError, build_call_ingress
 from .lane import LaneError, LaneRef, require_targets, resolve_target
+
+if TYPE_CHECKING:  # torch-free import closure: transform.py is torch-shaped
+    from .transform import TransformSet
 
 
 class DiscoveryError(RuntimeError):
@@ -137,6 +140,7 @@ def discover_lane(
     *,
     strict: bool = False,
     program_sink: Callable[[str, Any], str] | None = None,
+    transforms: TransformSet | None = None,
 ) -> LaneGraphs:
     """Run the author's code once, derive every observed graph, state the rest.
 
@@ -165,7 +169,12 @@ def discover_lane(
             )
         modules[path] = module
     return discover_modules(
-        lane, modules, drive, strict=strict, program_sink=program_sink
+        lane,
+        modules,
+        drive,
+        strict=strict,
+        program_sink=program_sink,
+        transforms=transforms,
     )
 
 
@@ -176,6 +185,7 @@ def discover_modules(
     *,
     strict: bool = False,
     program_sink: Callable[[str, Any], str] | None = None,
+    transforms: TransformSet | None = None,
 ) -> LaneGraphs:
     """Discovery over MARKED modules (the imperative ``ctx.compile`` surface).
 
@@ -192,11 +202,23 @@ def discover_modules(
     the graph and runs inductor rather than re-tracing author code. torchcg
     holds no opinion on WHERE the bytes go -- bytes-at-rest is tensorfs's
     charter, so the caller owns the sink.
+
+    ``transforms`` (tcg#52) is the SEALED :class:`~torchcg.transform.
+    TransformSet` of the lane's PASS phase. Passing it is what makes PASS ->
+    DISCOVERY -> EXPORT structural: the pass names enter every graph hash and
+    the lane row, every transformed root must be on one of the marked
+    modules' trees, and each marked module is stamped export-sealed so a pass
+    can never run after this point. A lane that DECLARES passes and is handed
+    no sealed set is refused -- silence is not an outcome here either.
     """
 
     import torch
 
-    contract = lane.contract if isinstance(lane, LaneRef) else LaneRef(lane).contract
+    from .transform import require_transform_set, seal_for_export
+
+    resolved = lane if isinstance(lane, LaneRef) else LaneRef(lane)
+    contract = resolved.contract
+    passes = require_transform_set(contract, transforms, resolved.passes)
     if not modules:
         raise DiscoveryError(
             f"lane {contract!r}: nothing is marked for compilation"
@@ -208,6 +230,23 @@ def discover_modules(
                 f"lane {contract!r} marked object {path!r} is a "
                 f"{type(module).__name__}, not a torch.nn.Module"
             )
+
+    if transforms is not None:
+        from .transform import related
+
+        for index, root in enumerate(transforms.roots):
+            if not any(related(root, module) for module in modules.values()):
+                raise DiscoveryError(
+                    f"lane {contract!r}: pass "
+                    f"{transforms.passes[index] if index < len(transforms.passes) else '?'}"
+                    f" transformed a {type(root).__name__} that is on no marked "
+                    f"module's tree; the graph identified here would not be the "
+                    f"graph the pass rewrote"
+                )
+    # From here the marked modules are export-bound: a pass that ran after
+    # this point would mint an artifact for a module that no longer exists.
+    for module in modules.values():
+        seal_for_export(module)
 
     observed: dict[str, dict[str, _ObservedCall]] = {path: {} for path in targets}
     handles = []
@@ -254,7 +293,7 @@ def discover_modules(
             names = _param_names(module, args, kwargs)
             try:
                 ingress = build_call_ingress(program, names, args, kwargs)
-                graph = graph_hash(program, ingress)
+                graph = graph_hash(program, ingress, passes=passes)
             except (IngressError, GraphIdentityError) as exc:
                 raise DiscoveryError(
                     f"lane {contract!r} target {path!r}: observed call cannot "
@@ -286,7 +325,8 @@ def discover_modules(
         targets=targets,
         graphs=tuple(records),
         unobserved_targets=unobserved,
+        passes=passes,
     )
 
 
-__all__ = ["DiscoveryError", "discover_lane"]
+__all__ = ["DiscoveryError", "discover_lane", "discover_modules"]

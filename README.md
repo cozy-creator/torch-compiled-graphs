@@ -238,6 +238,19 @@ reference. `docs/RECIPE.md` states the document, the digest rule, how it rides
 beside `endpoint.lock`, and the numbered requirements a binding generator
 implements against.
 
+## Transform passes
+
+`torchcg.transform` is the pass mechanism: a lane-bound module rewrite that
+runs BEFORE discovery, declares the weights it makes removable, and mints the
+side table it replaces them with. Ordering is PASS → DISCOVERY → EXPORT and it
+is structural — a sealed `TransformSession` is what discovery accepts as
+evidence, the pass names enter `cg-graph-v1` exactly as pins do, and adoption
+refuses a boot whose ran-pass set differs from the document's lane row. Two
+instances ship: `precompute-and-free@1` (evaluate a submodule over a declared
+domain, install the outputs as a side table, release the weights) and
+`quantize-in-place@1` (`torchcg.quantize`'s `QuantRecipe` as a lane property).
+`docs/TRANSFORM.md` states the interface, the bucket format and the refusals.
+
 The versioned compile-span partition lives in `torchcg.spans`. Its three totals
 each have one explicit residual, and `check()` must be run by the measurement
 owner before emitting a table. Triton, autotune, and device-lock timing are
