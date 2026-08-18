@@ -2,10 +2,9 @@
 
 from .adopt import (
     AdoptError,
+    AdoptSession,
     ArtifactLoader,
     Hole,
-    LaneAdoption,
-    adopt_lane,
 )
 from .artifact import ARTIFACT_METADATA_FIELDS, COMPILED_GRAPH_FORMAT, ArtifactError
 from .compiler import CompileError
@@ -101,6 +100,7 @@ __all__ = [
     "ARTIFACT_METADATA_FIELDS",
     "AdmissionError",
     "AdoptError",
+    "AdoptSession",
     "ArtifactCandidate",
     "ArtifactError",
     "ArtifactLoader",
@@ -121,7 +121,6 @@ __all__ = [
     "HollowError",
     "HollowSession",
     "Hole",
-    "LaneAdoption",
     "LaneError",
     "LaneGraphs",
     "LocalGraphStore",
@@ -129,7 +128,6 @@ __all__ = [
     "RequirementsError",
     "RequirementsManifest",
     "StoreError",
-    "adopt_lane",
     "assert_exact_env",
     "closure_hash",
     "discover_lane",
