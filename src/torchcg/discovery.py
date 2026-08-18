@@ -136,7 +136,7 @@ def discover_lane(
     drive: Callable[[], object],
     *,
     strict: bool = False,
-    artifact_sink: Callable[[str, Any], str] | None = None,
+    program_sink: Callable[[str, Any], str] | None = None,
 ) -> LaneGraphs:
     """Run the author's code once, derive every observed graph, state the rest.
 
@@ -165,7 +165,7 @@ def discover_lane(
             )
         modules[path] = module
     return discover_modules(
-        lane, modules, drive, strict=strict, artifact_sink=artifact_sink
+        lane, modules, drive, strict=strict, program_sink=program_sink
     )
 
 
@@ -175,7 +175,7 @@ def discover_modules(
     drive: Callable[[], object],
     *,
     strict: bool = False,
-    artifact_sink: Callable[[str, Any], str] | None = None,
+    program_sink: Callable[[str, Any], str] | None = None,
 ) -> LaneGraphs:
     """Discovery over MARKED modules (the imperative ``ctx.compile`` surface).
 
@@ -185,7 +185,7 @@ def discover_modules(
     caller (the derive) names each marked module for the document's
     provenance and hands them here keyed by that name.
 
-    ``artifact_sink`` (Paul, 2026-08-20) receives ``(graph_hash,
+    ``program_sink`` (Paul, 2026-08-20) receives ``(graph_hash,
     ExportedProgram)`` for each NEW graph class and returns the CAS digest it
     stored the serialized program under. The whole traced graph is kept, not
     just its hash: trace() runs once, ever, and the runtime miner downloads
@@ -266,9 +266,9 @@ def discover_modules(
                 continue
             seen_graphs.add(graph)
             program_digest = ""
-            if artifact_sink is not None:
+            if program_sink is not None:
                 try:
-                    program_digest = artifact_sink(graph, program)
+                    program_digest = program_sink(graph, program)
                 except Exception as exc:
                     raise DiscoveryError(
                         f"lane {contract!r} target {path!r}: graph {graph} "
