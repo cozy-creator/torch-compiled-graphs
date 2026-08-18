@@ -95,6 +95,11 @@ def build_pipe() -> Any:
         set_alpha_to_one=False,
         steps_offset=1,
     )
+    # Serve-faithful mode: a real `from_pretrained` load lands in eval, and
+    # the train-flag is a trace input (dropout bakes it into the graph).
+    unet.eval()
+    vae.eval()
+    text_encoder.eval()
     return StableDiffusionPipeline(
         unet=unet,
         vae=vae,
