@@ -937,32 +937,14 @@ class PrecomputeAndFree:
                     stored = artifacts.publish_side_table(self.NAME, address, path)
                     produced.append(Produced(key=address, address=stored, bytes=size))
 
-        table_class = side_table_class()
-        bindings = []
-        freed = 0
-        cache_bytes = 0
-        for index, (fqn, module) in enumerate(selected):
-            freed += module_bytes(module)
-            device = next(
-                (parameter.device for parameter in module.parameters()),
-                next((tensor.device for tensor in module.buffers()), None),
-            )
-            table = {
-                address: tuple(
-                    chunk if device is None else chunk.to(device=device)
-                    for chunk in tables[index][address]
-                )
-                for address in plan.domain
-            }
-            replacement = table_class(
-                name=fqn, pass_name=self.NAME, table=table, unwrap=bool(unwrap)
-            )
-            cache_bytes += module_bytes(replacement)
-            set_submodule(target, fqn, replacement)
-            bindings.append(replacement)
-        # The plan's modules are unreachable from the tree now; drop this
-        # function's own references so the weights are actually released.
+        # The install runs in its own frame ON PURPOSE: a loop variable holding
+        # the last folded submodule would keep half a gigabyte alive until this
+        # function returned, which is precisely the memory the pass exists to
+        # release. `selected` is dropped here for the same reason.
         del selected
+        freed, cache_bytes, bindings = self._install(
+            target, plan, tables, unwrap=bool(unwrap)
+        )
         for binding in bindings:
             binding.bind(plan.domain[0])
 
@@ -985,6 +967,43 @@ class PrecomputeAndFree:
             target, Precomputed(target, self.NAME, report, bindings, self.key)
         )
         return report
+
+    def _install(
+        self,
+        target: Any,
+        plan: TransformPlan,
+        tables: Sequence[Mapping[str, tuple[Any, ...]]],
+        *,
+        unwrap: bool,
+    ) -> tuple[int, int, list[Any]]:
+        """Swap each folded submodule for its side table; measure both sides."""
+
+        table_class = side_table_class()
+        bindings: list[Any] = []
+        freed = 0
+        cache_bytes = 0
+        for index, fqn in enumerate(plan.rewrites):
+            module = target.get_submodule(fqn)
+            freed += module_bytes(module)
+            device = next(
+                (parameter.device for parameter in module.parameters()),
+                next((tensor.device for tensor in module.buffers()), None),
+            )
+            table = {
+                address: tuple(
+                    chunk if device is None else chunk.to(device=device)
+                    for chunk in tables[index][address]
+                )
+                for address in plan.domain
+            }
+            del module
+            replacement = table_class(
+                name=fqn, pass_name=self.NAME, table=table, unwrap=unwrap
+            )
+            cache_bytes += module_bytes(replacement)
+            set_submodule(target, fqn, replacement)
+            bindings.append(replacement)
+        return freed, cache_bytes, bindings
 
 
 def _invoke(inputs: Any, module: Any) -> Any:
