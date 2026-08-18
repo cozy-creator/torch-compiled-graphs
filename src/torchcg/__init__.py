@@ -28,6 +28,12 @@ from .engine import (
     EnsureOutcome,
     EnsureResult,
 )
+# `torchcg.hollow` (the weights-free derive session, tcg#45) is DELIBERATELY
+# not re-exported here: it is the PUBLISH-time surface and it names model
+# libraries (diffusers/transformers loader interception), so importing it from
+# the package root would put those libraries on every consumer's serve-role
+# import closure (pgw#1331's fence measured exactly that). The derive imports
+# `torchcg.hollow` by its own name.
 from .graph_identity import (
     ENV_SCHEME,
     GRAPH_SCHEME,
@@ -37,13 +43,6 @@ from .graph_identity import (
     graph_hash,
     installed_closure,
     is_graph_hash,
-)
-from .hollow import (
-    HollowError,
-    HollowSession,
-    hollow_session,
-    observation_shims,
-    virtualize_parameters,
 )
 from .identity import (
     ARTIFACT_KIND,
@@ -124,8 +123,6 @@ __all__ = [
     "GraphRecord",
     "GraphSetDocument",
     "GraphStore",
-    "HollowError",
-    "HollowSession",
     "Hole",
     "LaneError",
     "LaneGraphs",
@@ -140,15 +137,12 @@ __all__ = [
     "discover_modules",
     "graph_hash",
     "holes",
-    "hollow_session",
     "installed_closure",
     "is_graph_hash",
-    "observation_shims",
     "rank",
     "require_contract_ref",
     "require_targets",
     "resolve_target",
-    "virtualize_parameters",
     "CompiledGraphKey",
     "CompiledGraphRunner",
     "CallIngress",
