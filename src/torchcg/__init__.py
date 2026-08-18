@@ -1,5 +1,12 @@
 """Mint and reuse verified PyTorch AOTInductor graphs through tensorfs."""
 
+from .adopt import (
+    AdoptError,
+    ArtifactLoader,
+    Hole,
+    LaneAdoption,
+    adopt_lane,
+)
 from .artifact import ARTIFACT_METADATA_FIELDS, COMPILED_GRAPH_FORMAT, ArtifactError
 from .compiler import CompileError
 from .declaration import (
@@ -93,8 +100,10 @@ __all__ = [
     "ARTIFACT_KIND",
     "ARTIFACT_METADATA_FIELDS",
     "AdmissionError",
+    "AdoptError",
     "ArtifactCandidate",
     "ArtifactError",
+    "ArtifactLoader",
     "CompileError",
     "COMPILED_GRAPH_FORMAT",
     "DOCUMENT_FORMAT",
@@ -111,6 +120,8 @@ __all__ = [
     "GraphStore",
     "HollowError",
     "HollowSession",
+    "Hole",
+    "LaneAdoption",
     "LaneError",
     "LaneGraphs",
     "LocalGraphStore",
@@ -118,6 +129,7 @@ __all__ = [
     "RequirementsError",
     "RequirementsManifest",
     "StoreError",
+    "adopt_lane",
     "assert_exact_env",
     "closure_hash",
     "discover_lane",
