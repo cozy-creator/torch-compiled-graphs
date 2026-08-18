@@ -8,7 +8,7 @@ from .declaration import (
     GraphClassSpec,
     RuntimeCompatibility,
 )
-from .discovery import DiscoveryError, discover_lane
+from .discovery import DiscoveryError, discover_lane, discover_modules
 from .document import (
     DOCUMENT_FORMAT,
     DocumentError,
@@ -54,7 +54,13 @@ from .ingress import (
     build_call_ingress,
     exported_input_name,
 )
-from .lane import Lane, LaneError, resolve_target
+from .lane import (
+    LaneError,
+    LaneRef,
+    require_contract_ref,
+    require_targets,
+    resolve_target,
+)
 from .requirements import (
     ArtifactCandidate,
     EnvironmentMismatch,
@@ -103,7 +109,7 @@ __all__ = [
     "ENV_SCHEME",
     "EnvIdentity",
     "EnvironmentMismatch",
-    "Lane",
+    "LaneRef",
     "GRAPH_SCHEME",
     "GraphIdentityError",
     "GraphRecord",
@@ -121,6 +127,7 @@ __all__ = [
     "assert_exact_env",
     "closure_hash",
     "discover_lane",
+    "discover_modules",
     "graph_hash",
     "holes",
     "hollow_session",
@@ -128,6 +135,8 @@ __all__ = [
     "is_graph_hash",
     "observation_shims",
     "rank",
+    "require_contract_ref",
+    "require_targets",
     "resolve_target",
     "virtualize_parameters",
     "CompiledGraphKey",
