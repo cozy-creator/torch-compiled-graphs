@@ -38,11 +38,12 @@ graph (identical traces dedup; pins are derivation inputs, not name parts),
 and artifacts hang off a graph by env = (resolved lockfile-closure hash, sm).
 
 ```python
+import torch
 from tensorfs import LocalCAS
 from torchcg import (
     EnvIdentity,
-    ExecutionLane,
     GraphSetDocument,
+    Lane,
     LocalGraphStore,
     closure_hash,
     discover_lane,
@@ -50,12 +51,13 @@ from torchcg import (
     installed_closure,
 )
 
-lane = ExecutionLane(
-    name="bf16",
-    targets=("pipe.unet", "pipe.vae.decoder"),
-    contract="diffusers/sd15/bf16",
+lane = Lane(
+    "bf16",
+    compile=("unet", "vae.decoder"),
+    contract="plain.bf16@1",
+    dtype=torch.bfloat16,
 )
-graphs = discover_lane(lane, {"pipe": pipe}, lambda: pipe(**sample))
+graphs = discover_lane(lane, pipe.components, lambda: pipe(**sample))
 document = GraphSetDocument(closure=closure_hash(installed_closure()),
                             lanes=(graphs,))
 
@@ -71,7 +73,9 @@ backends implement the same protocol. Requirements manifests
 (`RequirementsManifest`, written by the mint from what it actually linked) are
 an AUDIT assertion -- `assert_exact_env` refuses loudly when a pod's env is not
 the release's stamped env -- and `rank` exists only for the miss-path ladder.
-The lane SPELLING is a prototype pending review (pgw#1367 open question 2).
+The lane spelling is the contract file's (the sdxl `main_v2.py` endpoint under
+line review); `tests/test_contract_lane_shape.py` keeps this API from drifting
+from it.
 
 ## V1 lifecycle
 

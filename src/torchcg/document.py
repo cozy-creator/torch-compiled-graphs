@@ -19,7 +19,7 @@ from typing import Any
 
 from .graph_identity import GraphIdentityError, is_graph_hash
 from .ingress import CallIngress, IngressError
-from .lane import ExecutionLane, LaneError
+from .lane import Lane, LaneError
 
 DOCUMENT_FORMAT = 1
 _DOCUMENT_FIELDS = frozenset(("v", "closure", "lanes"))
@@ -67,7 +67,7 @@ class LaneGraphs:
 
     def __post_init__(self) -> None:
         try:
-            lane = ExecutionLane(name=self.name, targets=self.targets, contract=self.contract)
+            lane = Lane(name=self.name, compile=self.targets, contract=self.contract)
         except LaneError as exc:
             raise DocumentError(f"lane graphs restate an invalid lane: {exc}") from exc
         del lane

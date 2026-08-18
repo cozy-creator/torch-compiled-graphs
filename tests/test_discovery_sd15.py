@@ -25,7 +25,7 @@ from tensorfs import LocalCAS  # noqa: E402
 from torchcg.discovery import discover_lane  # noqa: E402
 from torchcg.document import GraphSetDocument  # noqa: E402
 from torchcg.graph_identity import EnvIdentity, closure_hash  # noqa: E402
-from torchcg.lane import ExecutionLane  # noqa: E402
+from torchcg.lane import Lane  # noqa: E402
 from torchcg.requirements import RequirementsManifest  # noqa: E402
 from torchcg.store import LocalGraphStore, PublishOutcome, holes  # noqa: E402
 
@@ -38,10 +38,10 @@ def document() -> GraphSetDocument:
 def test_one_lane_discovers_the_observed_graph_set(document: GraphSetDocument) -> None:
     (lane,) = document.lanes
     assert lane.name == "bf16"
-    assert lane.contract == "diffusers/sd15/bf16"
+    assert lane.contract == "plain.bf16@1"
     assert lane.unobserved_targets == ()
     by_target = {record.target for record in lane.graphs}
-    assert by_target == {"pipe.unet", "pipe.vae.decoder"}
+    assert by_target == {"unet", "vae.decoder"}
     # Two denoising steps at one shape dedup to ONE unet graph class.
     assert len(lane.graphs) == 2
     for record in lane.graphs:
@@ -71,29 +71,29 @@ def test_document_is_stable_across_processes(document: GraphSetDocument) -> None
 
 def test_a_second_lane_stamps_a_distinct_graph_set() -> None:
     pipe = sd15_tiny.build_pipe()
-    decoder_only = ExecutionLane(
-        name="decoder-only",
-        targets=("pipe.vae.decoder",),
-        contract="diffusers/sd15/bf16",
+    decoder_only = Lane(
+        "decoder-only",
+        compile=("vae.decoder",),
+        contract="plain.bf16@1",
     )
-    lane = discover_lane(decoder_only, {"pipe": pipe}, lambda: sd15_tiny.drive(pipe))
-    assert {record.target for record in lane.graphs} == {"pipe.vae.decoder"}
+    lane = discover_lane(decoder_only, pipe.components, lambda: sd15_tiny.drive(pipe))
+    assert {record.target for record in lane.graphs} == {"vae.decoder"}
 
 
 def test_an_undriven_target_is_stated_unobserved() -> None:
     pipe = sd15_tiny.build_pipe()
-    lane_decl = ExecutionLane(
-        name="bf16",
-        targets=("pipe.unet", "pipe.vae.encoder"),
-        contract="diffusers/sd15/bf16",
+    lane_decl = Lane(
+        "bf16",
+        compile=("unet", "vae.encoder"),
+        contract="plain.bf16@1",
     )
     lane = discover_lane(
         lane_decl,
-        {"pipe": pipe},
+        pipe.components,
         lambda: sd15_tiny.drive(pipe),  # text-to-image never encodes
     )
-    assert lane.unobserved_targets == ("pipe.vae.encoder",)
-    assert {record.target for record in lane.graphs} == {"pipe.unet"}
+    assert lane.unobserved_targets == ("vae.encoder",)
+    assert {record.target for record in lane.graphs} == {"unet"}
 
 
 def test_lifecycle_continues_into_the_store(

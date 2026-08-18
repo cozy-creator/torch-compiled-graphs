@@ -16,9 +16,9 @@ import torch  # noqa: E402
 
 from torchcg.discovery import discover_lane  # noqa: E402
 from torchcg.document import LaneGraphs  # noqa: E402
-from torchcg.lane import ExecutionLane  # noqa: E402
+from torchcg.lane import Lane  # noqa: E402
 
-LANE = ExecutionLane(name="l", targets=("host.inner",), contract="c")
+LANE = Lane(name="l", compile=("host.inner",), contract="c")
 
 
 class Scale(torch.nn.Module):

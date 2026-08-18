@@ -98,7 +98,7 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "ENV_SCHEME",
         "EnvIdentity",
         "EnvironmentMismatch",
-        "ExecutionLane",
+        "Lane",
         "FeedNormalization",
         "GRAPH_CLASS_BLOCK",
         "GRAPH_SCHEME",

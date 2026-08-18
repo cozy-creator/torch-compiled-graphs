@@ -47,7 +47,7 @@ from .ingress import (
     build_call_ingress,
     exported_input_name,
 )
-from .lane import ExecutionLane, LaneError, resolve_target
+from .lane import Lane, LaneError, resolve_target
 from .requirements import (
     ArtifactCandidate,
     EnvironmentMismatch,
@@ -96,7 +96,7 @@ __all__ = [
     "ENV_SCHEME",
     "EnvIdentity",
     "EnvironmentMismatch",
-    "ExecutionLane",
+    "Lane",
     "GRAPH_SCHEME",
     "GraphIdentityError",
     "GraphRecord",

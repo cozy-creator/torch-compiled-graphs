@@ -15,7 +15,7 @@ from tensorfs import LocalCAS
 from torchcg.document import DocumentError, GraphRecord, GraphSetDocument, LaneGraphs
 from torchcg.graph_identity import EnvIdentity, closure_hash
 from torchcg.ingress import CallIngress, CallInput
-from torchcg.lane import ExecutionLane, LaneError, resolve_target
+from torchcg.lane import Lane, LaneError, resolve_target
 from torchcg.requirements import RequirementsManifest
 from torchcg.store import LocalGraphStore, PublishOutcome, StoreError, holes
 
@@ -59,16 +59,22 @@ def lane_graphs(*letters: str) -> LaneGraphs:
     )
 
 
-class TestExecutionLane:
+class TestLane:
+    def test_accepts_the_contract_file_spelling(self) -> None:
+        lane = Lane("bf16", compile=("unet",), contract="plain.bf16@1", dtype="bf16-stand-in")
+        assert lane.name == "bf16"
+        assert lane.compile == ("unet",)
+        assert lane.dtype == "bf16-stand-in"
+
     def test_refuses_noncanonical_declarations(self) -> None:
         with pytest.raises(LaneError):
-            ExecutionLane(name="bf16", targets=(), contract="c")
+            Lane(name="bf16", compile=(), contract="c")
         with pytest.raises(LaneError):
-            ExecutionLane(name="bf16", targets=("unet",), contract="c")
+            Lane(name="bf16", compile=("vae.1bad",), contract="c")
         with pytest.raises(LaneError):
-            ExecutionLane(name="bf16", targets=("pipe.unet", "pipe.unet"), contract="c")
+            Lane(name="bf16", compile=("unet", "unet"), contract="c")
         with pytest.raises(LaneError):
-            ExecutionLane(name="", targets=("pipe.unet",), contract="c")
+            Lane(name="", compile=("unet",), contract="c")
 
     def test_resolves_paths_and_names_the_failing_segment(self) -> None:
         class Leaf:

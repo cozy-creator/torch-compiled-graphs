@@ -32,7 +32,7 @@ from typing import Any
 from .document import GraphRecord, LaneGraphs
 from .graph_identity import GraphIdentityError, graph_hash
 from .ingress import IngressError, build_call_ingress
-from .lane import ExecutionLane, LaneError, resolve_target
+from .lane import Lane, LaneError, resolve_target
 
 
 class DiscoveryError(RuntimeError):
@@ -104,7 +104,7 @@ def _param_names(module: Any, args: tuple[Any, ...], kwargs: Mapping[str, Any]) 
 
 
 def discover_lane(
-    lane: ExecutionLane,
+    lane: Lane,
     roots: Mapping[str, object],
     drive: Callable[[], object],
     *,
@@ -121,7 +121,7 @@ def discover_lane(
     import torch
 
     modules: dict[str, Any] = {}
-    for path in lane.targets:
+    for path in lane.compile:
         try:
             module = resolve_target(roots, path)
         except LaneError as exc:
@@ -133,7 +133,7 @@ def discover_lane(
             )
         modules[path] = module
 
-    observed: dict[str, dict[str, _ObservedCall]] = {path: {} for path in lane.targets}
+    observed: dict[str, dict[str, _ObservedCall]] = {path: {} for path in lane.compile}
     handles = []
 
     def _recorder(path: str) -> Callable[..., None]:
@@ -191,7 +191,7 @@ def discover_lane(
     return LaneGraphs(
         name=lane.name,
         contract=lane.contract,
-        targets=lane.targets,
+        targets=lane.compile,
         graphs=tuple(records),
         unobserved_targets=unobserved,
     )

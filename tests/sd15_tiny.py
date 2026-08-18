@@ -17,12 +17,14 @@ from typing import Any
 from torchcg.discovery import discover_lane
 from torchcg.document import GraphSetDocument
 from torchcg.graph_identity import closure_hash, installed_closure
-from torchcg.lane import ExecutionLane
+from torchcg.lane import Lane
 
-BF16_LANE = ExecutionLane(
-    name="bf16",
-    targets=("pipe.unet", "pipe.vae.decoder"),
-    contract="diffusers/sd15/bf16",
+# The contract file's spelling (sdxl main_v2.py): paths are attribute paths on
+# the pipeline's own components; the module named is the one actually CALLED.
+BF16_LANE = Lane(
+    "bf16",
+    compile=("unet", "vae.decoder"),
+    contract="plain.bf16@1",
 )
 
 
@@ -120,7 +122,7 @@ def drive(pipe: Any) -> None:
 
 def discover_document() -> GraphSetDocument:
     pipe = build_pipe()
-    lane = discover_lane(BF16_LANE, {"pipe": pipe}, lambda: drive(pipe))
+    lane = discover_lane(BF16_LANE, pipe.components, lambda: drive(pipe))
     return GraphSetDocument(closure=closure_hash(installed_closure()), lanes=(lane,))
 
 
