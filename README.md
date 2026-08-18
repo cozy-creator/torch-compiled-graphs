@@ -26,6 +26,53 @@ by `uv export`, by `pip install`, and by anything consuming your built wheel.
 `torch` is an extra (`torchcg[torch]`), and resolving the lock builds `tensorfs`
 from source, which needs a Rust toolchain on the resolving machine.
 
+## Lanes, discovery, and two-level identity (tcg#41 / pgw#1368)
+
+The ship-code-as-is surface (2026-08-18 rulings). The author's serving code
+runs untouched; a lane names compile-target attribute paths on the author's
+own objects plus the tensor-layout contract that lane expects checkpoints in.
+Discovery hooks the targets, runs the author's sample invocation, and every
+distinct observed call is one graph class -- the observed ingress set IS the
+graph set. Identity is two-level: `cg-graph-v1` content-hashes the DERIVED
+graph (identical traces dedup; pins are derivation inputs, not name parts),
+and artifacts hang off a graph by env = (resolved lockfile-closure hash, sm).
+
+```python
+from tensorfs import LocalCAS
+from torchcg import (
+    EnvIdentity,
+    ExecutionLane,
+    GraphSetDocument,
+    LocalGraphStore,
+    closure_hash,
+    discover_lane,
+    holes,
+    installed_closure,
+)
+
+lane = ExecutionLane(
+    name="bf16",
+    targets=("pipe.unet", "pipe.vae.decoder"),
+    contract="diffusers/sd15/bf16",
+)
+graphs = discover_lane(lane, {"pipe": pipe}, lambda: pipe(**sample))
+document = GraphSetDocument(closure=closure_hash(installed_closure()),
+                            lanes=(graphs,))
+
+store = LocalGraphStore(LocalCAS("/var/cache/graphs"))
+store.put_graphs("release-1", document)
+env = EnvIdentity(closure=document.closure, sm="sm_89")
+missing = holes(store, document.lanes[0], env)   # mint ONLY these
+```
+
+`GraphStore` is the abstract seam: torchcg knows nothing about hubs, releases
+or pods; `LocalGraphStore` is the reference/local-CAS implementation and other
+backends implement the same protocol. Requirements manifests
+(`RequirementsManifest`, written by the mint from what it actually linked) are
+an AUDIT assertion -- `assert_exact_env` refuses loudly when a pod's env is not
+the release's stamped env -- and `rank` exists only for the miss-path ladder.
+The lane SPELLING is a prototype pending review (pgw#1367 open question 2).
+
 ## V1 lifecycle
 
 ```python
