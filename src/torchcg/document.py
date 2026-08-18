@@ -24,7 +24,7 @@ from .lane import LaneError, require_contract_ref, require_targets
 DOCUMENT_FORMAT = 1
 _DOCUMENT_FIELDS = frozenset(("v", "closure", "lanes"))
 _LANE_FIELDS = frozenset(("contract", "targets", "graphs", "unobserved_targets"))
-_GRAPH_FIELDS = frozenset(("graph", "target", "ingress"))
+_GRAPH_FIELDS = frozenset(("graph", "target", "ingress", "artifact"))
 
 
 class DocumentError(ValueError):
@@ -38,6 +38,14 @@ class GraphRecord:
     graph: str
     target: str
     ingress: CallIngress
+    #: CAS digest of the SERIALIZED ExportedProgram for this graph class
+    #: (Paul, 2026-08-20: the derive stores the whole traced graph, not just
+    #: its hash -- "we only ever need to run trace() once" now holds
+    #: literally, and the runtime miner downloads this blob and runs inductor
+    #: instead of re-tracing author code). Empty when the producer stored no
+    #: artifact. Portability is fenced by the document's own closure: an
+    #: ExportedProgram is torch-coupled, and the lockfile closure pins torch.
+    artifact: str = ""
 
     def __post_init__(self) -> None:
         if not is_graph_hash(self.graph):
@@ -46,12 +54,15 @@ class GraphRecord:
             raise DocumentError("graph record must name its target module path")
         if not isinstance(self.ingress, CallIngress):
             raise DocumentError("graph record must carry its CallIngress contract")
+        if not isinstance(self.artifact, str):
+            raise DocumentError("graph artifact must be a CAS digest string")
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "graph": self.graph,
             "target": self.target,
             "ingress": self.ingress.as_dict(),
+            "artifact": self.artifact,
         }
 
 
@@ -219,6 +230,7 @@ class GraphSetDocument:
                         graph=raw_record["graph"],
                         target=raw_record["target"],
                         ingress=ingress,
+                        artifact=raw_record["artifact"],
                     )
                 )
             lanes.append(
