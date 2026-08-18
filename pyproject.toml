@@ -39,6 +39,10 @@ dev = [
     "mypy>=1.10",
     "pytest>=9.0",
     "ruff>=0.6",
+    # Acceptance tests drive a real (tiny, config-only) diffusers pipeline
+    # through the tcg#41 discovery primitive -- author code as-is, no catalog.
+    "diffusers>=0.30",
+    "transformers>=4.44",
 ]
 
 [project.scripts]
@@ -68,6 +72,12 @@ markers = ["real_aoti: exercise the installed PyTorch AOTInductor implementation
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
+
+# Test-only author-code stand-ins; both ship untyped and are driven as-is.
+[[tool.mypy.overrides]]
+module = ["diffusers", "diffusers.*", "transformers", "transformers.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.ruff]
 line-length = 100
