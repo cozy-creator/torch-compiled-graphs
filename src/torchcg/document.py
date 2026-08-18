@@ -74,9 +74,14 @@ class LaneGraphs:
             require_targets(self.targets)
         except LaneError as exc:
             raise DocumentError(f"lane graphs restate an invalid lane: {exc}") from exc
-        ordered = tuple(
-            sorted(self.graphs, key=lambda record: (record.target, record.graph))
-        )
+        # pgw#1384: GRAPH ORDER IS SEMANTIC, not canonical. The serving
+        # lane's hole list inherits document order and the miner mints holes
+        # in that order, so the PRODUCER states the order -- the derive puts
+        # the default-parameter graph classes (what an all-defaults payload
+        # exercises) FIRST. Determinism still holds: the producer's
+        # enumeration is deterministic, so identical inputs still yield
+        # identical bytes. Only duplicates are refused here.
+        ordered = tuple(self.graphs)
         if len({record.graph for record in ordered}) != len(ordered):
             # Identical traces dedup by construction; a duplicate row here is
             # a producer bug, not a second artifact.

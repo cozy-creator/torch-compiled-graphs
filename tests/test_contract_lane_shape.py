@@ -143,12 +143,17 @@ def test_two_lanes_share_targets_but_keep_their_own_contract() -> None:
 
 
 def _decorator_kwarg_elements(tree: ast.Module, kwarg: str) -> list[ast.expr]:
-    """Elements of `kwarg=(...)` on any class decorator call in the file."""
+    """Elements of `kwarg=(...)` on a class -- CLASS KEYWORDS first (the
+    ratified `class M(Model[MT], lanes=(...))` spelling), decorator calls as
+    the historical fallback."""
 
     out: list[ast.expr] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
+        for keyword in node.keywords:
+            if keyword.arg == kwarg and isinstance(keyword.value, ast.Tuple):
+                out.extend(keyword.value.elts)
         for decorator in node.decorator_list:
             if not isinstance(decorator, ast.Call):
                 continue
