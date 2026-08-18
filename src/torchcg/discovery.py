@@ -265,10 +265,10 @@ def discover_modules(
                 # class -- dedup is the point of content identity.
                 continue
             seen_graphs.add(graph)
-            artifact = ""
+            program_digest = ""
             if artifact_sink is not None:
                 try:
-                    artifact = artifact_sink(graph, program)
+                    program_digest = artifact_sink(graph, program)
                 except Exception as exc:
                     raise DiscoveryError(
                         f"lane {contract!r} target {path!r}: graph {graph} "
@@ -276,7 +276,7 @@ def discover_modules(
                     ) from exc
             records.append(
                 GraphRecord(
-                    graph=graph, target=path, ingress=ingress, artifact=artifact
+                    graph=graph, target=path, ingress=ingress, program=program_digest
                 )
             )
 

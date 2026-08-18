@@ -24,7 +24,7 @@ from .lane import LaneError, require_contract_ref, require_targets
 DOCUMENT_FORMAT = 1
 _DOCUMENT_FIELDS = frozenset(("v", "closure", "lanes"))
 _LANE_FIELDS = frozenset(("contract", "targets", "graphs", "unobserved_targets"))
-_GRAPH_FIELDS = frozenset(("graph", "target", "ingress", "artifact"))
+_GRAPH_FIELDS = frozenset(("graph", "target", "ingress", "program"))
 
 
 class DocumentError(ValueError):
@@ -42,10 +42,13 @@ class GraphRecord:
     #: (Paul, 2026-08-20: the derive stores the whole traced graph, not just
     #: its hash -- "we only ever need to run trace() once" now holds
     #: literally, and the runtime miner downloads this blob and runs inductor
-    #: instead of re-tracing author code). Empty when the producer stored no
-    #: artifact. Portability is fenced by the document's own closure: an
-    #: ExportedProgram is torch-coupled, and the lockfile closure pins torch.
-    artifact: str = ""
+    #: instead of re-tracing author code). **The NAME is the contract with
+    #: the mint lane**, which reads it as `PROGRAM_DIGEST_FIELD = "program"`
+    #: (pgw#962) and raises `MissingProgramDigest` on an empty one. Empty
+    #: only when the producer stored no blob. Portability is fenced by the
+    #: document's own closure: an ExportedProgram is torch-coupled, and the
+    #: lockfile closure pins torch.
+    program: str = ""
 
     def __post_init__(self) -> None:
         if not is_graph_hash(self.graph):
@@ -54,15 +57,15 @@ class GraphRecord:
             raise DocumentError("graph record must name its target module path")
         if not isinstance(self.ingress, CallIngress):
             raise DocumentError("graph record must carry its CallIngress contract")
-        if not isinstance(self.artifact, str):
-            raise DocumentError("graph artifact must be a CAS digest string")
+        if not isinstance(self.program, str):
+            raise DocumentError("graph program digest must be a string")
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "graph": self.graph,
             "target": self.target,
             "ingress": self.ingress.as_dict(),
-            "artifact": self.artifact,
+            "program": self.program,
         }
 
 
@@ -95,7 +98,7 @@ class LaneGraphs:
         ordered = tuple(self.graphs)
         if len({record.graph for record in ordered}) != len(ordered):
             # Identical traces dedup by construction; a duplicate row here is
-            # a producer bug, not a second artifact.
+            # a producer bug, not a second graph.
             raise DocumentError(f"lane {self.contract!r} repeats a graph hash")
         for record in ordered:
             if record.target not in self.targets:
@@ -230,7 +233,7 @@ class GraphSetDocument:
                         graph=raw_record["graph"],
                         target=raw_record["target"],
                         ingress=ingress,
-                        artifact=raw_record["artifact"],
+                        program=raw_record["program"],
                     )
                 )
             lanes.append(
