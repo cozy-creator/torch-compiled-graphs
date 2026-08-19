@@ -266,3 +266,59 @@ def test_packager_receives_exactly_one_named_graph(
     output = tmp_path / "model.pt2"
     assert compiler_module._package_compiled_files("denoiser/h=64", ["a.so"], output) == output
     assert seen["files"] == {"denoiser/h=64": ["a.so"]}
+
+
+def test_compile_inputs_are_derived_so_a_demoted_program_still_compiles() -> None:
+    """pgw#1465: the derive drops example_inputs, and the compile must not care.
+
+    This is the red arm for a P0 that took all 14 sd1.5 graph classes to 0/14.
+    `_demote_example_inputs` was right -- a hollow trace's example inputs pickle
+    `_reconstruct_fake_tensor`, which torch's OWN loader refuses under
+    `weights_only=True`, so a blob that kept them could not be reloaded on ANY
+    device -- but `compiler.py` was the one reader a cross-repo grep missed,
+    because it lives in torchcg itself.
+
+    The fix is the same move tcg#55 made everywhere else: derive it. The flat
+    call is `graph_signature.user_inputs`, the values are the placeholders'
+    `meta['val']`, and `call_spec.in_spec` restores the nesting -- all three
+    already in the program, none of them supplied.
+    """
+
+    torch = pytest.importorskip("torch")
+
+    from torchcg.compiler import _compile_inputs
+    from torchcg.discovery import _demote_example_inputs
+
+    class Nested(torch.nn.Module):  # type: ignore[misc]
+        def __init__(self) -> None:
+            super().__init__()
+            self.lin = torch.nn.Linear(4, 4)
+
+        def forward(self, sample: Any, conditioning: Any, return_dict: bool = False) -> Any:
+            out = self.lin(sample) + conditioning["a"] + conditioning["b"]
+            return {"o": out} if return_dict else (out,)
+
+        # A nested dict AND a specialized non-tensor: both are things a flat
+        # list of placeholder values alone could not put back.
+
+    program = torch.export.export(
+        Nested(),
+        (torch.zeros(2, 4), {"a": torch.zeros(2, 4), "b": torch.zeros(2, 4)}),
+        {"return_dict": False},
+    )
+    original_args, original_kwargs = program.example_inputs
+
+    args, kwargs = _compile_inputs(program)
+    assert len(args) == len(original_args)
+    assert isinstance(args[1], dict) and set(args[1]) == {"a", "b"}, (
+        "in_spec must restore the nesting, not hand back loose tensors"
+    )
+    assert kwargs == original_kwargs == {"return_dict": False}, (
+        "a specialized constant is part of the graph and is replayed verbatim"
+    )
+
+    _demote_example_inputs(program)
+    assert program.example_inputs is None
+    # The whole point: still derivable with the field gone.
+    again_args, again_kwargs = _compile_inputs(program)
+    assert len(again_args) == len(args) and again_kwargs == kwargs
