@@ -25,7 +25,7 @@ forward — the author's code stays the serve host.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -199,7 +199,7 @@ class AdoptSession:
         *,
         loader: ArtifactLoader | None = None,
         artifacts_dir: str | Path,
-        stack: Mapping[str, str],
+        stack: Mapping[str, str] | Sequence[tuple[str, str]],
         transforms: TransformSet | None = None,
     ) -> None:
         lane = next((row for row in document.lanes if row.contract == contract), None)
