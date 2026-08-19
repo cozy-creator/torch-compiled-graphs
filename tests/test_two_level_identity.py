@@ -1,4 +1,4 @@
-"""Two-level identity: env hashes, manifests as audit, the miss-path ladder."""
+"""Two-level identity: the compile-stack env key, manifests as audit, the ladder."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import pytest
 from torchcg.graph_identity import (
     EnvIdentity,
     GraphIdentityError,
-    closure_hash,
-    installed_closure,
+    compile_stack,
+    is_compile_relevant,
 )
 from torchcg.requirements import (
     ArtifactCandidate,
@@ -19,42 +19,74 @@ from torchcg.requirements import (
     rank,
 )
 
-CLOSURE = closure_hash({"torch": "2.13.0", "nvidia-cublas-cu12": "12.8.4"})
+STACK = (("nvidia-cublas-cu12", "12.8.4"), ("torch", "2.13.0"))
+
+#: One endpoint lockfile's rows: the compile stack plus everything that
+#: cannot reach the compiler. pgw#1472 measured 43-package diffs between envs
+#: that serve identically; these are that shape, minimized.
+LOCK_ROWS = {
+    "torch": "2.13.0",
+    "nvidia-cublas-cu12": "12.8.4",
+    "triton": "3.6.0",
+    "pillow": "11.1.0",
+    "colorama": "0.4.6",
+    "diffusers": "0.36.0",
+}
 
 
-def test_closure_hash_normalizes_names_and_orders() -> None:
-    assert closure_hash({"Foo_Bar": "1.0", "baz": "2.0"}) == closure_hash(
-        {"baz": "2.0", "foo-bar": "1.0"}
+def test_compile_stack_selects_the_compiler_and_nothing_else() -> None:
+    assert compile_stack(LOCK_ROWS) == (
+        ("nvidia-cublas-cu12", "12.8.4"),
+        ("torch", "2.13.0"),
+        ("triton", "3.6.0"),
+    )
+    # THE pgw#1489 PROPERTY: irrelevant drift does not move the key.
+    drifted = {**LOCK_ROWS, "pillow": "12.0.0", "colorama": "0.4.7"}
+    del drifted["diffusers"]
+    drifted["rich"] = "14.0.0"
+    assert compile_stack(drifted) == compile_stack(LOCK_ROWS)
+    assert EnvIdentity(stack=compile_stack(drifted), sm="sm_89").value == (
+        EnvIdentity(stack=compile_stack(LOCK_ROWS), sm="sm_89").value
     )
 
 
-def test_closure_hash_refuses_conflicting_duplicates_and_emptiness() -> None:
-    with pytest.raises(GraphIdentityError):
-        closure_hash({"foo-bar": "1.0", "Foo_Bar": "2.0"})
-    with pytest.raises(GraphIdentityError):
-        closure_hash({})
+def test_compile_stack_moves_when_the_compiler_moves() -> None:
+    bumped = {**LOCK_ROWS, "torch": "2.14.0"}
+    assert compile_stack(bumped) != compile_stack(LOCK_ROWS)
+    nvidia = {**LOCK_ROWS, "nvidia-cublas-cu12": "12.9.0"}
+    assert compile_stack(nvidia) != compile_stack(LOCK_ROWS)
 
 
-def test_installed_closure_hashes_this_process_env() -> None:
-    entries = installed_closure()
-    assert "torch" in {name.lower().replace("_", "-") for name in entries}
-    assert len(closure_hash(entries)) == 64
+def test_is_compile_relevant_spelling() -> None:
+    assert is_compile_relevant("nvidia_cuda_runtime_cu12")
+    assert is_compile_relevant("Torch")
+    assert not is_compile_relevant("torchvision")
+    assert not is_compile_relevant("nvidiablah")
+
+
+def test_env_identity_refuses_a_whole_installed_set() -> None:
+    """The regression guard: the key cannot be handed the closure again."""
+
+    with pytest.raises(GraphIdentityError, match="not a compile-stack package"):
+        EnvIdentity(stack={**LOCK_ROWS}, sm="sm_89")
 
 
 def test_env_identity_is_deterministic_and_axis_sensitive() -> None:
-    a = EnvIdentity(closure=CLOSURE, sm="sm_89")
-    assert a.value == EnvIdentity(closure=CLOSURE, sm="sm_89").value
-    assert a.value.startswith("cg-env-v1-")
-    assert a.value != EnvIdentity(closure=CLOSURE, sm="sm_86").value
-    other = closure_hash({"torch": "2.14.0"})
-    assert a.value != EnvIdentity(closure=other, sm="sm_89").value
+    a = EnvIdentity(stack=STACK, sm="sm_89")
+    assert a.value == EnvIdentity(stack=dict(STACK), sm="sm_89").value
+    assert a.value.startswith("cg-env-v2-")
+    assert a.value != EnvIdentity(stack=STACK, sm="sm_86").value
+    assert a.value != EnvIdentity(stack=(("torch", "2.14.0"),), sm="sm_89").value
+    assert "torch 2.13.0" in a.describe() and "sm_89" in a.describe()
 
 
 def test_env_identity_refuses_noncanonical_axes() -> None:
+    with pytest.raises(GraphIdentityError, match="states torch"):
+        EnvIdentity(stack=(("triton", "3.6.0"),), sm="sm_89")
+    with pytest.raises(GraphIdentityError, match="states no version"):
+        EnvIdentity(stack=(("torch", ""),), sm="sm_89")
     with pytest.raises(GraphIdentityError):
-        EnvIdentity(closure="short", sm="sm_89")
-    with pytest.raises(GraphIdentityError):
-        EnvIdentity(closure=CLOSURE, sm="whatever")
+        EnvIdentity(stack=STACK, sm="whatever")
 
 
 def manifest(**overrides: object) -> RequirementsManifest:
@@ -90,14 +122,22 @@ def test_manifest_audit_refuses_loudly_naming_every_divergence() -> None:
     assert "sm: compiled sm_89, running sm_75" in message
 
 
-def test_exact_env_audit_is_exact() -> None:
-    installed = {"torch": "2.13.0", "nvidia-cublas-cu12": "12.8.4"}
-    stamped = EnvIdentity(closure=closure_hash(installed), sm="sm_89")
-    assert_exact_env(stamped, installed=installed, sm="sm_89")
-    with pytest.raises(EnvironmentMismatch, match="sm"):
-        assert_exact_env(stamped, installed=installed, sm="sm_86")
-    with pytest.raises(EnvironmentMismatch, match="closure"):
-        assert_exact_env(stamped, installed={"torch": "2.14.0"}, sm="sm_89")
+def test_exact_env_audit_is_exact_and_names_the_package() -> None:
+    stamped = EnvIdentity(stack=STACK, sm="sm_89")
+    assert_exact_env(stamped, stack=dict(STACK), sm="sm_89")
+    # Irrelevant drift is not a divergence any more: the same lock rows plus a
+    # different set of non-compile packages select the same stack.
+    assert_exact_env(
+        stamped,
+        stack=compile_stack({**dict(STACK), "pillow": "12.0.0", "rich": "14.0.0"}),
+        sm="sm_89",
+    )
+    with pytest.raises(EnvironmentMismatch, match="sm sm_86 != stamped sm_89"):
+        assert_exact_env(stamped, stack=dict(STACK), sm="sm_86")
+    with pytest.raises(EnvironmentMismatch, match=r"torch 2.14.0 != stamped 2.13.0"):
+        assert_exact_env(
+            stamped, stack={**dict(STACK), "torch": "2.14.0"}, sm="sm_89"
+        )
 
 
 GRAPH = "cg-graph-v1-" + "a" * 56
@@ -106,7 +146,7 @@ GRAPH = "cg-graph-v1-" + "a" * 56
 def candidate(sm_compiled: str, autotuned_on: str | None, digest: str) -> ArtifactCandidate:
     return ArtifactCandidate(
         graph=GRAPH,
-        env=EnvIdentity(closure=CLOSURE, sm=sm_compiled),
+        env=EnvIdentity(stack=STACK, sm=sm_compiled),
         digest=digest,
         manifest=manifest(sm_compiled=sm_compiled, autotuned_on=autotuned_on),
     )

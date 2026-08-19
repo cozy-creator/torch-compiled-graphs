@@ -35,14 +35,13 @@ from torchcg.declaration import GraphSpecialization, RuntimeCompatibility
 from torchcg.discovery import discover_lane
 from torchcg.document import GraphSetDocument
 from torchcg.engine import Engine
-from torchcg.graph_identity import EnvIdentity, closure_hash
+from torchcg.graph_identity import EnvIdentity
 from torchcg.requirements import RequirementsManifest
 from torchcg.runner import ConstantBindingError
 from torchcg.store import LocalGraphStore
 
 CONTRACT = "tiny.plain-fp32@1"
-INSTALLED = {"torch": torch.__version__}
-CLOSURE = closure_hash(INSTALLED)
+STACK: tuple[tuple[str, str], ...] = (("torch", torch.__version__),)
 TOOLCHAIN = {
     "settings_declaration": "settings-v1",
     "loaded_libs": "loaded-libs-v1",
@@ -115,7 +114,7 @@ def adopted(tmp_path: Path) -> Any:
     sm = str(result.compiled_graph.metadata["sm"])
 
     packed = engine.export_artifact(result.compiled_graph.key, tmp_path / "artifact.tgz")
-    env = EnvIdentity(closure=CLOSURE, sm=sm)
+    env = EnvIdentity(stack=STACK, sm=sm)
     store = LocalGraphStore(LocalCAS(tmp_path / "store-cas"))
     store.publish_artifact(
         record.graph,
@@ -126,7 +125,7 @@ def adopted(tmp_path: Path) -> Any:
         ),
     )
 
-    document = GraphSetDocument(closure=CLOSURE, lanes=(lane,))
+    document = GraphSetDocument(stack=STACK, lanes=(lane,))
     # NO `loader=`. The production loader is the default precisely so a
     # consumer cannot supply a raw one by accident.
     session = AdoptSession(
@@ -135,7 +134,7 @@ def adopted(tmp_path: Path) -> Any:
         CONTRACT,
         sm,
         artifacts_dir=tmp_path / "adopted",
-        installed=INSTALLED,
+        stack=STACK,
     )
     return SimpleNamespace(
         pipe=pipe, eager=eager, record=record, session=session, store=store,

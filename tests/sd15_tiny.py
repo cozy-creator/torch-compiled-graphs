@@ -16,7 +16,7 @@ from typing import Any
 
 from torchcg.discovery import discover_lane
 from torchcg.document import GraphSetDocument
-from torchcg.graph_identity import closure_hash, installed_closure
+from stackfixture import local_stack
 
 # The contract file's spelling (sdxl main_v2.py): a lane IS a tensorfs
 # contract reference; compile targets are endpoint-level attribute paths on
@@ -128,7 +128,7 @@ def discover_document() -> GraphSetDocument:
     lane = discover_lane(
         LANE_CONTRACT, COMPILE_TARGETS, pipe.components, lambda: drive(pipe)
     )
-    return GraphSetDocument(closure=closure_hash(installed_closure()), lanes=(lane,))
+    return GraphSetDocument(stack=local_stack(), lanes=(lane,))
 
 
 if __name__ == "__main__":

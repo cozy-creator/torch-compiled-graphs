@@ -21,7 +21,7 @@ from torch import nn
 from torchcg.adopt import AdoptError, AdoptSession
 from torchcg.discovery import DiscoveryError, discover_modules
 from torchcg.document import GraphSetDocument
-from torchcg.graph_identity import closure_hash, graph_hash
+from torchcg.graph_identity import graph_hash
 from torchcg.ingress import build_call_ingress
 from torchcg.lane import LaneError, LaneRef
 from torchcg.store import LocalGraphStore, StoreError
@@ -48,8 +48,7 @@ PASS = PrecomputeAndFree.NAME
 FOLDED_LANE = "tiny.folded-fp32@1"
 PLAIN_LANE = "tiny.plain-fp32@1"
 SM = "sm_89"
-INSTALLED = {"torch": torch.__version__, "example-lib": "1.0.0"}
-CLOSURE = closure_hash(INSTALLED)
+STACK: tuple[tuple[str, str], ...] = (("torch", torch.__version__),)
 
 
 # -- the author's model ----------------------------------------------------
@@ -414,7 +413,7 @@ def test_the_document_carries_the_lane_passes_byte_stably() -> None:
     lane_graphs = discover_modules(
         folded_lane(), {"dit": folded}, drive_for(folded), transforms=session.seal()
     )
-    document = GraphSetDocument(closure=CLOSURE, lanes=(lane_graphs,))
+    document = GraphSetDocument(stack=STACK, lanes=(lane_graphs,))
     assert document.encode() == GraphSetDocument.decode(document.encode()).encode()
     assert GraphSetDocument.decode(document.encode()).lanes[0].passes == (PASS,)
 
@@ -539,7 +538,7 @@ def folded_document() -> tuple[GraphSetDocument, Any]:
     lane_graphs = discover_modules(
         folded_lane(), {"dit": folded}, drive_for(folded), transforms=transforms
     )
-    return GraphSetDocument(closure=CLOSURE, lanes=(lane_graphs,)), transforms
+    return GraphSetDocument(stack=STACK, lanes=(lane_graphs,)), transforms
 
 
 def test_adoption_refuses_a_boot_that_did_not_run_the_lane_passes(
@@ -555,7 +554,7 @@ def test_adoption_refuses_a_boot_that_did_not_run_the_lane_passes(
             SM,
             loader=loader,
             artifacts_dir=tmp_path,
-            installed=INSTALLED,
+            stack=STACK,
         )
     assert "declares passes" in str(unran.value)
     assert PASS in str(unran.value)
@@ -567,7 +566,7 @@ def test_adoption_refuses_a_boot_that_did_not_run_the_lane_passes(
         SM,
         loader=loader,
         artifacts_dir=tmp_path,
-        installed=INSTALLED,
+        stack=STACK,
         transforms=transforms,
     )
     assert session.passes == (PASS,)

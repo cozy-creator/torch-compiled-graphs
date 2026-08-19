@@ -23,7 +23,7 @@ import torch  # noqa: E402
 
 from torchcg.discovery import discover_lane  # noqa: E402
 from torchcg.document import GraphSetDocument  # noqa: E402
-from torchcg.graph_identity import closure_hash, installed_closure  # noqa: E402
+from stackfixture import local_stack  # noqa: E402
 from torchcg.hollow import (  # noqa: E402
     HollowError,
     hollow_session,
@@ -70,7 +70,7 @@ def _hollow_document(tree: Path, *, torch_dtype: object = None) -> GraphSetDocum
                 output_type="pil",
             ),
         )
-    return GraphSetDocument(closure=closure_hash(installed_closure()), lanes=(lane,))
+    return GraphSetDocument(stack=local_stack(), lanes=(lane,))
 
 
 def test_hollow_drive_states_the_real_drive_identity(config_only_tree: Path) -> None:
