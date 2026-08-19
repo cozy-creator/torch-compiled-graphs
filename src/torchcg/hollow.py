@@ -437,13 +437,33 @@ def _restate(program: Any, device: Any, torch: Any, FakeTensor: Any) -> tuple[st
         # `placement` of ('cuda',) where a native trace says ('cuda:0',).
         target = torch.device(target.type, 0)
     stranded: list[str] = []
+    # A non-strict export does not copy the module's parameters: the same
+    # FakeTensor object is the module's parameter, the program's state-dict
+    # entry AND a placeholder's `meta['val']`. So re-homing by assigning
+    # `fake_device` re-homes the LIVE MODULE, and the next observed call of the
+    # same target then exports cuda parameters against cpu synthesized inputs
+    # -- `FakeTensorDeviceMismatchError: cpu and cuda:0`, raised from a module
+    # nobody moved. Substituting a fresh fake tensor keeps the restate a
+    # property of the PROGRAM, which is what it is supposed to be. The memo
+    # preserves aliasing: one input object still maps to one output object, so
+    # a program that shared a tensor across nodes still shares it.
+    moved: dict[int, Any] = {}
 
     def move(value: Any, fqn: str = "") -> Any:
         if not isinstance(value, torch.Tensor) or value.device.type == target.type:
             return value
         if isinstance(value, FakeTensor):
-            value.fake_device = target
-            return value
+            known = moved.get(id(value))
+            if known is None:
+                with value.fake_mode:
+                    known = torch.empty_strided(
+                        value.shape, value.stride(), dtype=value.dtype, device=target
+                    )
+                known.requires_grad_(value.requires_grad)
+                if getattr(value, "_is_param", False):
+                    known._is_param = True
+                moved[id(value)] = known
+            return known
         try:
             return value.to(target)
         except (RuntimeError, AssertionError, AttributeError):
