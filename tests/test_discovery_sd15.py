@@ -24,7 +24,6 @@ from tensorfs import LocalCAS  # noqa: E402
 
 from torchcg.discovery import discover_lane  # noqa: E402
 from torchcg.document import GraphSetDocument  # noqa: E402
-from torchcg.graph_identity import EnvIdentity  # noqa: E402
 from torchcg.requirements import RequirementsManifest  # noqa: E402
 from torchcg.store import LocalGraphStore, PublishOutcome, holes  # noqa: E402
 

@@ -14,9 +14,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from stackfixture import local_stack
+
 from torchcg.discovery import discover_lane
 from torchcg.document import GraphSetDocument
-from stackfixture import local_stack
 
 # The contract file's spelling (sdxl main_v2.py): a lane IS a tensorfs
 # contract reference; compile targets are endpoint-level attribute paths on
