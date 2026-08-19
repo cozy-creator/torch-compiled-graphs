@@ -332,3 +332,44 @@ def test_a_hollow_program_keeping_its_fake_example_inputs_cannot_be_RELOADED(
     demoted = tmp_path / "demoted.pt2"
     torch.export.save(program, demoted)
     assert load_exported_program(demoted).constants["table"].tolist() == [1.0, 2.0]
+
+
+def test_the_restate_survives_the_SESSION_it_runs_inside() -> None:
+    """The bug this catches shipped a cuda-labelled document full of cpu graphs.
+
+    ``restate_program`` runs inside the session, where ``OneTraceDevice`` is
+    live -- and ``torch.device`` construction goes through
+    ``__torch_function__``, so ``torch.device("cuda", 0)`` evaluated in there
+    comes back ``cpu:0``. Every move became a no-op, the derive reported a cuda
+    trace, and the graphs it emitted were cpu. Nothing above caught it: they
+    all call the restate from OUTSIDE any session, which is not how the derive
+    calls it. So this one goes through the real front door --
+    ``hollow_session`` + ``discover_modules`` -- and asserts the placement of
+    what the sink would have stored.
+    """
+
+    from torchcg import discover_modules
+    from torchcg.hollow import hollow_session
+
+    stored: dict[str, Any] = {}
+
+    with hollow_session("cuda") as session:
+        assert session.drive_device == "cpu"
+        module = Tiny([1.0, 2.0])
+        virtualize_parameters(module, session)
+
+        def drive() -> None:
+            with session.fake_mode:
+                module(torch.zeros((2, 4), dtype=torch.float32))
+
+        discover_modules(
+            "tiny.lane@1",
+            {"denoiser": module},
+            drive,
+            program_sink=lambda graph, program: stored.setdefault(graph, program) and "",
+            session=session,
+        )
+
+    assert stored, "discovery observed nothing"
+    for program in stored.values():
+        assert _placement(program) == ["cuda:0"]

@@ -416,6 +416,20 @@ def restate_program(program: Any, device: Any) -> tuple[str, ...]:
     import torch
     from torch._subclasses.fake_tensor import FakeTensor
 
+    # The restate runs INSIDE the session, so `OneTraceDevice` is live -- and
+    # `torch.device` construction goes through `__torch_function__`, so
+    # `torch.device("cuda", 0)` evaluated in here comes back `cpu:0`. The shim
+    # is doing its job (redirect every device ask to the drive device); it
+    # simply cannot tell the session's own repair from author code asking for
+    # a device it must not get. Measured, and it fails SILENTLY: every move
+    # became a no-op and the derive emitted cpu-stamped graphs while reporting
+    # a cuda trace. So the whole restate is the one thing in the session that
+    # opts out of the session's own redirection.
+    with torch._C.DisableTorchFunction():
+        return _restate(program, device, torch, FakeTensor)
+
+
+def _restate(program: Any, device: Any, torch: Any, FakeTensor: Any) -> tuple[str, ...]:
     target = torch.device(device)
     if target.type != "cpu" and target.index is None:
         # torch normalizes a device-less `cuda` ask to `cuda:0` on the tensors
