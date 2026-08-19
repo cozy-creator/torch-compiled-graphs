@@ -527,7 +527,7 @@ def test_a_divergent_bucket_under_one_address_is_refused(
 # -- the serve side --------------------------------------------------------
 
 
-def loader(path: Path, record: Any) -> Any:  # pragma: no cover - never armed here
+def loader(path: Path, record: Any, module: Any) -> Any:  # pragma: no cover - never armed here
     raise AssertionError("no artifact should be fetched in these cases")
 
 

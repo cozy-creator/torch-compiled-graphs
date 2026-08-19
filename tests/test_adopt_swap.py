@@ -91,10 +91,19 @@ def publish(store: LocalGraphStore, tmp_path: Path, graph: str, payload: bytes) 
 
 def stub_loader(
     markers: dict[str, torch.Tensor],
-) -> Callable[[Path, GraphRecord], Callable[..., torch.Tensor]]:
-    """A loader whose 'compiled graph' returns a per-graph sentinel tensor."""
+) -> Callable[[Path, GraphRecord, object], Callable[..., torch.Tensor]]:
+    """A loader whose 'compiled graph' returns a per-graph sentinel tensor.
 
-    def load(path: Path, record: GraphRecord) -> Callable[..., torch.Tensor]:
+    Three arguments since tcg#58: the third is the LIVE MODULE the compiled
+    graph binds its constants from. This stub asserts it is the module that
+    claimed the record rather than ignoring it -- the production loader cannot
+    work without it, so a double that drops it models the wrong thing.
+    """
+
+    def load(
+        path: Path, record: GraphRecord, module: object
+    ) -> Callable[..., torch.Tensor]:
+        assert isinstance(module, torch.nn.Module)
         sentinel = markers.setdefault(record.graph, torch.full((1,), float(len(markers) + 1)))
 
         def compiled(*args: object, **kwargs: object) -> torch.Tensor:
