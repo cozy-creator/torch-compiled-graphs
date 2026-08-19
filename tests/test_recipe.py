@@ -16,7 +16,7 @@ from torchcg.recipe import (
     RESERVED_IDENTIFIERS,
     BucketAxis,
     DeclaredRunner,
-    GraphClassVariant,
+    GraphSpecializationVariant,
     Loop,
     LoopKind,
     LoopStep,
@@ -33,7 +33,6 @@ from torchcg.recipe import (
     bucket_of,
     call_signature,
     parse_bucket_axis_name,
-    parse_class_hash,
     parse_family_name,
     parse_ingress_digest,
     parse_layout_contract,
@@ -41,6 +40,7 @@ from torchcg.recipe import (
     parse_recipe_digest,
     parse_runner_name,
     parse_scheduler_name,
+    parse_specialization_hash,
 )
 
 
@@ -106,7 +106,7 @@ def _decoder_ingress(side: int) -> CallIngress:
     return _ingress(("latents",), (("latents", (), "float16", (1, 4, side, side)),))
 
 
-_CLASS_HASHES = {
+_SPECIALIZATION_HASHES = {
     ("text_encoder", 0, "bf16"): "1c0e7a4b39d5f682",
     ("denoiser", 64, "bf16"): "2f91b8c40ae7d135",
     ("denoiser", 128, "bf16"): "3ab47de205c1986f",
@@ -122,9 +122,11 @@ _FP8 = parse_layout_contract("fp8_rowwise")
 
 def _variant(
     runner: str, side: int, ingress: CallIngress, layout: str = "bf16"
-) -> GraphClassVariant:
-    return GraphClassVariant(
-        class_hash=parse_class_hash(_CLASS_HASHES[(runner, side, layout)]),
+) -> GraphSpecializationVariant:
+    return GraphSpecializationVariant(
+        specialization_hash=parse_specialization_hash(
+            _SPECIALIZATION_HASHES[(runner, side, layout)]
+        ),
         ingress_digest=parse_ingress_digest(ingress.digest()),
         ingress=ingress,
         layout=parse_layout_contract(layout),
@@ -194,7 +196,7 @@ def canonical_recipe() -> Recipe:
     )
 
 
-_AR_CLASS_HASHES = {"prefill": "6f7a3b1c8d20e594", "decode": "7809c4d21be3f6a5"}
+_AR_SPECIALIZATION_HASHES = {"prefill": "6f7a3b1c8d20e594", "decode": "7809c4d21be3f6a5"}
 
 
 def autoregressive_recipe() -> Recipe:
@@ -227,8 +229,8 @@ def autoregressive_recipe() -> Recipe:
                 name=parse_runner_name("decode"),
                 axes=(),
                 variants=(
-                    GraphClassVariant(
-                        class_hash=parse_class_hash(_AR_CLASS_HASHES["decode"]),
+                    GraphSpecializationVariant(
+                        specialization_hash=parse_specialization_hash(_AR_SPECIALIZATION_HASHES["decode"]),
                         ingress_digest=parse_ingress_digest(decode.digest()),
                         ingress=decode,
                         layout=_BF16,
@@ -239,8 +241,8 @@ def autoregressive_recipe() -> Recipe:
                 name=parse_runner_name("prefill"),
                 axes=(),
                 variants=(
-                    GraphClassVariant(
-                        class_hash=parse_class_hash(_AR_CLASS_HASHES["prefill"]),
+                    GraphSpecializationVariant(
+                        specialization_hash=parse_specialization_hash(_AR_SPECIALIZATION_HASHES["prefill"]),
                         ingress_digest=parse_ingress_digest(prefill.digest()),
                         ingress=prefill,
                         layout=_BF16,
@@ -320,7 +322,7 @@ def test_recipe_digest_is_machine_independent_and_the_key_is_not() -> None:
     assert variant.key(ampere) != variant.key(rebuilt)
     assert variant.key(ampere) == from_axes(
         {
-            "graph": str(variant.class_hash),
+            "graph": str(variant.specialization_hash),
             "sm": "sm_86",
             "toolchain": toolchain_axis_digest({"torch": "a" * 16}),
         }
@@ -358,7 +360,7 @@ def test_a_host_owned_loop_is_a_legal_declaration() -> None:
     assert [step.runner for step in recipe.loop.stages] == ["prefill", "decode"]
     assert Recipe.loads(recipe.canonical()) == recipe
     assert recipe.digest() != canonical_recipe().digest()
-    # The per-step classes and the session-state owner are stated; the iteration
+    # The per-step specializations and the session-state owner are stated; the iteration
     # is not, and the vocabulary refuses to fake it with a count.
     with pytest.raises(RecipeError) as caught:
         Loop(
@@ -378,10 +380,10 @@ def test_a_host_owned_loop_is_a_legal_declaration() -> None:
 def test_bucket_lookup_is_exact_and_never_ranks() -> None:
     runner = canonical_recipe().runner(parse_runner_name("denoiser"))
     resolution = parse_bucket_axis_name("resolution")
-    assert runner.variant({resolution: 128}, _BF16).class_hash == _CLASS_HASHES[
+    assert runner.variant({resolution: 128}, _BF16).specialization_hash == _SPECIALIZATION_HASHES[
         ("denoiser", 128, "bf16")
     ]
-    assert runner.variant({resolution: 128}, _FP8).class_hash == _CLASS_HASHES[
+    assert runner.variant({resolution: 128}, _FP8).specialization_hash == _SPECIALIZATION_HASHES[
         ("denoiser", 128, "fp8_rowwise")
     ]
     with pytest.raises(RecipeError) as caught:
@@ -451,9 +453,9 @@ def test_layout_is_an_axis_of_the_class_row() -> None:
     runner = canonical_recipe().runner(parse_runner_name("denoiser"))
     assert runner.layouts == ("bf16", "fp8_rowwise")
     resolution = parse_bucket_axis_name("resolution")
-    assert runner.variant({resolution: 64}, _BF16).class_hash != runner.variant(
+    assert runner.variant({resolution: 64}, _BF16).specialization_hash != runner.variant(
         {resolution: 64}, _FP8
-    ).class_hash
+    ).specialization_hash
     # Two layouts and no layout named is a refusal, never a guess: choosing one
     # is the hub's join with per-checkpoint layout metadata, a separate document.
     with pytest.raises(RecipeError) as caught:

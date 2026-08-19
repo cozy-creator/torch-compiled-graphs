@@ -9,8 +9,8 @@ from torchcg import (
     CallIngress,
     CallInput,
     DeclarationError,
-    GraphClassDeclaration,
-    GraphClassSpec,
+    GraphSpecialization,
+    GraphSpecializationDeclaration,
     IngressError,
     RuntimeCompatibility,
 )
@@ -57,7 +57,7 @@ def exported(module: Any) -> Any:
     return torch.export.export(module, (torch.ones(2),))
 
 
-#: tcg#55: the ONLY fact a producer still supplies about a graph class. There
+#: tcg#55: the ONLY fact a producer still supplies about a graph specialization. There
 #: is no graph-interface mapping any more -- constant_fqns, literal_values and
 #: placement are derived in declare(), and lifted_inputs/specialization/pytree
 #: are deleted outright (nothing in this repo or the gen-worker read them).
@@ -68,8 +68,8 @@ INGRESS = CallIngress(
 )
 
 
-def spec(graph_class: str, target: str, program: object) -> GraphClassSpec:
-    return GraphClassSpec(graph_class, target, program, INGRESS)
+def spec(graph_specialization: str, target: str, program: object) -> GraphSpecialization:
+    return GraphSpecialization(graph_specialization, target, program, INGRESS)
 
 
 def test_declaration_keys_graph_structure_but_not_weight_values() -> None:
@@ -79,14 +79,14 @@ def test_declaration_keys_graph_structure_but_not_weight_values() -> None:
 
     assert first == fine_tune
     assert len(first.graph_witness) == 16
-    assert first.class_hash != changed_body.class_hash
-    assert len(first.class_hash) == 16
+    assert first.specialization_hash != changed_body.specialization_hash
+    assert len(first.specialization_hash) == 16
 
 
 def test_call_ingress_is_required_rekeys_and_owns_range_digest() -> None:
     program = exported(Operation())
     first = spec("model", "denoiser", program).declare()
-    changed = GraphClassSpec(
+    changed = GraphSpecialization(
         "model",
         "denoiser",
         program,
@@ -99,7 +99,7 @@ def test_call_ingress_is_required_rekeys_and_owns_range_digest() -> None:
 
     assert first.range_digest == CallIngress.from_graph(first.graph).digest()
     assert changed.range_digest != first.range_digest
-    assert changed.class_hash != first.class_hash
+    assert changed.specialization_hash != first.specialization_hash
 
 
 def test_the_derived_graph_interface_cannot_be_supplied_at_all() -> None:
@@ -112,7 +112,7 @@ def test_the_derived_graph_interface_cannot_be_supplied_at_all() -> None:
 
     program = exported(Operation())
     with pytest.raises(DeclarationError, match="raw graph-interface mapping is retired"):
-        GraphClassSpec(
+        GraphSpecialization(
             "model",
             "denoiser",
             program,
@@ -136,7 +136,7 @@ def test_a_v3_graph_interface_refuses_by_name_at_every_load_site() -> None:
         "specialization": {},
     }
     with pytest.raises(RetiredGraphInterface, match="RETIRED v3 shape"):
-        GraphClassDeclaration(
+        GraphSpecializationDeclaration(
             "model", "denoiser", retired, "0" * 16, INGRESS.digest()
         )
     with pytest.raises(IngressError, match="RETIRED v3"):
@@ -149,7 +149,7 @@ def test_lifted_literal_values_ride_inside_graph_interface_and_rekey() -> None:
     assert first.literal_values
     assert first.graph["literal_values"] == first.literal_values
     assert changed.graph["literal_values"] == changed.literal_values
-    assert first.class_hash != changed.class_hash
+    assert first.specialization_hash != changed.specialization_hash
 
 
 def test_literal_digest_and_constant_names_match_current_worker_golden_vector() -> None:
@@ -161,15 +161,15 @@ def test_literal_digest_and_constant_names_match_current_worker_golden_vector() 
     assert declaration.literal_values == vector["literal_values"]
 
 
-def test_graph_class_target_and_runtime_are_exact_key_facts() -> None:
+def test_graph_specialization_target_and_runtime_are_exact_key_facts() -> None:
     program = exported(Operation())
     first = spec("model", "denoiser", program).declare()
     renamed = spec("other", "denoiser", program).declare()
     retargeted = spec("model", "vae", program).declare()
     runtime = RuntimeCompatibility("cpu", toolchain={"torch": "build-a"})
 
-    assert first.class_hash == renamed.class_hash
-    assert first.class_hash != retargeted.class_hash
+    assert first.specialization_hash == renamed.specialization_hash
+    assert first.specialization_hash != retargeted.specialization_hash
     assert str(runtime.key(first)).startswith("cg-key-v1-")
     assert runtime.key(first) != RuntimeCompatibility(
         "cpu", toolchain={"torch": "build-b"}
@@ -191,24 +191,24 @@ def test_graph_witness_matches_current_worker_canonical_form() -> None:
     assert first.graph_witness == second.graph_witness
 
 
-def test_graph_witness_and_class_hash_match_current_worker_golden_vector() -> None:
-    vector = json.loads(read_contract("graph_class_identity_v4.json"))
+def test_graph_witness_and_specialization_hash_match_current_worker_golden_vector() -> None:
+    vector = json.loads(read_contract("graph_specialization_identity_v4.json"))
     block = vector["block"]
     program = torch.export.export(SineOperation(), (torch.ones(2, 3),))
     assert _graph_digest(program) == block["graph_witness"]
-    declaration = GraphClassDeclaration(
-        graph_class="display-name-does-not-key",
+    declaration = GraphSpecializationDeclaration(
+        name="display-name-does-not-key",
         target=block["target"],
         graph=block["graph"],
         graph_witness=block["graph_witness"],
         range_digest=block["range_digest"],
         fork=tuple((name, value) for name, value in block["fork"]),
-        class_dims=tuple((name, value) for name, value in block["class_dims"]),
+        specialization_dims=tuple((name, value) for name, value in block["specialization_dims"]),
         strict=vector["strict"],
         lora_bucket=vector["lora_bucket"],
         placement=tuple(block["placement"]),
     )
-    assert declaration.class_hash == vector["class_hash"]
+    assert declaration.specialization_hash == vector["specialization_hash"]
 
 
 class SineOperation(torch.nn.Module):  # type: ignore[misc]

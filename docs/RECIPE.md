@@ -1,6 +1,6 @@
 # Recipe v1
 
-A recipe states one family's **composition**: which graph classes an endpoint's
+A recipe states one family's **composition**: which graph specializations an endpoint's
 compiled pipeline is made of, the loop between them, and the scheduler block
 that loop runs under. It is a **vocabulary, not a DSL** — it names composition,
 it does not program it. Payload parsing, CFG policy, residency, retries,
@@ -21,7 +21,7 @@ is the corpus a non-Python consumer reads.
     {"name": "denoiser", "axes": ["resolution"], "variants": [
       {"bucket": {"resolution": 64},
        "layout": "bf16",
-       "class_hash": "2f91b8c40ae7d135",
+       "specialization_hash": "2f91b8c40ae7d135",
        "ingress_digest": "…32 hex…",
        "ingress": { /* the exact CallIngress v1 value */ }}
     ]}
@@ -42,7 +42,7 @@ is the corpus a non-Python consumer reads.
 
 - **Family composition** is `runners`: an author-facing handle, the bucket axes
   it varies on, and one variant per bucket per layout. A variant pins a class by
-  its 16-hex `class_hash` — the key's `graph` axis — plus the exact `CallIngress`
+  its 16-hex `specialization_hash` — the key's `graph` axis — plus the exact `CallIngress`
   v1 value, its digest, and the tensor-layout contract it was traced against.
 - **Loop structure** is `loop`: a `kind`, a `session_state` owner, and an
   ordered list of stages, each naming a runner and running `once` or `counted`
@@ -54,14 +54,14 @@ is the corpus a non-Python consumer reads.
   It rides inside the digest because two otherwise identical compositions under
   different schedulers are different pipelines.
 
-Display class names are deliberately absent. Identity is `class_hash` +
+Display class names are deliberately absent. Identity is `specialization_hash` +
 `ingress_digest`; a cosmetic rename must not move a pin that consumers build
 against.
 
-## Tensor layout is an axis of the class row
+## Tensor layout is an axis of the specialization row
 
 An fp8-rowwise trace and a bf16 trace are **different graphs**, so `layout` is a
-fact of the class row, not a property of weights bound to it later. Every variant
+fact of the specialization row, not a property of weights bound to it later. Every variant
 names the layout contract it was traced against; a runner may offer several, and
 bucket coverage must be total **per layout**, so a generated closed type stays
 exhaustive whichever layout is in play.
@@ -90,7 +90,7 @@ loop declares one of two kinds:
 - **`staged`** — the composition the vocabulary fully describes. Stages run
   `once` or `counted` by a bounded parameter, in the stated order.
 - **`host`** — an autoregressive family. The recipe states everything it *can*:
-  the per-step graph classes in order (`prefill`, then `decode`), and
+  the per-step graph specializations in order (`prefill`, then `decode`), and
   `session_state`, which names who owns the state threaded between steps
   (`none`, `host` when the caller passes the KV cache in and out as tensors, or
   `graph` when the artifact carries it). It then says outright that the
@@ -108,11 +108,11 @@ second implementation as a real bound.
 key is folded at adopt time from the pod's own axes:
 
 ```text
-cg-key-v1 = key({graph: <variant class_hash>, sm: <pod>, toolchain: <pod>})
+cg-key-v1 = key({graph: <variant specialization_hash>, sm: <pod>, toolchain: <pod>})
 ```
 
 so one recipe digest is valid on every SKU and toolchain, and a re-mint changes
-keys without touching author source (§4.27, §4.29). `GraphClassVariant.key()`
+keys without touching author source (§4.27, §4.29). `GraphSpecializationVariant.key()`
 takes any object with `sm` and `toolchain` — `RuntimeCompatibility` satisfies it
 structurally, which is why this module never imports Torch.
 
@@ -193,7 +193,7 @@ or an enum in Rust is exhaustive and every selection resolves. A gap is refused
 as `bucket_coverage_incomplete`.
 
 **G7 — Names never key, so no generated code holds a string lookup.** A runner
-handle is resolved to `class_hash` + `ingress_digest` **before anything runs** —
+handle is resolved to `specialization_hash` + `ingress_digest` **before anything runs** —
 by the declaration at generation time, and by this document at adopt time — so
 generated code carries the identity, never the name. `Recipe.runner(name)` exists
 for that resolution and for diagnostics; a handler that reaches a runner through
@@ -205,7 +205,7 @@ matches both exactly or refuses. Choosing which bucket serves a live call is
 separate contracts. This one never approximates.
 
 **G9 — Incompatible re-mints break builds, not pods.** The recipe digest moves
-whenever any class hash, ingress, bucket set, loop, or scheduler block moves. A
+whenever any specialization hash, ingress, bucket set, loop, or scheduler block moves. A
 consumer embeds the digest-pinned reference at build; regenerating against a
 changed recipe fails compilation. Nothing arms wrong on a pod because the
 generated signature and the artifact's admission expectation derive from the
@@ -218,7 +218,7 @@ and each is reachable from a test. A second implementation reports the same
 reason for the same document.
 
 **G11 — The recipe is the CLASS-LEVEL layer and is structurally
-checkpoint-free.** Buckets, graph classes, signatures, the loop, and the
+checkpoint-free.** Buckets, graph specializations, signatures, the loop, and the
 scheduler block are family facts, identical for every checkpoint that family
 serves — which is what lets one cell serve sixteen fine-tunes (§4.27). Weight
 sets, checkpoint refs, tuned values, and any per-request default are

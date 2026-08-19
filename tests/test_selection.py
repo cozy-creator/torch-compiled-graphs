@@ -12,8 +12,7 @@ from torchcg.selection import (
     MISS_RUNGS,
     SELECTION_CONTRACT_FILE,
     SELECTION_CONTRACT_VERSION,
-    ClassReport,
-    GraphClassCandidate,
+    GraphSpecializationCandidate,
     IngressMiss,
     MissReason,
     NormalizationKind,
@@ -22,6 +21,7 @@ from torchcg.selection import (
     Selection,
     SelectionError,
     SelectionOutcome,
+    SpecializationReport,
     class_report,
     decode_selection_corpus,
     describe_call,
@@ -229,15 +229,18 @@ def test_the_rung_table_is_total_over_the_closed_reason_enum() -> None:
 def test_candidate_order_does_not_change_the_outcome() -> None:
     call = _call(timestep=PresentedValue("bfloat16", ()))
     forward = [
-        GraphClassCandidate("denoiser.a", BASE),
-        GraphClassCandidate("denoiser.z", BASE),
+        GraphSpecializationCandidate("denoiser.a", BASE),
+        GraphSpecializationCandidate("denoiser.z", BASE),
     ]
     assert select(forward, call) == select(list(reversed(forward)), call)
 
 
 def test_duplicate_candidate_names_are_refused() -> None:
-    rows = [GraphClassCandidate("denoiser", BASE), GraphClassCandidate("denoiser", BASE)]
-    with pytest.raises(SelectionError, match="share one graph class name"):
+    rows = [
+        GraphSpecializationCandidate("denoiser", BASE),
+        GraphSpecializationCandidate("denoiser", BASE),
+    ]
+    with pytest.raises(SelectionError, match="share one graph specialization name"):
         select(rows, _call())
 
 
@@ -245,7 +248,7 @@ def test_realignment_never_moves_admission_and_recast_does() -> None:
     misaligned = _call(timestep=PresentedValue("float32", (), alignment_offset=4))
     recastable = _call(timestep=PresentedValue("int64", ()))
     refused = _call(timestep=PresentedValue("bfloat16", ()))
-    rows = [GraphClassCandidate("denoiser", BASE)]
+    rows = [GraphSpecializationCandidate("denoiser", BASE)]
     assert select(rows, misaligned).outcome is SelectionOutcome.ADMITTED
     assert select(rows, recastable).outcome is SelectionOutcome.ADMITTED
     assert select(rows, refused).outcome is SelectionOutcome.NO_CLASS_ADMITS
@@ -272,7 +275,7 @@ def test_recast_and_realign_gaps_are_named_not_boolean() -> None:
 
 
 def test_describe_call_replays_the_recorded_coordinate() -> None:
-    rows = [GraphClassCandidate("denoiser", BASE)]
+    rows = [GraphSpecializationCandidate("denoiser", BASE)]
     call = describe_call(
         rows,
         (_tensorish("float16", (2, 4, 64, 64)), _tensorish("float32", (), ptr=4)),
@@ -288,7 +291,7 @@ def test_describe_call_replays_the_recorded_coordinate() -> None:
 
 
 def test_describe_call_finds_a_nested_excluded_input() -> None:
-    rows = [GraphClassCandidate("denoiser", BASE)]
+    rows = [GraphSpecializationCandidate("denoiser", BASE)]
     call = describe_call(
         rows,
         (_tensorish("float16", (2, 4, 64, 64)), _tensorish("float32", ())),
@@ -302,7 +305,7 @@ def test_describe_call_finds_a_nested_excluded_input() -> None:
 
 
 def test_describe_call_reports_a_non_tensor_rather_than_omitting_it() -> None:
-    rows = [GraphClassCandidate("denoiser", BASE)]
+    rows = [GraphSpecializationCandidate("denoiser", BASE)]
     call = describe_call(
         rows,
         (_tensorish("float16", (2, 4, 64, 64)), 999),
@@ -314,7 +317,7 @@ def test_describe_call_reports_a_non_tensor_rather_than_omitting_it() -> None:
 
 
 def test_describe_call_omits_an_input_the_call_does_not_carry() -> None:
-    rows = [GraphClassCandidate("denoiser", BASE)]
+    rows = [GraphSpecializationCandidate("denoiser", BASE)]
     call = describe_call(rows, (_tensorish("float16", (2, 4, 64, 64)),), {})
     assert call.feed("timestep") is None
     ranked = select(rows, call).ranked
@@ -329,8 +332,8 @@ def test_describe_call_refuses_two_classes_that_spell_one_name_differently() -> 
         symbols=(("batch", (1, 8)),),
     )
     rows = [
-        GraphClassCandidate("denoiser.a", BASE),
-        GraphClassCandidate("denoiser.b", other),
+        GraphSpecializationCandidate("denoiser.a", BASE),
+        GraphSpecializationCandidate("denoiser.b", other),
     ]
     with pytest.raises(SelectionError, match="different call coordinate"):
         describe_call(rows, (), {})
@@ -343,10 +346,10 @@ def test_a_selection_may_not_carry_a_field_its_outcome_forbids() -> None:
         Selection(
             outcome=SelectionOutcome.ADMITTED,
             selected="denoiser",
-            ranked=(ClassReport("denoiser"),),
+            ranked=(SpecializationReport("denoiser"),),
         )
     with pytest.raises(SelectionError, match="at least two classes"):
-        Selection(outcome=SelectionOutcome.CLASS_AMBIGUOUS, ambiguous=("denoiser",))
+        Selection(outcome=SelectionOutcome.SPECIALIZATION_AMBIGUOUS, ambiguous=("denoiser",))
 
 
 def test_a_presented_value_refuses_an_out_of_range_alignment_offset() -> None:

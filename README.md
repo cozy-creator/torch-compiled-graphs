@@ -32,7 +32,7 @@ The ship-code-as-is surface (2026-08-18 rulings). The author's serving code
 runs untouched; a lane names compile-target attribute paths on the author's
 own objects plus the tensor-layout contract that lane expects checkpoints in.
 Discovery hooks the targets, runs the author's sample invocation, and every
-distinct observed call is one graph class -- the observed ingress set IS the
+distinct observed call is one graph specialization -- the observed ingress set IS the
 graph set. Identity is two-level: `cg-graph-v1` content-hashes the DERIVED
 graph (identical traces dedup; pins are derivation inputs, not name parts),
 and artifacts hang off a graph by env = (resolved lockfile-closure hash, sm).
@@ -83,7 +83,7 @@ from it.
 from tensorfs import LocalCAS
 from torchcg import (
     Engine,
-    GraphClassSpec,
+    GraphSpecialization,
     RuntimeCompatibility,
     build_call_ingress,
 )
@@ -96,7 +96,7 @@ ingress = build_call_ingress(
 )
 graph_interface["pytree"]["ingress"] = ingress.as_dict()
 
-spec = GraphClassSpec(
+spec = GraphSpecialization(
     "denoiser/h=64,w=64",
     "unet",
     exported_program,
@@ -118,13 +118,13 @@ runner.bind(resident_constants, device="cuda")
 outputs = runner(*positional_inputs)
 ```
 
-`graph_interface` carries the current v3 graph-class facts. Its required
+`graph_interface` carries the current v3 graph-specialization facts. Its required
 `pytree.ingress` value is built and decoded only by this package; its digest is
-the graph class's ingress-range digest rather than a caller-supplied second
+the graph specialization's ingress-range digest rather than a caller-supplied second
 identity. The same declaration derives the `cg-key-v1` lookup, mint stamp, and
 admission expectation.
 
-`Engine.compile(spec, runtime, destination)` is the sealed one-class operation
+`Engine.compile(spec, runtime, destination)` is the sealed one-specialization operation
 used by a compile child: it derives its own key and reuses an admitted exact
 record before doing compiler work. A miss compiles one code-only graph under
 the sole v1 compile policy, packages it as a verified artifact, stores it in
@@ -223,12 +223,12 @@ than fetching a moving source branch. Their `authority` strings still read
 renaming it would rekey corpora that peers pin byte-for-byte.
 
 `torchcg.recipe` is the reference implementation of `recipe_v1`, the versioned
-vocabulary for one family's composition: which graph classes make one endpoint's
+vocabulary for one family's composition: which graph specializations make one endpoint's
 compiled pipeline, the loop between them, and the scheduler block that loop runs
 under — including an autoregressive family's `loop.kind: host`, which states the
-per-step classes and the session-state owner and says outright that the
+per-step specializations and the session-state owner and says outright that the
 data-dependent iteration is the host's. It is a vocabulary, not a DSL, and it is
-deliberately class-level: it pins each class by class hash, its exact
+deliberately class-level: it pins each class by specialization hash, its exact
 `CallIngress` value, and the tensor-layout contract it was traced against, never
 by a `cg-key-v1` value and never by a checkpoint, so one machine-independent
 digest is valid on every SKU and the key is folded at adopt time. Typed bindings are generated from a
@@ -258,31 +258,31 @@ overlays, never partition members.
 
 ## Ingress selection
 
-`CallIngress` states what one graph class accepts. `torchcg.selection` states
+`CallIngress` states what one graph specialization accepts. `torchcg.selection` states
 what a serve host does with several of them, as the versioned
 `ingress_selection_v1` corpus plus the reference implementation that produces
 it. A second serve host reads the corpus instead of reverse-engineering Python.
 
-- **Admission is all-or-nothing.** A class admits a call exactly when it has no
-  miss; every miss disqualifies and none merely ranks. Two admitting classes are
-  `class_ambiguous` — a declaration that failed to discriminate them by ingress
+- **Admission is all-or-nothing.** A specialization admits a call exactly when it has no
+  miss; every miss disqualifies and none merely ranks. Two admitting specializations are
+  `specialization_ambiguous` — a declaration that failed to discriminate them by ingress
   is a defect to surface, never a coin to flip.
-- **Ranking orders the classes that already lost.** `miss_distance` is the
-  sorted rung tuple, so the class matching every declared dimension and
+- **Ranking orders the specializations that already lost.** `miss_distance` is the
+  sorted rung tuple, so the specialization matching every declared dimension and
   disagreeing about one scalar fact sorts ahead of one the call does not fit;
-  among equals, fewer complaints wins, and an exact tie breaks on the class
+  among equals, fewer complaints wins, and an exact tie breaks on the specialization
   name. The rungs are ordinal only — nothing may read their values as a score.
 - **Two normalizations, and only two.** A `recast` converts an integer rank-0
   feed to a declared `float32`/`float64` — value-preserving, and the only
   normalization that moves admission. A `realign` stages a non-contiguous or
   non-16-byte-aligned feed; alignment is a performance fact and never
-  disqualifies a class. Per feed at most one applies, and a recast subsumes the
+  disqualifies a specialization. Per feed at most one applies, and a recast subsumes the
   realign it implies. Producing the plan is this contract's; performing it, with
   its buffers and their lifetime, is the host's.
-- **A total miss is `no_class_admits` and a ranking.** What a host does about it
+- **A total miss is `no_specialization_admits` and a ranking.** What a host does about it
   — eager fallback, sticky de-arm, shape-growth reporting, event emission,
   refusal wording — is host policy. The candidate set is the host's too:
-  selection never asks why a class is absent, unarmed, or pending a compile.
+  selection never asks why a specialization is absent, unarmed, or pending a compile.
 
 Selection reads four facts per feed (dtype, shape, contiguity, pointer
 alignment), so the contract is executable without torch and expressible as JSON.
@@ -347,20 +347,20 @@ wheel, and publishes through PyPI Trusted Publishing.
 - `is_compiled_graph_key` validates the shared scheme-agnostic
   `<scheme>-<56 lowercase hex>` boundary grammar. The core derives only
   `cg-key-v1` keys.
-- Graph-class declarations use the current worker facts-v3 fold. The 16-hex
-  canonical body witness and 16-hex class hash are paired collision chokepoints;
-  the graph-class display name does not key.
+- Graph-specialization declarations use the current worker facts-v3 fold. The 16-hex
+  canonical body witness and 16-hex specialization hash are paired collision chokepoints;
+  the graph-specialization display name does not key.
 - `CallIngress` is the closed v1 identity for one exported call. Its builder
   preserves mapping insertion order, flattened sequence positions (including
   non-tensor gaps), the ordered parameter axis (including zero-leaf arguments),
   parameter paths, exported placeholder names, finite symbol bounds, and
   excluded inputs. It is stamped at `graph.pytree.ingress`; its digest is derived
-  and verified by `GraphClassDeclaration`.
+  and verified by `GraphSpecializationDeclaration`.
 - Literal identity is the worker's exact 32-hex v1 value digest and rides inside
   the graph-interface block. Weight values remain excluded. Toolchain identity
   accepts the worker-recorded content block through an explicit adapter seam.
 - Durable values are `StoredCompiledGraph` objects and metadata carries one
-  `graph_class` object. The retired `entry`, `GraphSpec`, `GraphDeclaration`,
+  `graph_specialization` object. The retired `entry`, `GraphSpec`, `GraphDeclaration`,
   and `StoredGraph` shapes have no aliases or readers.
 - `Engine.export_artifact(key, destination)` exports a fully verified artifact
   envelope without exposing ref layout. An occupied or racing destination is
@@ -370,8 +370,8 @@ wheel, and publishes through PyPI Trusted Publishing.
   process-wide capped at `x86-64-v3`; other architectures carry a conservative
   native feature requirement. Unstamped or unsupported artifacts fail closed.
 - `Engine.runner` returns a gated `CompiledGraphRunner`; exact constant-table
-  binding, by-reference lifetime, and one-class call binding are library-owned.
-- `torchcg.selection` owns multi-class selection as the versioned
+  binding, by-reference lifetime, and one-specialization call binding are library-owned.
+- `torchcg.selection` owns multi-specialization selection as the versioned
   `ingress_selection_v1` corpus: admission, the miss-rung ranking, the two
   permitted feed normalizations, and the total-miss outcome. Its typed values
   are closed — `MissReason`, `NormalizationKind` and `SelectionOutcome` are
@@ -388,7 +388,7 @@ wheel, and publishes through PyPI Trusted Publishing.
   declaration module, and it decides nothing: bucket lookup is exact rather than
   ranked, and selection stays with `ingress_selection_v1`.
 
-The package root exposes only the engine lifecycle, graph-class declarations,
+The package root exposes only the engine lifecycle, graph-specialization declarations,
 result/value types, error types, the single `COMPILED_GRAPH_FORMAT` authority,
 and `is_compiled_graph_key`. Introspection helpers remain in their owning
 modules rather than being re-exported as a second facade.

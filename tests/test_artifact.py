@@ -20,7 +20,7 @@ from torchcg import (
     ArtifactError,
     CallIngress,
     CallInput,
-    GraphClassDeclaration,
+    GraphSpecializationDeclaration,
 )
 from torchcg.artifact import (
     ARTIFACT_METADATA_FIELDS,
@@ -75,7 +75,7 @@ def duplicate_metadata(payload: bytes, *, nested: bool) -> tuple[bytes, str]:
     if nested:
         return (
             payload.replace(
-                b'"graph_class":{', b'"graph_class":{"target":"unet",', 1
+                b'"graph_specialization":{', b'"graph_specialization":{"target":"unet",', 1
             ),
             "target",
         )
@@ -116,8 +116,8 @@ def metadata(*, literal: bytes | None = None) -> dict[str, object]:
     }
     if digest:
         graph["literal_values"] = digest
-    declaration = GraphClassDeclaration(
-        graph_class="denoiser/h=64,w=64",
+    declaration = GraphSpecializationDeclaration(
+        name="denoiser/h=64,w=64",
         target="unet",
         graph=graph,
         graph_witness="fedcba9876543210",
@@ -125,15 +125,15 @@ def metadata(*, literal: bytes | None = None) -> dict[str, object]:
         literal_values=digest,
     )
     return build_metadata(
-        graph_class={
-            "name": declaration.graph_class,
+        graph_specialization={
+            "name": declaration.name,
             "target": declaration.target,
-            "class_hash": declaration.class_hash,
+            "specialization_hash": declaration.specialization_hash,
             "graph": dict(declaration.graph),
             "graph_witness": declaration.graph_witness,
             "range_digest": declaration.range_digest,
             "fork": [],
-            "class_dims": [],
+            "specialization_dims": [],
             "strict": True,
             "lora_bucket": 0,
             "literal_values": declaration.literal_values,
@@ -210,7 +210,7 @@ def test_exported_artifact_kind_is_the_kind_validation_writes_and_refuses() -> N
 
     ``ARTIFACT_KIND`` is now defined once in ``identity`` and imported here,
     because two hand-typed copies are how a rename splits two readers with
-    nothing going red — the ``entry``/``graph_class`` outage, one field over.
+    nothing going red — the ``entry``/``graph_specialization`` outage, one field over.
     Every value below is derived from the export, so this follows a deliberate
     rename and fails only when the export and this reader disagree.
     ``identity``'s half of the pair is fenced in ``test_identity.py``.
@@ -325,17 +325,17 @@ def test_payload_is_forbidden_without_declared_literals(tmp_path: Path) -> None:
 
 def test_full_literal_identity_is_allowed_when_the_package_eliminated_every_literal() -> None:
     raw = metadata(literal=struct.pack("<4f", 1.0, 2.0, 3.0, 4.0))
-    graph_class = raw["graph_class"]
-    assert isinstance(graph_class, dict)
-    graph_class["constants"] = []
-    graph_class["literal_payload_values"] = ""
+    graph_specialization = raw["graph_specialization"]
+    assert isinstance(graph_specialization, dict)
+    graph_specialization["constants"] = []
+    graph_specialization["literal_payload_values"] = ""
 
     checked = validate_metadata(raw, has_literals=False)
 
-    checked_graph_class = checked["graph_class"]
-    assert isinstance(checked_graph_class, dict)
-    assert checked_graph_class["literal_values"]
-    assert checked_graph_class["literal_payload_values"] == ""
+    checked_graph_specialization = checked["graph_specialization"]
+    assert isinstance(checked_graph_specialization, dict)
+    assert checked_graph_specialization["literal_values"]
+    assert checked_graph_specialization["literal_payload_values"] == ""
 
 
 def test_unpack_rejects_corrupted_literal_bytes(tmp_path: Path) -> None:
@@ -425,10 +425,10 @@ def test_above_v3_host_isa_is_refused() -> None:
         validate_metadata(raw)
 
 
-def test_class_hash_must_restate_declaration_facts() -> None:
+def test_specialization_hash_must_restate_declaration_facts() -> None:
     raw = metadata()
-    raw["graph_class"]["graph_witness"] = "0" * 16  # type: ignore[index]
-    with pytest.raises(ArtifactError, match="class_hash does not restate"):
+    raw["graph_specialization"]["graph_witness"] = "0" * 16  # type: ignore[index]
+    with pytest.raises(ArtifactError, match="graph specialization hash does not restate"):
         validate_metadata(raw)
 
 
@@ -443,8 +443,8 @@ def test_class_hash_must_restate_declaration_facts() -> None:
 )
 def test_constant_manifest_rows_fail_closed(row: dict[str, object]) -> None:
     raw = metadata()
-    raw["graph_class"]["constants"] = [row]  # type: ignore[index]
-    with pytest.raises(ArtifactError, match="graph_class constant"):
+    raw["graph_specialization"]["constants"] = [row]  # type: ignore[index]
+    with pytest.raises(ArtifactError, match="graph specialization constant"):
         validate_metadata(raw)
 
 

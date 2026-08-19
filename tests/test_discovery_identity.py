@@ -88,7 +88,7 @@ def test_an_edit_that_changes_the_trace_changes_the_hash() -> None:
     assert first.graphs[0].graph != edited.graphs[0].graph
 
 
-def test_two_observed_shapes_are_two_graph_classes() -> None:
+def test_two_observed_shapes_are_two_graph_specializations() -> None:
     host = Host(Scale())
 
     def drive() -> None:

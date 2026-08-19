@@ -1,4 +1,4 @@
-"""Cold AOTI compile comparison on a diffusion-shaped graph class.
+"""Cold AOTI compile comparison on a diffusion-shaped graph specialization.
 
 Run each arm in a fresh process with a fresh ``TORCHINDUCTOR_CACHE_DIR``.
 This harness is intentionally outside the wheel: it measures the library's

@@ -31,7 +31,7 @@ import torch
 from axes import AXES_SCHEMA_VERSION, record_axes, worker_style_toolchain
 from tensorfs import LocalCAS
 
-from torchcg import Engine, GraphClassSpec, RuntimeCompatibility, build_call_ingress
+from torchcg import Engine, GraphSpecialization, RuntimeCompatibility, build_call_ingress
 
 PROBE_LENGTH = 64
 RTOL = 1e-5
@@ -59,7 +59,7 @@ def build_bundle(output: Path, target: str = "cpu") -> None:
     example = torch.linspace(-3.0, 3.0, PROBE_LENGTH, device=device)
     program = torch.export.export(module, (example,))
     ingress = build_call_ingress(program, ("value",), (example,), {})
-    spec = GraphClassSpec(
+    spec = GraphSpecialization(
         "host-fingerprint-probe",
         "portability",
         program,

@@ -25,7 +25,7 @@ from torchcg import (
     ConstantBindingError,
     Engine,
     EnsureOutcome,
-    GraphClassSpec,
+    GraphSpecialization,
     QuarantinedArtifact,
     RuntimeCompatibility,
     StorageError,
@@ -215,7 +215,7 @@ def _fake_compile_package(
             mutate()
         result = package(
             str(workspace / "model.pt2"),
-            {plan.declaration.graph_class: ["wrapper.cpp", "model.so"]},
+            {plan.declaration.name: ["wrapper.cpp", "model.so"]},
         )
         return Path(str(result))
 
@@ -241,13 +241,13 @@ def _default_fake_compile_package(
         monkeypatch.setattr(engine_module, "_compile_package", _fake_compile_package())
 
 
-def _spec_for(program: object) -> GraphClassSpec:
+def _spec_for(program: object) -> GraphSpecialization:
     example_args, example_kwargs = program.example_inputs  # type: ignore[attr-defined]
     ingress = build_call_ingress(program, ("value",), example_args, example_kwargs)
-    return GraphClassSpec("model", "denoiser", program, ingress)
+    return GraphSpecialization("model", "denoiser", program, ingress)
 
 
-def _spec() -> GraphClassSpec:
+def _spec() -> GraphSpecialization:
     program = torch.export.export(Double(), (torch.ones(4096),))
     return _spec_for(program)
 
@@ -300,7 +300,7 @@ def test_fresh_engine_reuses_the_local_store_without_compiling(tmp_path: Path) -
     assert first.outcome == EnsureOutcome.MINTED
     assert first.compiled_graph.package.is_file()
 
-    def must_not_construct() -> GraphClassSpec:
+    def must_not_construct() -> GraphSpecialization:
         raise AssertionError("restart reuse invoked the lazy recipe")
 
     second = Engine(LocalCAS(cas_root)).ensure(
@@ -388,7 +388,7 @@ def test_cache_hit_rejects_requested_runtime_mismatch_without_recipe(
         recipe=lambda: spec,
     )
 
-    def forbidden_recipe() -> GraphClassSpec:
+    def forbidden_recipe() -> GraphSpecialization:
         raise AssertionError("mismatched cache hit invoked recipe")
 
     with pytest.raises(AdmissionError, match=pattern):
@@ -631,11 +631,11 @@ def test_compile_allows_an_eliminated_literal_whose_value_is_keyed(tmp_path: Pat
         spec, _runtime(), tmp_path / "compiled"
     )
 
-    graph_class = result.compiled_graph.metadata["graph_class"]
-    assert isinstance(graph_class, dict)
-    assert graph_class["literal_values"] == spec.declare().literal_values
-    assert graph_class["literal_payload_values"] == ""
-    assert graph_class["constants"] == []
+    graph_specialization = result.compiled_graph.metadata["graph_specialization"]
+    assert isinstance(graph_specialization, dict)
+    assert graph_specialization["literal_values"] == spec.declare().literal_values
+    assert graph_specialization["literal_payload_values"] == ""
+    assert graph_specialization["constants"] == []
     assert result.compiled_graph.literals is None
 
 
@@ -653,11 +653,11 @@ def test_compile_authenticates_only_the_surviving_literal_payload(
         spec, _runtime(), tmp_path / "compiled"
     )
 
-    graph_class = result.compiled_graph.metadata["graph_class"]
-    assert isinstance(graph_class, dict)
-    assert graph_class["literal_values"] == spec.declare().literal_values
-    assert graph_class["literal_payload_values"]
-    assert graph_class["literal_payload_values"] != graph_class["literal_values"]
+    graph_specialization = result.compiled_graph.metadata["graph_specialization"]
+    assert isinstance(graph_specialization, dict)
+    assert graph_specialization["literal_values"] == spec.declare().literal_values
+    assert graph_specialization["literal_payload_values"]
+    assert graph_specialization["literal_payload_values"] != graph_specialization["literal_values"]
     assert result.compiled_graph.literals is not None
     assert set(load_file(result.compiled_graph.literals)) == {"first"}
 
@@ -669,9 +669,9 @@ def test_compile_allows_package_only_computed_constants(
 
     result = Engine(LocalCAS(tmp_path / "cas")).compile(_spec(), _runtime(), tmp_path / "compiled")
 
-    graph_class = result.compiled_graph.metadata["graph_class"]
-    assert isinstance(graph_class, dict)
-    assert graph_class["constants"] == [
+    graph_specialization = result.compiled_graph.metadata["graph_specialization"]
+    assert isinstance(graph_specialization, dict)
+    assert graph_specialization["constants"] == [
         {"fqn": "folded", "source": "computed", "dtype": "float32", "shape": [2]}
     ]
 
@@ -800,7 +800,7 @@ def test_real_nested_call_ingress_runs_after_interpreter_restart(tmp_path: Path)
     params = ("sample", "conditioning", "shape", "return_dict", "tail")
     program = torch.export.export(NestedRuntime(), args, {}, strict=True)
     ingress = build_call_ingress(program, params, args, {})
-    spec = GraphClassSpec("nested", "denoiser", program, ingress)
+    spec = GraphSpecialization("nested", "denoiser", program, ingress)
     cas_root = tmp_path / "cas"
     result = Engine(LocalCAS(cas_root)).compile(spec, _runtime(), tmp_path / "compiled")
 
@@ -815,9 +815,9 @@ from torchcg import CallIngress, Engine
 engine = Engine(LocalCAS(Path(sys.argv[1])))
 resolved = engine.resolve(sys.argv[2], Path(sys.argv[3]) / "resolved")
 assert resolved is not None
-graph_class = resolved.metadata["graph_class"]
-assert isinstance(graph_class, dict)
-graph = graph_class["graph"]
+graph_specialization = resolved.metadata["graph_specialization"]
+assert isinstance(graph_specialization, dict)
+graph = graph_specialization["graph"]
 assert isinstance(graph, dict)
 ingress = CallIngress.from_graph(graph)
 runner = engine.runner(sys.argv[2], Path(sys.argv[3]) / "runner")
