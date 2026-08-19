@@ -50,18 +50,31 @@ TOOLCHAIN = {
     "triton": "triton-record-v1",
 }
 SAMPLE = torch.tensor([[1.0, -2.0, 3.0, -4.0]])
+CONTEXT = torch.tensor([[0.5, 0.25, -0.5, 2.0]])
 
 
 class TinyUnet(torch.nn.Module):
-    """Real parameters, deliberately: an empty constant buffer is only
-    detectable against a module whose weights actually move the answer."""
+    """Real parameters and a KEYWORD argument, both deliberately.
+
+    * Real parameters, because an empty constant buffer is only detectable
+      against a module whose weights actually move the answer.
+    * A keyword argument, because tcg#61: the loaded package is torch's
+      ``AOTICompiledModel`` and its ``__call__`` re-flattens with the
+      export's own ``in_spec``, so it wants the author's call SHAPE. A module
+      whose forward takes one positional tensor cannot tell a correct
+      implementation from one that pre-flattens the call itself — both work.
+      The first real artifact this ran against had five keyword arguments and
+      answered with ``ValueError: Ran into a kwarg keyword mismatch``.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.proj = torch.nn.Linear(4, 4)
 
-    def forward(self, sample: torch.Tensor) -> torch.Tensor:
-        out: torch.Tensor = self.proj(sample)
+    def forward(
+        self, sample: torch.Tensor, *, encoder_hidden_states: torch.Tensor
+    ) -> torch.Tensor:
+        out: torch.Tensor = self.proj(sample) + encoder_hidden_states
         return out * 3.0
 
 
@@ -76,7 +89,7 @@ def adopted(tmp_path: Path) -> Any:
 
     torch.manual_seed(0)
     pipe = SimpleNamespace(unet=TinyUnet())
-    eager = pipe.unet(SAMPLE).detach().clone()
+    eager = pipe.unet(SAMPLE, encoder_hidden_states=CONTEXT).detach().clone()
 
     programs: dict[str, Any] = {}
 
@@ -85,7 +98,7 @@ def adopted(tmp_path: Path) -> Any:
         return f"sha256:{graph[-16:]:0>64}"
 
     def drive() -> None:
-        pipe.unet(SAMPLE)
+        pipe.unet(SAMPLE, encoder_hidden_states=CONTEXT)
 
     lane = discover_lane(
         CONTRACT, ("pipe.unet",), {"pipe": pipe}, drive, program_sink=sink
@@ -137,7 +150,7 @@ def test_the_adopted_graph_returns_the_eager_answer(adopted: Any) -> None:
     assert adopted.session.holes == (), f"unexpected holes: {adopted.session.holes}"
     assert [row.graph for row in adopted.session.adopted] == [adopted.record.graph]
 
-    out = adopted.pipe.unet(SAMPLE)
+    out = adopted.pipe.unet(SAMPLE, encoder_hidden_states=CONTEXT)
     torch.testing.assert_close(out, adopted.eager)
 
 
@@ -151,7 +164,7 @@ def test_the_call_went_through_the_compiled_graph_and_not_the_eager_forward(
     assert isinstance(armed, serve.CompiledGraphCall)
     assert armed.runner.calls == 0
 
-    adopted.pipe.unet(SAMPLE)
+    adopted.pipe.unet(SAMPLE, encoder_hidden_states=CONTEXT)
 
     assert armed.runner.calls == 1
 
@@ -199,7 +212,8 @@ def test_a_module_on_the_wrong_device_is_a_hole_and_not_a_wrong_answer(
     assert reason.startswith("ConstantBindingError:"), reason
     assert "placement" in reason, reason
     # And the module still serves, eagerly, with the right answer.
-    torch.testing.assert_close(adopted.pipe.unet(SAMPLE), adopted.eager)
+    torch.testing.assert_close(
+        adopted.pipe.unet(SAMPLE, encoder_hidden_states=CONTEXT), adopted.eager)
 
 
 def test_a_raw_unbound_load_refuses_instead_of_serving_garbage(
@@ -217,7 +231,7 @@ def test_a_raw_unbound_load_refuses_instead_of_serving_garbage(
 
     runner = CompiledGraphRunner._from_verified_graph(graph)
     with pytest.raises(ConstantBindingError) as caught:
-        runner(SAMPLE)
+        runner(SAMPLE, encoder_hidden_states=CONTEXT)
     assert caught.value.reason == "constants_unbound"
 
 
