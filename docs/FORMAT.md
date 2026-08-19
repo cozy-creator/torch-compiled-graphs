@@ -14,11 +14,11 @@ SHA-256(canonical JSON({graph, sm, toolchain}))
 
 The three axes are exhaustive:
 
-- `graph`: the 16-hex graph-class hash of the current facts-v3 fold. It binds
-  target, fork, class dimensions, the derived call-ingress digest,
+- `graph`: the 16-hex graph-specialization hash of the current facts-v3 fold. It binds
+  target, fork, specialization dimensions, the derived call-ingress digest,
   graph-interface facts,
   the 16-hex canonical body witness, strictness, LoRA bucket, and multi-device
-  placement when present. The display graph-class name does not key;
+  placement when present. The display graph-specialization name does not key;
 - `sm`: the concrete CUDA compute capability or CPU target; and
 - `toolchain`: the 16-hex current-worker digest of an explicit recorded
   compiler-content block. The block carries the settings declaration,
@@ -37,11 +37,11 @@ The artifact is a deterministic gzip-compressed USTAR archive with exactly:
 ```text
 metadata.json
 model.pt2
-constants.safetensors  # present only when the graph class declares literals
+constants.safetensors  # present only when the graph specialization declares literals
 ```
 
 All tar timestamps and ownership fields and the gzip timestamp are zero.
-`metadata.json` is sorted compact ASCII JSON. The package is one graph class,
+`metadata.json` is sorted compact ASCII JSON. The package is one graph specialization,
 not a bundle.
 
 Required top-level metadata includes:
@@ -49,18 +49,18 @@ Required top-level metadata includes:
 - `compiled_graph_format: 1`;
 - `kind: "aot-inductor"`;
 - `compiled_graph_key`, which must be exactly derivable from the recorded facts;
-- `graph_class`, with non-empty `name`, `target`, `class_hash`,
+- `graph_specialization`, with non-empty `name`, `target`, `specialization_hash`,
   `graph_witness`, and `range_digest`; a non-empty `graph` interface object
   whose `pytree.ingress` is the exact closed CallIngress v1 value;
-  canonical `fork`, `class_dims`, `strict`, `lora_bucket`, and `placement`
-  facts; plus `literal_values` and a `constants` array. `class_hash` must be
+  canonical `fork`, `specialization_dims`, `strict`, `lora_bucket`, and `placement`
+  facts; plus `literal_values` and a `constants` array. `specialization_hash` must be
   recomputable from the exact facts-v3 fold;
 - non-empty `sm` and worker-recorded `toolchain` facts;
 - a separate `host_isa` requirement;
 - `package_constants_in_so: false`; and
 - `constant_folding_fenced: true`.
 
-Those are the exact v1 top-level and graph-class fields; extensions and abandoned
+Those are the exact v1 top-level and graph-specialization fields; extensions and abandoned
 pre-launch shapes are refused. Readers reject missing, duplicate, non-file, or
 unexpected archive members and materialize only into a new directory.
 
@@ -121,7 +121,7 @@ Package release versions are ordinary SemVer and start at `0.1.0`. They are
 independent from this internal v1. Before launch, this one accepted v1 may be
 replaced in place; the package does not carry dual readers or writers.
 
-A compiled graph contains one graph class. This format therefore emits no
+A compiled graph contains one graph specialization. This format therefore emits no
 bundle list. Any layer that groups several compiled graphs names that list
 `compiled_graph_manifest`; tensorfs's generic `RepositoryManifest` remains a
 byte-storage record and is not the compiled-graph bundle contract.

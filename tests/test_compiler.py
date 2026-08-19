@@ -131,7 +131,7 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "ArtifactCandidate",
         "CallIngress",
         "CallInput",
-        "ClassReport",
+        "SpecializationReport",
         "CompiledGraphKey",
         "CompiledGraphRunner",
         "DOCUMENT_FORMAT",
@@ -142,7 +142,7 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "EnvironmentMismatch",
         "LaneRef",
         "FeedNormalization",
-        "GRAPH_CLASS_BLOCK",
+        "GRAPH_SPECIALIZATION_BLOCK",
         "GRAPH_SCHEME",
         "GraphIdentityError",
         "GraphRecord",
@@ -162,10 +162,10 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "Engine",
         "EnsureOutcome",
         "EnsureResult",
-        "GraphClassCandidate",
-        "GraphClassDeclaration",
+        "GraphSpecializationCandidate",
+        "GraphSpecializationDeclaration",
         "GRAPH_INTERFACE_FORMAT",
-        "GraphClassSpec",
+        "GraphSpecialization",
         "IdentityError",
         "IngressError",
         "IngressMiss",
@@ -206,7 +206,7 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "program",
     )
     assert tuple(inspect.signature(compiler_module._package_compiled_files).parameters) == (
-        "graph_class",
+        "name",
         "files",
         "output",
     )
@@ -271,7 +271,7 @@ def test_packager_receives_exactly_one_named_graph(
 def test_compile_inputs_are_derived_so_a_demoted_program_still_compiles() -> None:
     """pgw#1465: the derive drops example_inputs, and the compile must not care.
 
-    This is the red arm for a P0 that took all 14 sd1.5 graph classes to 0/14.
+    This is the red arm for a P0 that took all 14 sd1.5 graph specializations to 0/14.
     `_demote_example_inputs` was right -- a hollow trace's example inputs pickle
     `_reconstruct_fake_tensor`, which torch's OWN loader refuses under
     `weights_only=True`, so a blob that kept them could not be reloaded on ANY
@@ -289,7 +289,7 @@ def test_compile_inputs_are_derived_so_a_demoted_program_still_compiles() -> Non
     from torchcg.compiler import _compile_inputs
     from torchcg.discovery import _demote_example_inputs
 
-    class Nested(torch.nn.Module):  # type: ignore[misc]
+    class Nested(torch.nn.Module):  # type: ignore[misc,name-defined]
         def __init__(self) -> None:
             super().__init__()
             self.lin = torch.nn.Linear(4, 4)

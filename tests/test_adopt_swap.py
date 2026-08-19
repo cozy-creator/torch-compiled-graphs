@@ -62,7 +62,7 @@ CONTRACT = "tiny.plain-fp32@1"
 
 
 def discover(pipe: SimpleNamespace, *, flags: tuple[bool, ...] = (False,)) -> GraphSetDocument:
-    """One real derive pass: each (shape, flag) sample is a graph class."""
+    """One real derive pass: each (shape, flag) sample is a graph specialization."""
 
     def drive() -> None:
         for flag in flags:
@@ -124,7 +124,7 @@ def test_partial_hit_arms_the_marked_module_and_states_the_holes(
 ) -> None:
     document = discover(pipe)
     lane = document.lanes[0]
-    assert len(lane.graphs) == 2  # two shapes -> two graph classes
+    assert len(lane.graphs) == 2  # two shapes -> two graph specializations
     hit, hole = lane.graphs[0], lane.graphs[1]
     publish(store, tmp_path, hit.graph, b"compiled-bytes")
 
@@ -287,7 +287,7 @@ def test_two_graphs_with_one_tensor_structure_disarm_each_other(
     pipe: SimpleNamespace, store: LocalGraphStore, tmp_path: Path
 ) -> None:
     # Same tensor feeds, different baked-in literal (`doubled`): two real
-    # graph classes the dispatcher cannot tell apart at call time.
+    # graph specializations the dispatcher cannot tell apart at call time.
     document = discover(pipe, flags=(False, True))
     lane = document.lanes[0]
     assert len(lane.graphs) == 4

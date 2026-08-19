@@ -1,7 +1,7 @@
 # Compile-policy evidence
 
 `compare_compile_threads.py` exports and AOTI-compiles a diffusion-shaped UNet
-graph class: convolutions, timestep MLP, normalization, cross-attention,
+graph specialization: convolutions, timestep MLP, normalization, cross-attention,
 downsample and upsample. It is deliberately outside the wheel and accepts only
 the two measurement arms; the production compiler has no options surface.
 

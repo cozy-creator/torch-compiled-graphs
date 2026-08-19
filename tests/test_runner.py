@@ -44,7 +44,7 @@ def _graph(tmp_path: Path, constants: list[dict[str, object]]) -> StoredCompiled
     return StoredCompiledGraph(
         "cg-key-v1-" + "0" * 56,
         directory,
-        {"graph_class": {"name": "denoiser", "constants": constants}},
+        {"graph_specialization": {"name": "denoiser", "constants": constants}},
         CASRef.parse("sha256:" + "1" * 64),
     )
 
@@ -247,8 +247,8 @@ def test_package_load_nested_oom_is_typed(tmp_path: Path, monkeypatch: pytest.Mo
     class OutOfMemoryError(RuntimeError):
         pass
 
-    def fail(path: Path, graph_class: str) -> Any:
-        del path, graph_class
+    def fail(path: Path, graph_specialization: str) -> Any:
+        del path, graph_specialization
         try:
             raise OutOfMemoryError("CUDA out of memory")
         except OutOfMemoryError as exc:

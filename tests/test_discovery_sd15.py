@@ -40,7 +40,7 @@ def test_one_lane_discovers_the_observed_graph_set(document: GraphSetDocument) -
     assert lane.unobserved_targets == ()
     by_target = {record.target for record in lane.graphs}
     assert by_target == {"unet", "vae.decoder"}
-    # Two denoising steps at one shape dedup to ONE unet graph class.
+    # Two denoising steps at one shape dedup to ONE unet graph specialization.
     assert len(lane.graphs) == 2
     for record in lane.graphs:
         assert record.graph.startswith("cg-graph-v1-")

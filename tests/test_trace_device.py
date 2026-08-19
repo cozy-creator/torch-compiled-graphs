@@ -3,7 +3,7 @@
 The defect this closes cost four escalating attempts, each defeated by a
 different layer, and terminated in AOTInductor's own internal ``Expected: cpu,
 Got: cuda:0`` -- an assertion that fires minutes into a compile and names no
-graph class. hollow.py had claimed to be "device-neutral" while emitting
+graph specialization. hollow.py had claimed to be "device-neutral" while emitting
 device-CPU artifacts; the trace stamps a concrete device into every node's
 meta, so there was nothing neutral about it.
 
@@ -27,7 +27,7 @@ from torch._subclasses.fake_tensor import FakeTensorMode  # noqa: E402
 
 from torchcg import (  # noqa: E402
     DeclarationError,
-    GraphClassSpec,
+    GraphSpecialization,
     RuntimeCompatibility,
     build_call_ingress,
     graph_hash,
@@ -90,7 +90,7 @@ def _placement(program: Any) -> list[str]:
 
 def _declare(program: Any, example: Any) -> Any:
     ingress = build_call_ingress(program, ("value",), (example,), {})
-    return GraphClassSpec("tiny", "denoiser", program, ingress).declare()
+    return GraphSpecialization("tiny", "denoiser", program, ingress).declare()
 
 
 def test_a_cuda_trace_needs_no_visible_gpu_and_is_uniformly_placed() -> None:
@@ -111,7 +111,7 @@ def test_faking_a_constant_would_collide_two_models_and_does_not() -> None:
 
     ``graph_hash`` folds ``_literal_digest`` in, so a graph whose lifted
     constants were left FAKE keys off a table of zeros -- and every model
-    differing only in its constants becomes one graph class. This is the red
+    differing only in its constants becomes one graph specialization. This is the red
     arm: without ``restore_constants`` these two hashes are equal.
     """
 
@@ -123,7 +123,7 @@ def test_faking_a_constant_would_collide_two_models_and_does_not() -> None:
         return graph_hash(exported, build_call_ingress(exported, ("value",), (example,), {}))
 
     first, second = identity([1.0, 2.0]), identity([7.0, 9.0])
-    assert first != second, "faked constants collapsed two models into one graph class"
+    assert first != second, "faked constants collapsed two models into one graph specialization"
     assert identity([1.0, 2.0]) == first, "graph identity is not deterministic"
     assert program.constants["table"].tolist() == [1.0, 2.0]
     assert not isinstance(program.constants["table"], torch._subclasses.fake_tensor.FakeTensor)
@@ -153,7 +153,7 @@ def test_a_cpu_mint_of_a_cuda_trace_refuses_by_name_before_compiling() -> None:
         runtime.key(declaration)
 
 
-def test_device_is_not_arch_so_a_cpu_trace_is_a_different_graph_class() -> None:
+def test_device_is_not_arch_so_a_cpu_trace_is_a_different_graph_specialization() -> None:
     """cpu and cuda traces are different GRAPHS; sm never enters graph identity."""
 
     _, cuda_program, cuda_example = _derive("cuda", [1.0, 2.0])
@@ -161,7 +161,7 @@ def test_device_is_not_arch_so_a_cpu_trace_is_a_different_graph_class() -> None:
     cuda_declaration = _declare(cuda_program, cuda_example)
     cpu_declaration = _declare(cpu_program, cpu_example)
 
-    assert cuda_declaration.class_hash != cpu_declaration.class_hash
+    assert cuda_declaration.specialization_hash != cpu_declaration.specialization_hash
     assert cpu_declaration.device_types == ("cpu",)
     # The cpu runtime keys the cpu graph without complaint: the refusal is
     # about the DEVICE class, never about the arch.
