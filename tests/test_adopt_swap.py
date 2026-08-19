@@ -22,13 +22,12 @@ from tensorfs import LocalCAS
 from torchcg.adopt import HOLE_MISS, AdoptError, AdoptSession
 from torchcg.discovery import discover_lane
 from torchcg.document import GraphRecord, GraphSetDocument
-from torchcg.graph_identity import EnvIdentity, closure_hash
+from torchcg.graph_identity import EnvIdentity
 from torchcg.requirements import EnvironmentMismatch, RequirementsManifest
 from torchcg.store import LocalGraphStore, PublishOutcome, StoreError
 
 SM = "sm_89"
-INSTALLED = {"torch": torch.__version__, "example-lib": "1.0.0"}
-CLOSURE = closure_hash(INSTALLED)
+STACK: tuple[tuple[str, str], ...] = (("torch", torch.__version__),)
 
 
 class TinyUnet(torch.nn.Module):
@@ -70,7 +69,7 @@ def discover(pipe: SimpleNamespace, *, flags: tuple[bool, ...] = (False,)) -> Gr
             pipe.unet(torch.zeros(2, 4), doubled=flag)
 
     lane_graphs = discover_lane(CONTRACT, ("pipe.unet",), {"pipe": pipe}, drive)
-    return GraphSetDocument(closure=CLOSURE, lanes=(lane_graphs,))
+    return GraphSetDocument(stack=STACK, lanes=(lane_graphs,))
 
 
 def manifest() -> RequirementsManifest:
@@ -85,7 +84,7 @@ def store(tmp_path: Path) -> LocalGraphStore:
 def publish(store: LocalGraphStore, tmp_path: Path, graph: str, payload: bytes) -> Path:
     artifact = tmp_path / f"mint-{graph[-8:]}.so"
     artifact.write_bytes(payload)
-    store.publish_artifact(graph, EnvIdentity(closure=CLOSURE, sm=SM), artifact, manifest())
+    store.publish_artifact(graph, EnvIdentity(stack=STACK, sm=SM), artifact, manifest())
     return artifact
 
 
@@ -119,12 +118,12 @@ def session_for(
     document: GraphSetDocument,
     markers: dict[str, torch.Tensor],
     tmp_path: Path,
-    installed: dict[str, str] | None = None,
+    stack: tuple[tuple[str, str], ...] | None = None,
 ) -> AdoptSession:
     return AdoptSession(
         store, document, CONTRACT, SM,
         loader=stub_loader(markers), artifacts_dir=tmp_path / "adopted",
-        installed=installed if installed is not None else INSTALLED,
+        stack=stack if stack is not None else STACK,
     )
 
 
@@ -221,8 +220,8 @@ def test_exact_env_mismatch_refuses_loudly_at_session_construction(
     document = discover(pipe)
     with pytest.raises(EnvironmentMismatch) as excinfo:
         session_for(store, document, {}, tmp_path,
-                    installed={**INSTALLED, "torch": "0.0.0-divergent"})
-    assert "build-system bug" in str(excinfo.value)
+                    stack=(("torch", "0.0.0-divergent"),))
+    assert "torch 0.0.0-divergent != stamped" in str(excinfo.value)
     # Refused BEFORE any adopt call could run: no instance forward installed.
     assert "forward" not in pipe.unet.__dict__
 
@@ -271,7 +270,7 @@ def test_an_unreadable_store_row_is_a_hole_not_a_boot_failure(
     session = AdoptSession(
         OneBadRow(), document, CONTRACT, SM,
         loader=stub_loader(markers), artifacts_dir=tmp_path / "adopted",
-        installed=INSTALLED,
+        stack=STACK,
     )
     pipe.unet = session.adopt(pipe.unet)
     assert session.adopted == (first,)
@@ -285,11 +284,11 @@ def test_missing_lane_and_eager_permanent_documents_refuse_typed(
     document = discover(pipe)
     with pytest.raises(AdoptError, match="no lane 'other.fp8@1'"):
         AdoptSession(store, document, "other.fp8@1", SM, loader=stub_loader({}),
-                     artifacts_dir=tmp_path / "a", installed=INSTALLED)
-    eager = GraphSetDocument(closure=CLOSURE, lanes=())
+                     artifacts_dir=tmp_path / "a", stack=STACK)
+    eager = GraphSetDocument(stack=STACK, lanes=())
     with pytest.raises(AdoptError, match="eager-permanent"):
         AdoptSession(store, eager, CONTRACT, SM, loader=stub_loader({}),
-                     artifacts_dir=tmp_path / "a", installed=INSTALLED)
+                     artifacts_dir=tmp_path / "a", stack=STACK)
 
 
 def test_two_graphs_with_one_tensor_structure_disarm_each_other(

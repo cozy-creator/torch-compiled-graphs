@@ -24,7 +24,7 @@ from tensorfs import LocalCAS  # noqa: E402
 
 from torchcg.discovery import discover_lane  # noqa: E402
 from torchcg.document import GraphSetDocument  # noqa: E402
-from torchcg.graph_identity import EnvIdentity, closure_hash  # noqa: E402
+from torchcg.graph_identity import EnvIdentity  # noqa: E402
 from torchcg.requirements import RequirementsManifest  # noqa: E402
 from torchcg.store import LocalGraphStore, PublishOutcome, holes  # noqa: E402
 
@@ -99,7 +99,7 @@ def test_lifecycle_continues_into_the_store(
     assert fetched is not None and fetched.encode() == document.encode()
 
     (lane,) = fetched.lanes
-    env = EnvIdentity(closure=fetched.closure, sm="sm_89")
+    env = fetched.env("sm_89")
     assert holes(store, lane, env) == tuple(record.graph for record in lane.graphs)
 
     minted = tmp_path / "minted.tar.gz"
@@ -118,10 +118,10 @@ def test_lifecycle_continues_into_the_store(
     )
 
 
-def test_closure_hash_matches_between_lock_statement_and_installed() -> None:
-    """Same entries, any spelling of the names: one env hash."""
+def test_the_document_states_the_running_stack() -> None:
+    """The document's env half is a compile stack, and torch is in it."""
 
-    entries = {"Foo_Bar": "1.0", "qux": "2.0"}
-    assert closure_hash(entries) == closure_hash(
-        {"foo-bar": "1.0", "qux": "2.0"}
-    )
+    from sd15_tiny import discover_document
+
+    stack = dict(discover_document().stack)
+    assert "torch" in stack and stack["torch"]

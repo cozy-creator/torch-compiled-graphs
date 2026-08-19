@@ -13,14 +13,14 @@ import pytest
 from tensorfs import LocalCAS
 
 from torchcg.document import DocumentError, GraphRecord, GraphSetDocument, LaneGraphs
-from torchcg.graph_identity import EnvIdentity, closure_hash
+from torchcg.graph_identity import EnvIdentity
 from torchcg.ingress import CallIngress, CallInput
 from torchcg.lane import LaneError, LaneRef, require_targets, resolve_target
 from torchcg.requirements import RequirementsManifest
 from torchcg.store import LocalGraphStore, PublishOutcome, StoreError, holes
 
-CLOSURE = closure_hash({"torch": "2.13.0"})
-ENV = EnvIdentity(closure=CLOSURE, sm="sm_89")
+STACK = (("torch", "2.13.0"),)
+ENV = EnvIdentity(stack=STACK, sm="sm_89")
 
 
 def ingress() -> CallIngress:
@@ -94,12 +94,12 @@ class TestLane:
 
 class TestDocument:
     def test_document_bytes_are_canonical_and_roundtrip(self) -> None:
-        document = GraphSetDocument(closure=CLOSURE, lanes=(lane_graphs("a", "b"),))
+        document = GraphSetDocument(stack=STACK, lanes=(lane_graphs("a", "b"),))
         assert GraphSetDocument.decode(document.encode()) == document
         assert GraphSetDocument.decode(document.encode()).encode() == document.encode()
 
     def test_empty_document_is_the_stated_eager_marker(self) -> None:
-        document = GraphSetDocument(closure=CLOSURE)
+        document = GraphSetDocument(stack=STACK)
         assert document.eager_permanent
         assert GraphSetDocument.decode(document.encode()).eager_permanent
 
@@ -124,11 +124,11 @@ class TestLocalGraphStore:
 
     def test_graphset_roundtrip_and_replace(self, store: LocalGraphStore) -> None:
         assert store.get_graphs("release-1") is None
-        document = GraphSetDocument(closure=CLOSURE, lanes=(lane_graphs("a"),))
+        document = GraphSetDocument(stack=STACK, lanes=(lane_graphs("a"),))
         store.put_graphs("release-1", document)
         fetched = store.get_graphs("release-1")
         assert fetched is not None and fetched.encode() == document.encode()
-        replacement = GraphSetDocument(closure=CLOSURE, lanes=(lane_graphs("b"),))
+        replacement = GraphSetDocument(stack=STACK, lanes=(lane_graphs("b"),))
         store.put_graphs("release-1", replacement)
         fetched = store.get_graphs("release-1")
         assert fetched is not None and fetched.encode() == replacement.encode()
@@ -155,7 +155,7 @@ class TestLocalGraphStore:
         # Partial-hit: only the unminted graph remains a hole.
         assert holes(store, lane, ENV) == (graph("b"),)
         # A different env is a different position entirely.
-        other_env = EnvIdentity(closure=CLOSURE, sm="sm_86")
+        other_env = EnvIdentity(stack=STACK, sm="sm_86")
         assert holes(store, lane, other_env) == (graph("a"), graph("b"))
 
         fetched = store.fetch_artifact(graph("a"), ENV, tmp_path / "out" / "a.tar.gz")
