@@ -20,10 +20,10 @@ pytest.importorskip("transformers")
 
 import sd15_tiny  # noqa: E402
 import torch  # noqa: E402
+from stackfixture import local_stack  # noqa: E402
 
 from torchcg.discovery import discover_lane  # noqa: E402
 from torchcg.document import GraphSetDocument  # noqa: E402
-from stackfixture import local_stack  # noqa: E402
 from torchcg.hollow import (  # noqa: E402
     HollowError,
     hollow_session,

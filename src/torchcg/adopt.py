@@ -31,7 +31,6 @@ from typing import TYPE_CHECKING, Any
 
 from .artifact import ArtifactError
 from .document import GraphRecord, GraphSetDocument, LaneGraphs
-from .graph_identity import EnvIdentity
 from .requirements import assert_exact_env
 from .runner import ConstantBindingError
 from .store import GraphStore, StoreError
