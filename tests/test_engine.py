@@ -244,17 +244,7 @@ def _default_fake_compile_package(
 def _spec_for(program: object) -> GraphClassSpec:
     example_args, example_kwargs = program.example_inputs  # type: ignore[attr-defined]
     ingress = build_call_ingress(program, ("value",), example_args, example_kwargs)
-    return GraphClassSpec(
-        "model",
-        "denoiser",
-        program,
-        {
-            "v": 3,
-            "lifted_inputs": [],
-            "pytree": {"in": "leaf", "out": "leaf", "ingress": ingress.as_dict()},
-            "specialization": {},
-        },
-    )
+    return GraphClassSpec("model", "denoiser", program, ingress)
 
 
 def _spec() -> GraphClassSpec:
@@ -630,7 +620,7 @@ def test_compile_refuses_a_package_constant_the_program_never_lifted(
 ) -> None:
     monkeypatch.setattr(engine_module, "_compile_package", _fake_compile_package(literal_packager))
 
-    with pytest.raises(AdmissionError, match="declares.*never lifted.*table"):
+    with pytest.raises(AdmissionError, match="not in the exported program.*table"):
         Engine(LocalCAS(tmp_path / "cas")).compile(_spec(), _runtime(), tmp_path / "refused")
 
 
@@ -810,13 +800,7 @@ def test_real_nested_call_ingress_runs_after_interpreter_restart(tmp_path: Path)
     params = ("sample", "conditioning", "shape", "return_dict", "tail")
     program = torch.export.export(NestedRuntime(), args, {}, strict=True)
     ingress = build_call_ingress(program, params, args, {})
-    graph = {
-        "v": 3,
-        "lifted_inputs": [],
-        "pytree": {"in": "nested", "out": "leaf", "ingress": ingress.as_dict()},
-        "specialization": {},
-    }
-    spec = GraphClassSpec("nested", "denoiser", program, graph)
+    spec = GraphClassSpec("nested", "denoiser", program, ingress)
     cas_root = tmp_path / "cas"
     result = Engine(LocalCAS(cas_root)).compile(spec, _runtime(), tmp_path / "compiled")
 
