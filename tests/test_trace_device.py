@@ -373,3 +373,35 @@ def test_the_restate_survives_the_SESSION_it_runs_inside() -> None:
     assert stored, "discovery observed nothing"
     for program in stored.values():
         assert _placement(program) == ["cuda:0"]
+
+
+def test_the_restate_leaves_the_LIVE_MODULE_where_the_drive_put_it() -> None:
+    """A non-strict export shares its tensors with the module it exported.
+
+    The same FakeTensor object is the module's parameter, the program's
+    state-dict entry and a placeholder's ``meta['val']``. Re-homing it by
+    assignment re-homed the live module, and the NEXT observed call of the
+    same target then exported cuda parameters against cpu synthesized inputs
+    -- ``FakeTensorDeviceMismatchError: cpu and cuda:0``, raised from a module
+    nobody moved. It survived sd1.5 and sdxl (one observed call per target per
+    pass) and was caught by a fixture with two.
+    """
+
+    session = HollowSession(
+        fake_mode=FakeTensorMode(allow_non_fake_inputs=True), device="cuda"
+    )
+    module = Tiny([1.0, 2.0])
+    virtualize_parameters(module, session)
+
+    for _ in range(2):
+        assert next(module.parameters()).device.type == "cpu"
+        with session.fake_mode:
+            program = torch.export.export(
+                module, (torch.zeros((2, 4), dtype=torch.float32, device="cpu"),)
+            )
+        session.restate(program)
+        assert _placement(program) == ["cuda:0"]
+
+    assert next(module.parameters()).device.type == "cpu", (
+        "the restate re-homed the module it was handed a program of"
+    )
