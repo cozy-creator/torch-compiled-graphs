@@ -9,9 +9,11 @@ from .adopt import (
 from .artifact import ARTIFACT_METADATA_FIELDS, COMPILED_GRAPH_FORMAT, ArtifactError
 from .compiler import CompileError
 from .declaration import (
+    GRAPH_INTERFACE_FORMAT,
     DeclarationError,
     GraphClassDeclaration,
     GraphClassSpec,
+    RetiredGraphInterface,
     RuntimeCompatibility,
 )
 from .discovery import DiscoveryError, discover_lane, discover_modules
@@ -222,7 +224,9 @@ __all__ = [
     "CallInput",
     "ClassReport",
     "ConstantBindingError",
+    "GRAPH_INTERFACE_FORMAT",
     "DeclarationError",
+    "RetiredGraphInterface",
     "Engine",
     "EnsureOutcome",
     "EnsureResult",

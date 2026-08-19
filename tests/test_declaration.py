@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 from typing import Any
 
@@ -12,6 +11,7 @@ from torchcg import (
     DeclarationError,
     GraphClassDeclaration,
     GraphClassSpec,
+    IngressError,
     RuntimeCompatibility,
 )
 from torchcg.contracts import read_contract
@@ -57,29 +57,19 @@ def exported(module: Any) -> Any:
     return torch.export.export(module, (torch.ones(2),))
 
 
-GRAPH_INTERFACE: dict[str, Any] = {
-    "v": 3,
-    "lifted_inputs": [],
-    "pytree": {
-        "in": "leaf",
-        "out": "leaf",
-        "ingress": CallIngress(
-            parameters=("value",),
-            flat_arity=1,
-            inputs=(CallInput("value", 0, "value", 0, (), "value", "float32", (2,)),),
-        ).as_dict(),
-    },
-    "specialization": {},
-}
+#: tcg#55: the ONLY fact a producer still supplies about a graph class. There
+#: is no graph-interface mapping any more -- constant_fqns, literal_values and
+#: placement are derived in declare(), and lifted_inputs/specialization/pytree
+#: are deleted outright (nothing in this repo or the gen-worker read them).
+INGRESS = CallIngress(
+    parameters=("value",),
+    flat_arity=1,
+    inputs=(CallInput("value", 0, "value", 0, (), "value", "float32", (2,)),),
+)
 
 
 def spec(graph_class: str, target: str, program: object) -> GraphClassSpec:
-    return GraphClassSpec(
-        graph_class,
-        target,
-        program,
-        GRAPH_INTERFACE,
-    )
+    return GraphClassSpec(graph_class, target, program, INGRESS)
 
 
 def test_declaration_keys_graph_structure_but_not_weight_values() -> None:
@@ -96,30 +86,61 @@ def test_declaration_keys_graph_structure_but_not_weight_values() -> None:
 def test_call_ingress_is_required_rekeys_and_owns_range_digest() -> None:
     program = exported(Operation())
     first = spec("model", "denoiser", program).declare()
-    changed_graph = copy.deepcopy(GRAPH_INTERFACE)
-    changed_ingress = CallIngress.decode(changed_graph["pytree"]["ingress"])
-    changed_graph["pytree"]["ingress"] = CallIngress(
-        parameters=changed_ingress.parameters,
-        flat_arity=changed_ingress.flat_arity,
-        inputs=(
-            CallInput("value", 0, "value", 0, (), "value", "float32", (3,)),
+    changed = GraphClassSpec(
+        "model",
+        "denoiser",
+        program,
+        CallIngress(
+            parameters=INGRESS.parameters,
+            flat_arity=INGRESS.flat_arity,
+            inputs=(CallInput("value", 0, "value", 0, (), "value", "float32", (3,)),),
         ),
-    ).as_dict()
-    changed = GraphClassSpec("model", "denoiser", program, changed_graph).declare()
+    ).declare()
 
     assert first.range_digest == CallIngress.from_graph(first.graph).digest()
     assert changed.range_digest != first.range_digest
     assert changed.class_hash != first.class_hash
 
-    missing = copy.deepcopy(GRAPH_INTERFACE)
-    del missing["pytree"]["ingress"]
-    with pytest.raises(DeclarationError, match="declares no call ingress"):
-        GraphClassSpec("model", "denoiser", program, missing).declare()
 
-    numeric_alias = copy.deepcopy(GRAPH_INTERFACE)
-    numeric_alias["v"] = 3.0
-    with pytest.raises(DeclarationError, match="graph interface v must be 3"):
-        GraphClassSpec("model", "denoiser", program, numeric_alias).declare()
+def test_the_derived_graph_interface_cannot_be_supplied_at_all() -> None:
+    """tcg#55: the wrong-value case is UNREPRESENTABLE, not merely caught.
+
+    pgw#1456's two-field stub (`{"v": 3, "pytree": {"ingress": ...}}`) is the
+    defect this deletes. There is no parameter to hand a graph interface to,
+    so a producer cannot understate one, overstate one, or drift from one.
+    """
+
+    program = exported(Operation())
+    with pytest.raises(DeclarationError, match="raw graph-interface mapping is retired"):
+        GraphClassSpec(
+            "model",
+            "denoiser",
+            program,
+            {"v": 3, "pytree": {"ingress": INGRESS.as_dict()}},  # type: ignore[arg-type]
+        )
+    declaration = spec("model", "denoiser", program).declare()
+    assert set(declaration.graph) == {"v", "constant_fqns", "ingress"}
+    assert declaration.graph["v"] == 4
+
+
+def test_a_v3_graph_interface_refuses_by_name_at_every_load_site() -> None:
+    """The stale-format red arm: old bytes name themselves, never coerce."""
+
+    from torchcg.declaration import RetiredGraphInterface
+
+    retired = {
+        "v": 3,
+        "constant_fqns": [],
+        "lifted_inputs": [],
+        "pytree": {"in": "leaf", "out": "leaf", "ingress": INGRESS.as_dict()},
+        "specialization": {},
+    }
+    with pytest.raises(RetiredGraphInterface, match="RETIRED v3 shape"):
+        GraphClassDeclaration(
+            "model", "denoiser", retired, "0" * 16, INGRESS.digest()
+        )
+    with pytest.raises(IngressError, match="RETIRED v3"):
+        CallIngress.from_graph(retired)
 
 
 def test_lifted_literal_values_ride_inside_graph_interface_and_rekey() -> None:
@@ -171,7 +192,7 @@ def test_graph_witness_matches_current_worker_canonical_form() -> None:
 
 
 def test_graph_witness_and_class_hash_match_current_worker_golden_vector() -> None:
-    vector = json.loads(read_contract("graph_class_identity_v3.json"))
+    vector = json.loads(read_contract("graph_class_identity_v4.json"))
     block = vector["block"]
     program = torch.export.export(SineOperation(), (torch.ones(2, 3),))
     assert _graph_digest(program) == block["graph_witness"]

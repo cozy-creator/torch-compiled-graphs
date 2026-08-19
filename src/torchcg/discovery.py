@@ -36,6 +36,7 @@ from .ingress import IngressError, build_call_ingress
 from .lane import LaneError, LaneRef, require_targets, resolve_target
 
 if TYPE_CHECKING:  # torch-free import closure: transform.py is torch-shaped
+    from .hollow import HollowSession
     from .transform import TransformSet
 
 
@@ -70,7 +71,7 @@ def _signature_of(value: Any) -> str:
     return repr(value)
 
 
-def _synthesize(value: Any) -> Any:
+def _synthesize(value: Any, device: Any = None) -> Any:
     """Restate one observed value as an exportable input.
 
     Tensors become zeros of the observed shape and dtype -- the observed
@@ -78,17 +79,49 @@ def _synthesize(value: Any) -> Any:
     structure. Containers recurse; every other leaf passes through verbatim
     because its VALUE is part of the trace (a ``return_dict=False`` is a
     different graph than ``True``).
+
+    ``device`` is not optional dressing (pgw#1458): an input synthesized on a
+    device the module's parameters are not on either refuses outright
+    (``FakeTensorDeviceMismatchError``) or -- worse -- exports cleanly with a
+    MIXED placement that only AOTInductor rejects, minutes into a compile. It
+    defaults to the device the module itself is on.
     """
 
     import torch
 
     if isinstance(value, torch.Tensor):
-        return torch.zeros(tuple(int(d) for d in value.shape), dtype=value.dtype)
+        return torch.zeros(
+            tuple(int(d) for d in value.shape), dtype=value.dtype, device=device
+        )
     if isinstance(value, (list, tuple)):
-        return type(value)(_synthesize(item) for item in value)
+        return type(value)(_synthesize(item, device) for item in value)
     if isinstance(value, dict):
-        return {key: _synthesize(item) for key, item in value.items()}
+        return {key: _synthesize(item, device) for key, item in value.items()}
     return value
+
+
+def _trace_device_of(module: Any) -> Any:
+    """The ONE device this module's tensors live on, or ``None`` if it has none.
+
+    A module whose tensors straddle two devices cannot be exported to one
+    graph; saying so here, by name, is the refusal that pgw#1458 spent four
+    attempts not getting.
+    """
+
+    devices = {
+        parameter.device
+        for parameter in module.parameters()
+    } | {
+        buffer.device for buffer in module.buffers()
+    }
+    if len(devices) > 1:
+        raise DiscoveryError(
+            f"{type(module).__name__} straddles devices "
+            f"{sorted(str(device) for device in devices)!r}; a graph is traced "
+            f"onto ONE device and the device cannot be re-homed afterwards "
+            f"(pgw#1458). Virtualize the whole module onto one trace device."
+        )
+    return devices.pop() if devices else None
 
 
 def _fake_mode_of(module: Any) -> Any:
@@ -141,6 +174,7 @@ def discover_lane(
     strict: bool = False,
     program_sink: Callable[[str, Any], str] | None = None,
     transforms: TransformSet | None = None,
+    session: HollowSession | None = None,
 ) -> LaneGraphs:
     """Run the author's code once, derive every observed graph, state the rest.
 
@@ -175,6 +209,56 @@ def discover_lane(
         strict=strict,
         program_sink=program_sink,
         transforms=transforms,
+        session=session,
+    )
+
+
+def _demote_example_inputs(program: Any) -> None:
+    """Drop the trace's example inputs before the program is serialized.
+
+    A hollow derive's example inputs are FAKE tensors, and torch serializes
+    them by pickling ``_reconstruct_fake_tensor`` -- which its own loader then
+    refuses under ``weights_only=True``, on CPU, with a
+    ``_pickle.UnpicklingError`` that surfaces as a torch-internal logging
+    ``TypeError``. Measured: the identical program with example inputs
+    demoted round-trips cleanly. Nothing downstream reads them -- the call
+    contract is the ``CallIngress``, which is derived, recorded and verified
+    -- so they are cost with no consumer.
+    """
+
+    for attribute in ("_example_inputs", "example_inputs"):
+        try:
+            setattr(program, attribute, None)
+            return
+        except AttributeError:
+            continue
+
+
+def _restore_literal_values(
+    contract: str, path: str, program: Any, session: Any
+) -> None:
+    """Put real values back under any lifted constant the session faked."""
+
+    from torch._subclasses.fake_tensor import FakeTensor
+
+    constants = getattr(program, "constants", None) or {}
+    faked = sorted(name for name, value in constants.items() if isinstance(value, FakeTensor))
+    if not faked:
+        return
+    if session is not None:
+        session.restore_constants(program)
+        faked = sorted(
+            name for name, value in (getattr(program, "constants", None) or {}).items()
+            if isinstance(value, FakeTensor)
+        )
+        if not faked:
+            return
+    raise DiscoveryError(
+        f"lane {contract!r} target {path!r}: lifted constant(s) {faked[:6]!r} are "
+        f"FAKE and no session holds their real values. The graph hash folds the "
+        f"literal digest in, so this graph would key off a table of ZEROS and "
+        f"collide with every other model that differs only in these constants "
+        f"(pgw#1458). Pass the HollowSession the modules were virtualized under."
     )
 
 
@@ -186,6 +270,7 @@ def discover_modules(
     strict: bool = False,
     program_sink: Callable[[str, Any], str] | None = None,
     transforms: TransformSet | None = None,
+    session: HollowSession | None = None,
 ) -> LaneGraphs:
     """Discovery over MARKED modules (the imperative ``ctx.compile`` surface).
 
@@ -202,6 +287,17 @@ def discover_modules(
     the graph and runs inductor rather than re-tracing author code. torchcg
     holds no opinion on WHERE the bytes go -- bytes-at-rest is tensorfs's
     charter, so the caller owns the sink.
+
+    ``session`` (pgw#1458) is the :class:`~torchcg.hollow.HollowSession` the
+    modules were virtualized under, when they were. Reaching a uniform cuda
+    trace on a GPU-less publish box means FAKING the lifted tensor constants,
+    which destroys their values -- and ``graph_hash`` folds the literal digest
+    in, so two models differing only in their constant tables would collide on
+    one identity. The session carries the real values and they are restored
+    here, before the hash is taken and before the sink sees the program. A
+    module whose program carries faked constants and no session to restore
+    them from is REFUSED: a silently zeroed literal digest is exactly the
+    class of defect this pass exists to delete.
 
     ``transforms`` (tcg#52) is the SEALED :class:`~torchcg.transform.
     TransformSet` of the lane's PASS phase. Passing it is what makes PASS ->
@@ -276,11 +372,12 @@ def discover_modules(
     for path, calls in observed.items():
         module = modules[path]
         fake_mode = _fake_mode_of(module)
+        device = _trace_device_of(module)
         synthesis = fake_mode if fake_mode is not None else contextlib.nullcontext()
         for call in calls.values():
             with synthesis:
-                args = tuple(_synthesize(value) for value in call.args)
-                kwargs = {name: _synthesize(value) for name, value in call.kwargs}
+                args = tuple(_synthesize(value, device) for value in call.args)
+                kwargs = {name: _synthesize(value, device) for name, value in call.kwargs}
             try:
                 with synthesis:
                     program = torch.export.export(module, args, kwargs, strict=strict)
@@ -290,6 +387,8 @@ def discover_modules(
                     f"(strict={strict}) failed for the observed call: "
                     f"{type(exc).__name__}: {exc}"
                 ) from exc
+            _restore_literal_values(contract, path, program, session)
+            _demote_example_inputs(program)
             names = _param_names(module, args, kwargs)
             try:
                 ingress = build_call_ingress(program, names, args, kwargs)

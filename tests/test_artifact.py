@@ -110,11 +110,9 @@ def metadata(*, literal: bytes | None = None) -> dict[str, object]:
         inputs=(CallInput("value", 0, "value", 0, (), "value", "float32", (2,)),),
     )
     graph: dict[str, object] = {
-        "v": 3,
+        "v": 4,
         "constant_fqns": ["table"] if literal is not None else [],
-        "lifted_inputs": [],
-        "pytree": {"in": "leaf", "out": "leaf", "ingress": ingress.as_dict()},
-        "specialization": {},
+        "ingress": ingress.as_dict(),
     }
     if digest:
         graph["literal_values"] = digest

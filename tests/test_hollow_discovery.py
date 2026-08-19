@@ -52,7 +52,7 @@ def config_only_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def _hollow_document(tree: Path, *, torch_dtype: object = None) -> GraphSetDocument:
     from diffusers import StableDiffusionPipeline
 
-    with hollow_session():
+    with hollow_session("cpu"):
         pipe = StableDiffusionPipeline.from_pretrained(tree, torch_dtype=torch_dtype)
         pipe.to("cuda")  # author code as-is; the session remaps to cpu
         lane = discover_lane(
@@ -83,7 +83,7 @@ def test_hollow_parameters_allocated_nothing(config_only_tree: Path) -> None:
     from diffusers import StableDiffusionPipeline
     from torch._subclasses.fake_tensor import FakeTensor
 
-    with hollow_session():
+    with hollow_session("cpu"):
         pipe = StableDiffusionPipeline.from_pretrained(config_only_tree)
         parameters = list(pipe.unet.parameters()) + list(pipe.vae.parameters()) + list(
             pipe.text_encoder.parameters()
@@ -129,7 +129,7 @@ def test_a_meta_buffer_is_refused_not_zeroed() -> None:
             self.weight = torch.nn.Parameter(torch.zeros(2, 2))
             self.register_buffer("table", torch.zeros(2, device="meta"))
 
-    with hollow_session() as session:
+    with hollow_session("cpu") as session:
         with pytest.raises(HollowError, match="table"):
             virtualize_parameters(BadHost(), session)
 
@@ -137,6 +137,6 @@ def test_a_meta_buffer_is_refused_not_zeroed() -> None:
 def test_hollow_refuses_when_the_tree_lacks_configs(tmp_path: Path) -> None:
     from diffusers import UNet2DConditionModel
 
-    with hollow_session():
+    with hollow_session("cpu"):
         with pytest.raises(HollowError, match="UNet2DConditionModel"):
             UNet2DConditionModel.from_pretrained(tmp_path, subfolder="unet")
