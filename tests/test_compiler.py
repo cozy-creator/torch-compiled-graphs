@@ -125,6 +125,7 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "AdoptError",
         "AdoptSession",
         "ArtifactError",
+        "ArtifactFormatSkew",
         "ArtifactLoader",
         "CompileError",
         "COMPILED_GRAPH_FORMAT",
