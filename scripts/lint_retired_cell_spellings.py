@@ -30,11 +30,13 @@ EXCLUSIONS, structural rather than a list of findings:
 * this file, which DEFINES the retired spelling and so must spell it;
 * `src/torchcg/contracts/` and `tests/testdata/` — the shared conformance
   corpora. These are vendored BYTE-IDENTICALLY into python-gen-worker (all four
-  copies hash alike) and pinned there by `check_grammar_corpus_digest.py`, so
+  copies hash alike) and pinned by `KEY_GRAMMAR_DIGEST` in both repos, so
   editing their prose reddens two repos at once and is a coordinated corpus
-  bump, not a rename. Two stale spellings live there today and are recorded as
-  a named deferral in the tracker (pgw#1547), including
-  `"gen_worker.cell_key.is_key"`, which names a module the worker no longer has.
+  bump rather than a rename. They are CLEAN as of tcg#74 / pgw#1554, which
+  corrected `"gen_worker.cell_key.is_key"` — a module the worker does not have —
+  to `gen_worker._vendor.torchcg.identity.is_compiled_graph_key`, and respelled
+  the one remaining prose note. The exclusion stays because the COUPLING is
+  what makes these files special, not their current contents.
 
 Everything else is recognised by a PROOF AT THE LINE: a `cell-spelling:` marker
 with a reason after the colon. A bare marker is not a proof.
