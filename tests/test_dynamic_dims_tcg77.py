@@ -10,6 +10,7 @@ are about the COUNT, the guards, and what the dispatcher does with them.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 
@@ -107,7 +108,9 @@ def test_a_per_axis_policy_collapses_only_the_axis_it_admits() -> None:
         assert isinstance(sample.shape[2], int)
 
 
-def _call(record: GraphRecord, batch: int, height: int, width: int) -> tuple[bool, dict]:
+def _call(
+    record: GraphRecord, batch: int, height: int, width: int
+) -> tuple[bool, dict[str, Any]]:
     rows = {row.name: row for row in record.ingress.inputs}
     sample = rows["sample"]
     text = rows["encoder_hidden_states"]
@@ -117,7 +120,8 @@ def _call(record: GraphRecord, batch: int, height: int, width: int) -> tuple[boo
         ),
         "timestep": torch.zeros((), dtype=getattr(torch, rows["timestep"].dtype)),
         "encoder_hidden_states": torch.zeros(
-            (batch, text.shape[1], text.shape[2]), dtype=getattr(torch, text.dtype)
+            (batch, int(text.shape[1]), int(text.shape[2])),
+            dtype=getattr(torch, text.dtype),
         ),
     }
     return _matches(record, (), kwargs), kwargs
@@ -157,7 +161,8 @@ def test_an_inconsistent_symbol_is_refused(dynamic: object) -> None:
         ),
         "timestep": torch.zeros((), dtype=getattr(torch, rows["timestep"].dtype)),
         "encoder_hidden_states": torch.zeros(
-            (1, text.shape[1], text.shape[2]), dtype=getattr(torch, text.dtype)
+            (1, int(text.shape[1]), int(text.shape[2])),
+            dtype=getattr(torch, text.dtype),
         ),
     }
     assert not _matches(record, (), kwargs)
@@ -193,7 +198,9 @@ def test_the_entry_runner_path_guards_the_same_derived_dim() -> None:
     from torchcg.ingress import CallIngress, CallInput, exported_input_name
     from torchcg.selection import MissReason, PresentedCall, PresentedValue, class_report
 
-    def row(position: int, param: str, dtype: str, shape: tuple) -> CallInput:
+    def row(
+        position: int, param: str, dtype: str, shape: tuple[int | str, ...]
+    ) -> CallInput:
         return CallInput(
             name=param,
             position=position,
@@ -215,7 +222,9 @@ def test_the_entry_runner_path_guards_the_same_derived_dim() -> None:
         symbols=(("8*s1", (48, 80)), ("s0", (1, 2))),
     )
 
-    def report(sample: tuple[int, ...], text: tuple[int, ...]) -> tuple:
+    def report(
+        sample: tuple[int, ...], text: tuple[int, ...]
+    ) -> tuple[Any, ...]:
         call = PresentedCall(
             feeds=(
                 ("encoder_hidden_states", PresentedValue("bfloat16", text)),
