@@ -52,7 +52,7 @@ class _Module(torch.nn.Module):
         return "eager"
 
 
-def _armed() -> "tuple[_ForwardDispatcher, list[Any]]":
+def _armed() -> tuple[_ForwardDispatcher, list[Any]]:
     module = _Module()
     dispatcher = _ForwardDispatcher(module)
     entered: list[Any] = []
