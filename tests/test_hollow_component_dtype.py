@@ -67,7 +67,7 @@ def test_each_component_takes_the_dtype_the_POLICY_gives_IT(
 
     asked: list[tuple[str, str | None]] = []
 
-    def policy(path: Any, subfolder: Any) -> Any:
+    def policy(path: Any, subfolder: Any, module: Any = None) -> Any:
         asked.append((Path(str(path)).name, subfolder))
         return torch.bfloat16 if subfolder == "unet" else torch.float32
 
@@ -91,7 +91,7 @@ def test_an_EXPLICIT_torch_dtype_is_the_author_speaking_and_wins(
 
     from diffusers import UNet2DConditionModel
 
-    def policy(_path: Any, _subfolder: Any) -> Any:
+    def policy(_path: Any, _subfolder: Any, _module: Any = None) -> Any:
         return torch.float32
 
     with hollow_session("cuda", dtype_for=policy):
@@ -138,7 +138,7 @@ def test_the_policy_may_REFUSE_and_the_refusal_reaches_the_caller(
     class Undeclared(RuntimeError):
         pass
 
-    def policy(_path: Any, subfolder: Any) -> Any:
+    def policy(_path: Any, subfolder: Any, _module: Any = None) -> Any:
         raise Undeclared(f"nothing declares a dtype for {subfolder!r}")
 
     with hollow_session("cuda", dtype_for=policy):
@@ -146,3 +146,42 @@ def test_the_policy_may_REFUSE_and_the_refusal_reaches_the_caller(
             UNet2DConditionModel.from_pretrained(two_precision_tree, subfolder="unet")
 
     assert "'unet'" in str(refusal.value)
+
+
+def test_the_policy_RECEIVES_the_built_module_so_it_can_match_parameters(
+    two_precision_tree: Path,
+) -> None:
+    """tcg#71: the only way to tell which component a contract describes.
+
+    A layout contract states the DENOISER's own parameter names — sd15 says
+    `conv_in.weight`, h3 says `transformer_blocks.…` — and never prefixes them
+    with a component. So "does this contract describe THIS component?" can only
+    be answered by matching the component's parameter names, which means the
+    policy needs the module.
+
+    The module arrives BUILT (meta parameters, nothing allocated) and BEFORE
+    virtualization, so its names are the real ones and the build is free.
+    """
+
+    from diffusers import AutoencoderKL, UNet2DConditionModel
+
+    seen: dict[str, Any] = {}
+
+    def policy(_path: Any, subfolder: Any, module: Any = None) -> Any:
+        names = list(module.state_dict()) if module is not None else []
+        seen[str(subfolder)] = names
+        # Decide the way a match-scoped lane does.
+        return torch.bfloat16 if any(n.startswith("conv_in.") for n in names) else None
+
+    with hollow_session("cuda", dtype_for=policy):
+        unet = UNet2DConditionModel.from_pretrained(two_precision_tree, subfolder="unet")
+        vae = AutoencoderKL.from_pretrained(two_precision_tree, subfolder="vae")
+
+    assert seen["unet"], "the policy saw the unet's parameter names"
+    assert any(n.startswith("conv_in.") for n in seen["unet"])
+    # The VAE's own conv_in lives under `encoder.`/`decoder.`, so it does not
+    # match a bare `conv_in.` — which is exactly the discrimination that makes
+    # match-scoping work.
+    assert not any(n.startswith("conv_in.") for n in seen["vae"])
+    assert _first_param_dtype(unet) is torch.bfloat16
+    assert _first_param_dtype(vae) is torch.float32
