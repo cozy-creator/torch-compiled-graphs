@@ -183,6 +183,10 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "StoreError",
         "StoredCompiledGraph",
         "StoreOutcome",
+        # tcg#70: the MODULE side of an unclaimed record — a ctx.compile mark
+        # that fit no graph. Exported because the boot verdict that reports
+        # adoption has to name it; state nobody can read is the defect.
+        "UnclaimedMark",
         "StoreResult",
         "assert_exact_env",
         "build_call_ingress",
