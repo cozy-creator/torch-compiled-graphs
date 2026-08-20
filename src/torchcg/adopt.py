@@ -110,6 +110,23 @@ class UnclaimedMark:
     def describe(self) -> str:
         """One operator-facing line naming what did not match and why."""
 
+        if not self.parameters:
+            # THE MOST LIKELY CAUSE GETS THE MOST DIRECT SENTENCE. A denoiser
+            # with no NAMED forward parameters does not exist; a `*args,
+            # **kwargs` wrapper installed over one does, and every parameter
+            # name the match is made on disappears behind it. Measured exactly
+            # this way (pgw#1534): an OOM-retry wrapper installed at load time
+            # turned a 13-parameter forward into an empty set, and every record
+            # in the lane went unclaimed in silence.
+            return (
+                f"{self.module}: marked with ctx.compile, and its forward "
+                f"accepts NO named parameters — so no record can name anything "
+                f"it takes. That is the signature of a `*args, **kwargs` "
+                f"wrapper installed over the real forward: a wrapper must "
+                f"carry the wrapped signature (functools.wraps, or an explicit "
+                f"__signature__), or it silently disables adoption for this "
+                f"module"
+            )
         if not self.nearest:
             return (
                 f"{self.module}: marked with ctx.compile and this lane has no "

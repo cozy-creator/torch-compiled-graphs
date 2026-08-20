@@ -400,3 +400,57 @@ def test_a_mark_that_claims_its_records_is_not_reported_as_unclaimed(
     assert session.unclaimed_marks == ()
     assert session.silently_eager() is False
     assert session.holes != (), "a store-less lane still forms mint work"
+
+
+def test_a_star_args_wrapper_over_forward_is_named_as_the_cause(
+    pipe: SimpleNamespace, store: LocalGraphStore, tmp_path: Path
+) -> None:
+    """tcg#70: the case that actually happened, and it deserves its own line.
+
+    A wrapper installed over a module's ``forward`` for an unrelated reason —
+    an OOM retry, a profiler, a device shim — erases every parameter NAME the
+    claim is made on if it does not carry the wrapped signature. The module
+    still works; adoption silently stops seeing it. Measured on a real boot
+    (pgw#1534): a 13-parameter unet forward became an empty set and all 14
+    records went unclaimed without a word.
+    """
+    document = discover(pipe)
+    session = session_for(store, document, {}, tmp_path)
+
+    original = pipe.unet.forward
+
+    def wrapper(*args: object, **kwargs: object) -> object:
+        return original(*args, **kwargs)
+
+    pipe.unet.forward = wrapper
+    session.adopt(pipe.unet)
+
+    assert session.adopted == () and session.holes == ()
+    assert session.silently_eager() is True
+    (mark,) = session.unclaimed_marks
+    assert mark.parameters == (), "the wrapper erased the signature"
+    assert "accepts NO named parameters" in mark.describe()
+    assert "__signature__" in mark.describe(), "the remedy is in the message"
+
+
+def test_a_wrapper_that_carries_the_signature_still_adopts(
+    pipe: SimpleNamespace, store: LocalGraphStore, tmp_path: Path
+) -> None:
+    """And the remedy the message names must actually work."""
+    import functools
+
+    document = discover(pipe)
+    session = session_for(store, document, {}, tmp_path)
+
+    original = pipe.unet.forward
+
+    @functools.wraps(original)
+    def wrapper(*args: object, **kwargs: object) -> object:
+        return original(*args, **kwargs)
+
+    pipe.unet.forward = wrapper
+    session.adopt(pipe.unet)
+
+    assert session.unclaimed_marks == ()
+    assert session.silently_eager() is False
+    assert session.holes != (), "the records are claimed and form mint work"
