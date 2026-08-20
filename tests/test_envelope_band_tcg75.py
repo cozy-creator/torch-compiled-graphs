@@ -144,6 +144,21 @@ def test_pack_artifact_is_deterministic(tmp_path: Path) -> None:
     assert first.read_bytes() == second.read_bytes()
 
 
+def test_artifact_skew_probe_reads_two_bytes_worth_of_truth(tmp_path: Path) -> None:
+    """The census-grade probe: names a skewed position, stays silent on a
+    healthy or absent one, and never decodes anything."""
+    store = LocalGraphStore(LocalCAS(tmp_path / "cas"))
+    assert store.artifact_skew(GRAPH, ENV) is None, "absent is has_artifact's question"
+
+    store.publish_artifact(GRAPH, ENV, _bare_package(tmp_path), _manifest())
+    skew = store.artifact_skew(GRAPH, ENV)
+    assert skew is not None and "bare AOTI .pt2 package" in skew
+
+    envelope = _envelope(tmp_path)
+    store.publish_artifact(GRAPH, ENV, envelope, _manifest())
+    assert store.artifact_skew(GRAPH, ENV) is None, "the repair silences the probe"
+
+
 def test_a_zip_that_is_not_even_aoti_is_still_the_skew_type(tmp_path: Path) -> None:
     """The sniff is on the container format, not on AOTI internals: any ZIP in
     the envelope band is a publisher wiring defect."""
