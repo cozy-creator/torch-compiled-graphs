@@ -443,6 +443,33 @@ class LocalGraphStore:
             if current == candidate:
                 self._ensure_manifest(graph, env, manifest_candidate)
                 return PublishOutcome.PRESENT
+            if self._envelope_supersedes(current, source):
+                # tcg#75 / pgw#1561: the occupied position holds bytes NO
+                # reader of this store can load — the bare `.pt2` package a
+                # pre-envelope publisher banked. That is not a diverged mint;
+                # it is a shape this store's own loaders refuse by type
+                # (`ArtifactFormatSkew`), so under tcg#69's doctrine the
+                # incumbent is ABSENT-equivalent derived bytes and an envelope
+                # replaces it. A real envelope-vs-envelope divergence still
+                # refuses below.
+                try:
+                    self.cas.compare_and_swap_ref(ref_name, candidate, expected=current)
+                except RefConflict:
+                    if self.cas.read_ref(ref_name) != candidate:
+                        raise StoreError(
+                            f"artifact position ({graph}, {env.value}) moved "
+                            f"during envelope repair"
+                        ) from None
+                reclaimed = self._discard_object(current)
+                logger.warning(
+                    "torchcg: REPLACED artifact (%s, %s) — the position held a "
+                    "non-envelope blob (a bare package from a pre-envelope "
+                    "publisher, unloadable by every reader of this store); the "
+                    "envelope now stands. Reclaimed %d byte(s).",
+                    graph, env.value, reclaimed,
+                )
+                self._ensure_manifest(graph, env, manifest_candidate)
+                return PublishOutcome.PUBLISHED
             raise StoreError(
                 f"artifact position ({graph}, {env.value}) already holds "
                 f"different bytes; a deterministic mint diverged"
@@ -459,6 +486,29 @@ class LocalGraphStore:
             ) from None
         self._ensure_manifest(graph, env, manifest_candidate)
         return PublishOutcome.PUBLISHED
+
+    def _envelope_supersedes(self, incumbent: CASRef, candidate_file: Path) -> bool:
+        """Whether ``candidate_file`` is a gzip envelope while the incumbent
+        object is NOT — the one migration this store performs (tcg#75).
+
+        Sniffed off magic bytes, never decoded here: the candidate is fully
+        verified on the way out by every reader, and the incumbent needs only
+        to be recognized as unloadable-by-shape. An incumbent whose object is
+        MISSING counts too — a live ref over absent bytes fails every fetch,
+        so replacing it with verified bytes is a repair, not an arbitration.
+        """
+
+        try:
+            with Path(candidate_file).open("rb") as handle:
+                if handle.read(2) != b"\x1f\x8b":
+                    return False
+        except OSError:
+            return False
+        try:
+            with self.cas.object_path(incumbent).open("rb") as handle:
+                return handle.read(2) != b"\x1f\x8b"
+        except (OSError, ValueError):
+            return True
 
     def _ensure_manifest(self, graph: str, env: EnvIdentity, candidate: CASRef) -> None:
         """First manifest wins; an interrupted earlier publish is repaired."""
