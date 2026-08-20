@@ -26,4 +26,12 @@ jobs:
       - run: uv sync --locked --all-extras
       - run: uv run ruff check src tests
       - run: uv run mypy
+      # pgw#1547 (Paul, 2026-08-20): a compiled graph is not a "cell". This
+      # package is UPSTREAM of the vocabulary — python-gen-worker vendors
+      # contracts/ and identity.py byte-for-byte — so a `cell` landing here is
+      # copied into a consumer, not merely written. The selftest proves the
+      # fence goes red AND proves it does not flag `cancelled`/`CancelledError`,
+      # which contain the same letters.
+      - run: uv run python scripts/lint_retired_cell_spellings.py --selftest
+      - run: uv run python scripts/lint_retired_cell_spellings.py
       - run: uv run pytest
