@@ -330,3 +330,127 @@ def test_a_record_no_marked_module_claims_is_stated_not_dropped(
     assert session.holes == ()  # unclaimed is not mint work: nothing to arm onto
     with pytest.raises(AdoptError, match="never claimed"):
         session.arm(document.lanes[0].graphs[0], tmp_path / "x.so")
+
+
+def test_a_marked_module_that_matches_nothing_is_recorded_with_the_gap(
+    pipe: SimpleNamespace, store: LocalGraphStore, tmp_path: Path
+) -> None:
+    """tcg#70: the MODULE side of an unclaimed record, and the reason.
+
+    `unclaimed` says which graphs found no home. Without the other half — which
+    MARKS found no graph — a boot cannot tell "the author stopped marking a
+    module" from "the module the author marks no longer has the forward the
+    derive traced", and both print as adopted=0, holes=0.
+    """
+    document = discover(pipe)
+
+    class Stranger(torch.nn.Module):
+        def forward(self, latents: torch.Tensor) -> torch.Tensor:
+            return latents
+
+    session = session_for(store, document, {}, tmp_path)
+    session.adopt(Stranger())
+
+    marks = session.unclaimed_marks
+    assert len(marks) == 1
+    assert marks[0].module == "Stranger"
+    assert marks[0].parameters == ("latents",)
+    # The gap is the diagnosis: the nearest record wants `sample`, which this
+    # module's forward does not accept.
+    assert "sample" in marks[0].missing
+    assert marks[0].nearest in {record.graph for record in document.lanes[0].graphs}
+    assert "matched NO graph" in marks[0].describe()
+    assert "sample" in marks[0].describe()
+
+
+def test_nothing_armed_nothing_to_mint_and_a_mark_that_matched_is_not_silence(
+    pipe: SimpleNamespace, store: LocalGraphStore, tmp_path: Path
+) -> None:
+    """`adopted=0, holes=0` has TWO causes and they must be distinguishable.
+
+    Nothing-to-do is a quiet success. A mark that matched nothing over a lane
+    full of records is a compiled path switched off, and it printed identically.
+    """
+    document = discover(pipe)
+
+    class Stranger(torch.nn.Module):
+        def forward(self, latents: torch.Tensor) -> torch.Tensor:
+            return latents
+
+    # (a) nobody marked anything: two zeros, and that IS nothing to do.
+    quiet = session_for(store, document, {}, tmp_path)
+    assert quiet.adopted == () and quiet.holes == ()
+    assert quiet.silently_eager() is False
+
+    # (b) a mark landed and fit nothing: the same two zeros, a different fact.
+    loud = session_for(store, document, {}, tmp_path)
+    loud.adopt(Stranger())
+    assert loud.adopted == () and loud.holes == ()
+    assert loud.silently_eager() is True
+
+
+def test_a_mark_that_claims_its_records_is_not_reported_as_unclaimed(
+    pipe: SimpleNamespace, store: LocalGraphStore, tmp_path: Path
+) -> None:
+    """The green arm: the instrument must not fire on a working adoption."""
+    document = discover(pipe)
+    session = session_for(store, document, {}, tmp_path)
+    session.adopt(pipe.unet)
+
+    assert session.unclaimed_marks == ()
+    assert session.silently_eager() is False
+    assert session.holes != (), "a store-less lane still forms mint work"
+
+
+def test_a_star_args_wrapper_over_forward_is_named_as_the_cause(
+    pipe: SimpleNamespace, store: LocalGraphStore, tmp_path: Path
+) -> None:
+    """tcg#70: the case that actually happened, and it deserves its own line.
+
+    A wrapper installed over a module's ``forward`` for an unrelated reason —
+    an OOM retry, a profiler, a device shim — erases every parameter NAME the
+    claim is made on if it does not carry the wrapped signature. The module
+    still works; adoption silently stops seeing it. Measured on a real boot
+    (pgw#1534): a 13-parameter unet forward became an empty set and all 14
+    records went unclaimed without a word.
+    """
+    document = discover(pipe)
+    session = session_for(store, document, {}, tmp_path)
+
+    original = pipe.unet.forward
+
+    def wrapper(*args: object, **kwargs: object) -> object:
+        return original(*args, **kwargs)
+
+    pipe.unet.forward = wrapper
+    session.adopt(pipe.unet)
+
+    assert session.adopted == () and session.holes == ()
+    assert session.silently_eager() is True
+    (mark,) = session.unclaimed_marks
+    assert mark.parameters == (), "the wrapper erased the signature"
+    assert "accepts NO named parameters" in mark.describe()
+    assert "__signature__" in mark.describe(), "the remedy is in the message"
+
+
+def test_a_wrapper_that_carries_the_signature_still_adopts(
+    pipe: SimpleNamespace, store: LocalGraphStore, tmp_path: Path
+) -> None:
+    """And the remedy the message names must actually work."""
+    import functools
+
+    document = discover(pipe)
+    session = session_for(store, document, {}, tmp_path)
+
+    original = pipe.unet.forward
+
+    @functools.wraps(original)
+    def wrapper(*args: object, **kwargs: object) -> object:
+        return original(*args, **kwargs)
+
+    pipe.unet.forward = wrapper
+    session.adopt(pipe.unet)
+
+    assert session.unclaimed_marks == ()
+    assert session.silently_eager() is False
+    assert session.holes != (), "the records are claimed and form mint work"
