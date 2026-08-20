@@ -230,15 +230,18 @@ def test_a_stamp_for_a_superseded_ref_is_ignored(tmp_path: Path) -> None:
     destination = tmp_path / "out" / "program.pt2"
 
     store.put_program(graph, first)
-    assert store.fetch_program(graph, destination).read_bytes() == b"first-program"
+    fetched = store.fetch_program(graph, destination)
+    assert fetched is not None and fetched.read_bytes() == b"first-program"
     store.put_program(graph, second)
-    assert store.fetch_program(graph, destination).read_bytes() == b"second-program"
+    refetched = store.fetch_program(graph, destination)
+    assert refetched is not None and refetched.read_bytes() == b"second-program"
 
 
 def test_a_corrupt_stamp_falls_back_to_the_full_fetch(tmp_path: Path) -> None:
     store, graph, destination = _published(tmp_path)
     store.fetch_artifact(graph, ENV, destination)
     _stamp_path(destination).write_text("not json", encoding="ascii")
-    assert store.fetch_artifact(graph, ENV, destination).read_bytes() == b"minted-bytes"
+    refetched = store.fetch_artifact(graph, ENV, destination)
+    assert refetched is not None and refetched.read_bytes() == b"minted-bytes"
     # And the fall-back re-stamps, so the path is warm again.
     assert isinstance(json.loads(_stamp_path(destination).read_bytes()), dict)
