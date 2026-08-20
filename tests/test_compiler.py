@@ -136,6 +136,8 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "CompiledGraphKey",
         "CompiledGraphRunner",
         "DOCUMENT_FORMAT",
+        # tcg#77 -- the caller's per-axis dynamic-dim policy.
+        "DimPolicy",
         "DiscoveryError",
         "DocumentError",
         "ENV_SCHEME",
