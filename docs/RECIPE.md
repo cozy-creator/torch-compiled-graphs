@@ -220,7 +220,7 @@ reason for the same document.
 **G11 — The recipe is the CLASS-LEVEL layer and is structurally
 checkpoint-free.** Buckets, graph specializations, signatures, the loop, and the
 scheduler block are family facts, identical for every checkpoint that family
-serves — which is what lets one cell serve sixteen fine-tunes (§4.27). Weight
+serves — which is what lets one graph serve sixteen fine-tunes (§4.27). Weight
 sets, checkpoint refs, tuned values, and any per-request default are
 **unrepresentable**, not merely discouraged: every object in v1 has a closed
 field set, so a document carrying one is refused as `recipe_fields_invalid`.
