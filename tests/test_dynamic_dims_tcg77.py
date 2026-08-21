@@ -74,38 +74,74 @@ def test_the_static_fan_is_one_graph_per_observed_shape(static: object) -> None:
             assert all(isinstance(dim, int) for dim in row.shape)
 
 
-def test_dynamic_dims_collapse_the_fan_to_one(dynamic: object) -> None:
-    (record,) = dynamic.graphs  # type: ignore[attr-defined]
-    assert record.ingress.symbols, "a collapsed record must state its ranges"
-    sample = next(row for row in record.ingress.inputs if row.name == "sample")
-    batch, channels, height, width = sample.shape
-    assert isinstance(batch, str) and isinstance(height, str) and isinstance(width, str)
-    assert channels == 4
-    bounds = record.ingress.symbol_bounds
-    assert bounds[batch] == (1, 2)
-    assert bounds[height] == (48, 80)
-    assert bounds[width] == (48, 80)
-    # A derived dim: the UNet's downsamples make 16 the stride, measured off
-    # the observed values rather than assumed.
-    assert height.startswith("16*") and width.startswith("16*")
-    assert height != width, "H and W are two degrees of freedom, not one"
-    # The batch symbol is SHARED with the conditioning: one axis, one symbol.
-    text = next(
-        row for row in record.ingress.inputs if row.name == "encoder_hidden_states"
-    )
-    assert text.shape[0] == batch
+def test_dynamic_dims_collapse_the_aspect_fan(dynamic: object) -> None:
+    """Six observed calls become TWO: the three aspects collapse, CFG does not.
+
+    AMENDED BY tcg#78. This asserted ONE graph, with batch symbolic over
+    [1, 2] -- and that graph could not be minted. Torch specializes the sizes
+    0 and 1 rather than reason about them symbolically, so it guards every
+    dynamic dim ``>= 2``; an axis observed at 1 and 2 is therefore contradicted
+    by the graph's own guards the moment it is exported, and the artifact that
+    came out of compiling it answered a batch-1 call with a batch-2 tensor of
+    garbage. The derive now refuses that axis by name.
+
+    What matters is that refusing it costs the ASPECT collapse nothing --
+    3 aspects x 2 CFG modes goes 6 -> 2, not 6 -> 6.
+    """
+
+    assert len(dynamic.graphs) == 2  # type: ignore[attr-defined]
+    for record in dynamic.graphs:  # type: ignore[attr-defined]
+        assert record.ingress.symbols, "a collapsed record must state its ranges"
+        sample = next(row for row in record.ingress.inputs if row.name == "sample")
+        batch, channels, height, width = sample.shape
+        assert isinstance(height, str) and isinstance(width, str)
+        assert channels == 4
+        assert batch in (1, 2), "the CFG axis is concrete in each record"
+        bounds = record.ingress.symbol_bounds
+        assert bounds[height] == (48, 80)
+        assert bounds[width] == (48, 80)
+        # A derived dim: the UNet's downsamples make 16 the stride, measured
+        # off the observed values rather than assumed.
+        assert height.startswith("16*") and width.startswith("16*")
+        assert height != width, "H and W are two degrees of freedom, not one"
+        text = next(
+            row for row in record.ingress.inputs if row.name == "encoder_hidden_states"
+        )
+        assert text.shape[0] == batch, "one CFG mode, one batch, both rows"
+
+    assert {
+        next(row for row in record.ingress.inputs if row.name == "sample").shape[0]
+        for record in dynamic.graphs  # type: ignore[attr-defined]
+    } == {1, 2}
 
 
 def test_a_per_axis_policy_collapses_only_the_axis_it_admits() -> None:
-    """pgw#1548's gate: adopt one axis without adopting the other."""
+    """pgw#1548's gate: adopt one axis without adopting the other.
+
+    AMENDED BY tcg#78: offering ONLY the batch axis now collapses nothing,
+    because that axis is the one the guards refuse. The fan comes back whole
+    and loudly -- which is also what pgw#1548 measured on the real endpoint
+    from the other direction (14 -> 14: the batch axis removed no
+    specializations even when it appeared to work).
+    """
 
     lane = _lane(lambda _target, _name, axis: axis == 0)
-    # Batch collapses (2 -> 1); the three aspect buckets stay a fan.
-    assert len(lane.graphs) == len(SHAPES)  # type: ignore[attr-defined]
+    assert len(lane.graphs) == len(SHAPES) * 2  # type: ignore[attr-defined]
+    for record in lane.graphs:  # type: ignore[attr-defined]
+        assert record.ingress.symbols == ()
+        sample = next(row for row in record.ingress.inputs if row.name == "sample")
+        assert all(isinstance(dim, int) for dim in sample.shape)
+
+
+def test_offering_only_the_aspect_axes_is_the_axis_that_pays() -> None:
+    """The other half of the gate, and the one the program is FOR."""
+
+    lane = _lane(lambda _target, _name, axis: axis in (2, 3))
+    assert len(lane.graphs) == 2  # type: ignore[attr-defined]
     for record in lane.graphs:  # type: ignore[attr-defined]
         sample = next(row for row in record.ingress.inputs if row.name == "sample")
-        assert isinstance(sample.shape[0], str)
-        assert isinstance(sample.shape[2], int)
+        assert isinstance(sample.shape[0], int), "batch was never offered"
+        assert isinstance(sample.shape[2], str)
 
 
 def _call(
@@ -127,10 +163,23 @@ def _call(
     return _matches(record, (), kwargs), kwargs
 
 
+def _record_for(lane: object, batch: int) -> GraphRecord:
+    """The record whose CFG mode is this batch -- the axis stayed concrete."""
+
+    record: GraphRecord = next(
+        candidate
+        for candidate in lane.graphs  # type: ignore[attr-defined]
+        if next(
+            row for row in candidate.ingress.inputs if row.name == "sample"
+        ).shape[0] == batch
+    )
+    return record
+
+
 def test_the_dispatcher_admits_every_observed_shape(dynamic: object) -> None:
-    (record,) = dynamic.graphs  # type: ignore[attr-defined]
     for height, width in SHAPES:
         for batch in (1, 2):
+            record = _record_for(dynamic, batch)
             matched, _ = _call(record, batch, height, width)
             assert matched, f"{batch}x{height}x{width} must enter the dynamic graph"
 
@@ -140,8 +189,8 @@ def test_the_dispatcher_refuses_shapes_outside_the_exported_range(
 ) -> None:
     """A symbolic dim is a RANGE, never a wildcard."""
 
-    (record,) = dynamic.graphs  # type: ignore[attr-defined]
-    assert not _call(record, 4, 64, 64)[0], "batch 4 is outside [1, 2]"
+    record = _record_for(dynamic, 2)
+    assert not _call(record, 4, 64, 64)[0], "batch 4 is not this record's batch"
     assert not _call(record, 2, 96, 64)[0], "a 96 side is outside [48, 80]"
     assert not _call(record, 2, 32, 64)[0], "a 32 side is outside [48, 80]"
     # In range and still refused: the graph's own guards accept this axis only
@@ -149,10 +198,11 @@ def test_the_dispatcher_refuses_shapes_outside_the_exported_range(
     assert not _call(record, 2, 56, 64)[0], "56 is in range but off-stride"
 
 
-def test_an_inconsistent_symbol_is_refused(dynamic: object) -> None:
-    """One symbol takes ONE value: batch 2 on sample, batch 1 on conditioning."""
+def test_an_inconsistent_batch_is_refused(dynamic: object) -> None:
+    """A record's rows agree: batch 2 on sample, batch 1 on conditioning is
+    not this record's call, whether the axis is symbolic or concrete."""
 
-    (record,) = dynamic.graphs  # type: ignore[attr-defined]
+    record = _record_for(dynamic, 2)
     rows = {row.name: row for row in record.ingress.inputs}
     text = rows["encoder_hidden_states"]
     kwargs = {
