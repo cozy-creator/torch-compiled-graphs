@@ -85,13 +85,15 @@ from .lane import (
     resolve_target,
 )
 from .layout import (
-    CATALOG as LAYOUT_CATALOG,
-)
-from .layout import (
-    CONTIGUOUS,
+    LayoutCorpusError,
     LayoutError,
     LayoutMorphism,
+    LayoutUndeliverableError,
+    contiguous_handle,
     require_morphism,
+)
+from .layout import (
+    catalog as layout_catalog,
 )
 from .quantize import (
     KeptModule,
@@ -216,11 +218,13 @@ __all__ = [
     "ArtifactFormatSkew",
     "ArtifactLoader",
     "CompileError",
-    "CONTIGUOUS",
     "COMPILED_GRAPH_FORMAT",
     "DroppedOptimization",
-    "LAYOUT_CATALOG",
+    "LayoutCorpusError",
+    "contiguous_handle",
+    "layout_catalog",
     "LayoutError",
+    "LayoutUndeliverableError",
     "LayoutMorphism",
     "declared_input_layout",
     "require_morphism",

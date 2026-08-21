@@ -8,7 +8,9 @@ per-call permute kernel for the conv weight and the other does not. That is the
 tcg#80 collision again, with strides instead of flags.
 
 Every arm below moves the SOURCE OF TRUTH -- `compiler._DECLARED_INPUT_LAYOUT`
-for the declaration, `layout.CATALOG` for the vocabulary -- and never hands a
+for the declaration, and for the vocabulary the RATIFIED RECORDS THEMSELVES
+(tcg#87: `layout.py` holds no handle, no rank and no permutation of its own, so
+the only way to move the vocabulary is to move a document) -- and never hands a
 predicate an argument.
 """
 
@@ -30,11 +32,33 @@ from torchcg import layout as layout_module
 from torchcg.artifact import ArtifactError
 from torchcg.engine import AdmissionError
 from torchcg.graph_identity import EnvIdentity
-from torchcg.layout import CONTIGUOUS, LayoutError
+from torchcg.layout import LayoutError, LayoutUndeliverableError, contiguous_handle
 from torchcg.runner import ConstantBindingError
 
-CHANNELS_LAST = "torch.channels-last@1"
+#: Read from the corpus at call time, never spelled: see `contiguous_handle`.
+CONTIGUOUS = contiguous_handle()
+CHANNELS_LAST = "torch.channels_last-2d@1"
 STACK = (("nvidia-cublas-cu13", "13.0.0"), ("torch", "2.13.0"), ("triton", "3.7.1"))
+
+
+_CORPUS = Path(__file__).resolve().parent / "testdata" / "spec" / "v2"
+
+
+@pytest.fixture()
+def corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A private copy of the ratified corpus, so an arm can move the SOURCE.
+
+    Never the real one: an arm that edited the checked-in records would leave
+    the suite's later tests reading a mutated vocabulary.
+    """
+
+    root = tmp_path / "corpus" / "v2"
+    (root / "layouts").mkdir(parents=True)
+    for path in (_CORPUS / "layouts").glob("*.json"):
+        (root / "layouts" / path.name).write_bytes(path.read_bytes())
+    monkeypatch.setenv("TENSORFS_SPEC_V2", str(root))
+    layout_module._paired.cache_clear()
+    return root / "layouts"
 
 
 def _toolchain() -> dict[str, str]:
@@ -87,11 +111,82 @@ def test_the_shipped_declaration_is_the_stored_layout() -> None:
     """Row-major, which is what every existing tree and artifact is."""
 
     assert compiler_module.declared_input_layout() == CONTIGUOUS
-    assert sorted(layout_module.CATALOG) == [
-        "torch.channels-last-3d@1",
-        "torch.channels-last@1",
+    assert sorted(layout_module.catalog()) == [
+        "torch.channels_last-2d@1",
+        "torch.channels_last-3d@1",
         "torch.contiguous@1",
     ]
+
+
+def test_the_deliverable_catalog_is_a_SUBSET_of_what_is_ratified() -> None:
+    """tcg#87. The corpus ratifies seven arrangements; this compiler can deliver
+    three of them, because a torch memory format produces those three and
+    nothing in torch produces the rest. The other four are not errors and not
+    candidates -- they are ratified layouts that reach a tensor through the
+    tensorfs fill path instead of through a declaration here."""
+
+    from tensorfs import layouts
+
+    ratified = set(layouts(_CORPUS))
+    deliverable = set(layout_module.catalog())
+    assert deliverable < ratified
+    undeliverable = ratified - deliverable
+    assert undeliverable == {
+        "cublas.blockscale-128x4@1",
+        "nunchaku.micro-scale@1",
+        "torch.stride-padding-16@1",
+        "torch.transposed@1",
+    }
+
+    # And the refusal SAYS WHICH KIND OF MISS IT IS, because the remedies
+    # differ: ratify a record, versus deliver it in flight.
+    with pytest.raises(LayoutUndeliverableError, match="IS ratified"):
+        layout_module.require_morphism("nunchaku.micro-scale@1")
+    with pytest.raises(LayoutError, match="not a ratified layout morphism"):
+        layout_module.require_morphism("cozy.invented@1")
+
+
+def test_the_pairing_is_ARITHMETIC_and_a_moved_record_stops_pairing(
+    corpus: Path,
+) -> None:
+    """THE ONE-PRODUCER FENCE, red-proven by moving the SOURCE.
+
+    torchcg pairs a torch memory format with a record only when the permutation
+    torch produces at that rank EQUALS the permutation the record states. So
+    perturbing the record -- the ratifying document, not a predicate's argument
+    -- must drop the pairing, not be quietly absorbed by a literal that says
+    channels_last anyway.
+    """
+
+    import json
+
+    record = corpus / "torch.channels_last-2d.v1.json"
+    document = json.loads(record.read_text(encoding="utf-8"))
+    assert document["permutation"] == [0, 2, 3, 1]
+    document["permutation"] = [0, 3, 2, 1]
+    record.write_text(json.dumps(document), encoding="utf-8")
+    layout_module._paired.cache_clear()
+
+    assert CHANNELS_LAST not in layout_module.catalog()
+    with pytest.raises(LayoutUndeliverableError):
+        layout_module.require_morphism(CHANNELS_LAST)
+
+
+def test_no_corpus_is_a_NAMED_refusal_never_an_empty_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty catalog reads as "nothing is ratified", and the caller's next
+    move is to fall back to row-major -- silently undoing the delivery this
+    whole axis exists to make possible."""
+
+    from torchcg.layout import CORPUS_ENV, LayoutCorpusError
+
+    monkeypatch.setenv(CORPUS_ENV, str(tmp_path / "nowhere"))
+    layout_module._paired.cache_clear()
+    with pytest.raises(LayoutCorpusError, match="no ratified layout corpus"):
+        layout_module.catalog()
+    with pytest.raises(LayoutCorpusError):
+        layout_module.require_morphism("torch.contiguous@1")
 
 
 def test_an_unratified_layout_is_a_refusal_not_a_coercion(
@@ -118,10 +213,10 @@ def test_a_catalog_morphism_is_torchs_own_memory_format_not_a_copied_order() -> 
 
     from torch._inductor.ir import NHWC_STRIDE_ORDER, NHWDC_STRIDE_ORDER
 
-    catalog = layout_module.CATALOG
+    catalog = layout_module.catalog()
     assert catalog[CHANNELS_LAST].stride_order(4) == tuple(NHWC_STRIDE_ORDER)
-    assert catalog["torch.channels-last-3d@1"].stride_order(5) == tuple(NHWDC_STRIDE_ORDER)
-    assert layout_module.morphism_for_stride_order(NHWC_STRIDE_ORDER) is catalog[CHANNELS_LAST]
+    assert catalog["torch.channels_last-3d@1"].stride_order(5) == tuple(NHWDC_STRIDE_ORDER)
+    assert layout_module.morphism_for_stride_order(NHWC_STRIDE_ORDER) == catalog[CHANNELS_LAST]
     # A rank the morphism is not defined for leaves the tensor row-major, and
     # a stride order no catalog entry names is a CANDIDATE, never a guess.
     assert catalog[CHANNELS_LAST].stride_order(2) is None
@@ -206,7 +301,7 @@ def test_a_mint_whose_tensors_contradict_its_declaration_refuses_before_compilin
     _declare(monkeypatch, CHANNELS_LAST)
     spec, _, _ = _spec()
     engine = Engine(LocalCAS(tmp_path / "cas"))
-    with pytest.raises(AdmissionError, match=r"declares input layout .*channels-last"):
+    with pytest.raises(AdmissionError, match=r"declares input layout .*channels_last"):
         engine.compile(
             spec, RuntimeCompatibility("cpu", toolchain=_toolchain()), tmp_path / "compiled"
         )
@@ -317,18 +412,19 @@ def test_real_aoti_nchw_bytes_offered_to_a_channels_last_artifact_are_a_typed_re
 
 @pytest.mark.real_aoti
 def test_real_aoti_an_out_of_catalog_wish_falls_back_and_emits_an_unratified_candidate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corpus: Path
 ) -> None:
     """The PERMANENT fallback path, driven by moving the catalog itself.
 
-    With `torch.channels-last@1` absent from the vocabulary, inductor still
+    With `torch.channels_last-2d@1` absent from the RATIFYING CORPUS, inductor still
     wants stride order [3, 0, 2, 1] for the conv weight. The mint compiles
     against the STORED layout, serves, and emits the order as a candidate with
     no morphism name attached. Machines derive along ratified morphisms; they
     never invent one.
     """
 
-    monkeypatch.delitem(layout_module.CATALOG, CHANNELS_LAST)
+    (corpus / "torch.channels_last-2d.v1.json").unlink()
+    layout_module._paired.cache_clear()
     engine = Engine(LocalCAS(tmp_path / "cas"))
     spec, module, sample = _spec()
     result = _mint(engine, spec, tmp_path, "compiled")
