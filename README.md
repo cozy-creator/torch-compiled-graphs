@@ -118,7 +118,7 @@ outputs = runner(*positional_inputs)
 `graph_interface` carries the current v3 graph-specialization facts. Its required
 `pytree.ingress` value is built and decoded only by this package; its digest is
 the graph specialization's ingress-range digest rather than a caller-supplied second
-identity. The same declaration derives the `cg-key-v1` lookup, mint stamp, and
+identity. The same declaration derives the `cg-key-v2` lookup, mint stamp, and
 admission expectation.
 
 `Engine.compile(spec, runtime, destination)` is the sealed one-specialization operation
@@ -227,7 +227,7 @@ per-step specializations and the session-state owner and says outright that the
 data-dependent iteration is the host's. It is a vocabulary, not a DSL, and it is
 deliberately class-level: it pins each class by specialization hash, its exact
 `CallIngress` value, and the tensor-layout contract it was traced against, never
-by a `cg-key-v1` value and never by a checkpoint, so one machine-independent
+by a `cg-key-v2` value and never by a checkpoint, so one machine-independent
 digest is valid on every SKU and the key is folded at adopt time. Typed bindings are generated from a
 declaration-time export rather than from the recipe; the recipe is the drift
 assertion against that declaration and the adopt-time name-to-identity
@@ -343,7 +343,7 @@ wheel, and publishes through PyPI Trusted Publishing.
   conflicting context.
 - `is_compiled_graph_key` validates the shared scheme-agnostic
   `<scheme>-<56 lowercase hex>` boundary grammar. The core derives only
-  `cg-key-v1` keys.
+  `cg-key-v2` keys.
 - Graph-specialization declarations use the current worker facts-v3 fold. The 16-hex
   canonical body witness and 16-hex specialization hash are paired collision chokepoints;
   the graph-specialization display name does not key.

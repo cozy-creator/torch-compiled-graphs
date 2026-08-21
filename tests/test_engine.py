@@ -490,7 +490,16 @@ def test_each_quarantine_event_replaces_the_previous_marker_generation(
 ) -> None:
     cas = LocalCAS(tmp_path / "cas")
     store = _CompiledGraphStore(cas)
-    key = str(from_axes({"graph": "graph", "sm": "sm_89", "toolchain": "toolchain"}))
+    key = str(
+        from_axes(
+            {
+                "compile_policy": "policy",
+                "graph": "graph",
+                "sm": "sm_89",
+                "toolchain": "toolchain",
+            }
+        )
+    )
     artifact = cas.put_bytes(b"artifact identity")
     store.quarantine(key, artifact)
     name = _quarantine_ref(key, artifact)
@@ -960,7 +969,14 @@ def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> 
     assert resolved is not None
     assert resolved.package.is_file()
 
-    wrong = from_axes({"graph": "wrong", "sm": "cpu", "toolchain": "wrong"})
+    wrong = from_axes(
+        {
+            "compile_policy": "wrong",
+            "graph": "wrong",
+            "sm": "cpu",
+            "toolchain": "wrong",
+        }
+    )
     with pytest.raises(StorageError, match="expected"):
         Engine(destination_cas).import_artifact(wrong, fetched)
 

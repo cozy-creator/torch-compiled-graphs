@@ -179,11 +179,15 @@ def test_the_constants_are_bound_from_the_live_module_by_reference(
 
     assert runner.bound is True
     assert set(runner.bound_fqns) == {"proj.weight", "proj.bias"}
-    # And the DECLARED set is strictly larger: inductor's folded constants are
-    # `source=computed` and the artifact owns them. Binding is by source, not
-    # by "everything declared", which is why a state-dict table can be complete
-    # while the constant table is not.
-    assert set(runner.declared_fqns) > set(runner.bound_fqns)
+    # And the declared set is EXACTLY the bound set (tcg#80): with runtime
+    # constant folding off there is no `source=computed` row for the artifact
+    # to own, so every declared constant is a raw pointer into the live
+    # module. That equality IS the memory fix -- a `computed` row is a second
+    # copy of a weight, materialized on the first call by a `cudaMalloc`
+    # outside the caching allocator. Binding is still by SOURCE rather than
+    # by "everything declared"; there is simply nothing left to skip.
+    assert set(runner.declared_fqns) == set(runner.bound_fqns)
+    assert not [row for row in runner._constants if row.source == "computed"]
     for fqn, value in runner._bound_values.items():
         assert value.data_ptr() == adopted.pipe.unet.state_dict()[fqn].data_ptr()
 

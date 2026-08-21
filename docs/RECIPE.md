@@ -104,17 +104,20 @@ second implementation as a real bound.
 
 ## Identity and the key
 
-**A recipe never carries a `cg-key-v1` value.** It pins `graph` only. The exact
+**A recipe never carries a `cg-key-v2` value.** It pins `graph` only. The exact
 key is folded at adopt time from the pod's own axes:
 
 ```text
-cg-key-v1 = key({graph: <variant specialization_hash>, sm: <pod>, toolchain: <pod>})
+cg-key-v2 = key({graph: <variant specialization_hash>, sm: <pod>,
+                 toolchain: <pod>, compile_policy: <this build's compiler>})
 ```
 
 so one recipe digest is valid on every SKU and toolchain, and a re-mint changes
 keys without touching author source (§4.27, §4.29). `GraphSpecializationVariant.key()`
 takes any object with `sm` and `toolchain` — `RuntimeCompatibility` satisfies it
-structurally, which is why this module never imports Torch.
+structurally, which is why this module never imports Torch. The
+`compile_policy` axis (tcg#80) is read from `torchcg.compiler`, which imports
+no Torch at module scope, so that property is unchanged.
 
 ## Digest, and how it rides beside `endpoint.lock`
 
