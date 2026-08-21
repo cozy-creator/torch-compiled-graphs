@@ -44,7 +44,12 @@ def _graph(tmp_path: Path, constants: list[dict[str, object]]) -> StoredCompiled
     return StoredCompiledGraph(
         "cg-key-v1-" + "0" * 56,
         directory,
-        {"graph_specialization": {"name": "denoiser", "constants": constants}},
+        {
+            "graph_specialization": {"name": "denoiser", "constants": constants},
+            # tcg#83: the binder reads the artifact's declared layout, so the
+            # fixture states one exactly as a real artifact must.
+            "declared_input_layout": "torch.contiguous@1",
+        },
         CASRef.parse("sha256:" + "1" * 64),
     )
 
@@ -182,20 +187,25 @@ def test_literal_load_oom_is_typed_and_poisons_runner(
     assert retry.value.reason == "binding_failed"
 
 
-def test_contiguity_copy_oom_is_typed_and_poisons_runner(
+def test_an_unreadable_layout_is_typed_and_poisons_runner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """tcg#83 replaced the bind-time contiguity COPY with a bind-time QUESTION.
+
+    There is no repack here any more -- bytes in the declared layout bind by
+    reference and bytes in any other layout refuse -- so the failure this arm
+    guards moved with it: asking a value about its layout can still exhaust the
+    device, and that stays typed rather than generic.
+    """
+
     class OutOfMemoryError(RuntimeError):
         pass
 
     class Value:
-        def is_contiguous(self) -> bool:
-            return False
+        def dim(self) -> int:
+            return 1
 
-        def detach(self) -> Value:
-            return self
-
-        def contiguous(self) -> Value:
+        def is_contiguous(self, memory_format: object = None) -> bool:
             raise OutOfMemoryError("allocation failed")
 
     package = FakePackage(("weight",))

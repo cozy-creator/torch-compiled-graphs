@@ -8,17 +8,24 @@ formats.
 An artifact carries one `compiled_graph_key` with this canonical derivation:
 
 ```text
-cg-key-v2- + first 56 lowercase hexadecimal characters of
-SHA-256(canonical JSON({compile_policy, graph, sm, toolchain}))
+cg-key-v3- + first 56 lowercase hexadecimal characters of
+SHA-256(canonical JSON({compile_policy, declared_input_layout, graph, sm,
+                        toolchain}))
 ```
 
-The three axes are exhaustive:
+The five axes are exhaustive:
 
 - `graph`: the 16-hex graph-specialization hash of the current facts-v3 fold. It binds
   target, fork, specialization dimensions, the derived call-ingress digest,
   graph-interface facts,
   the 16-hex canonical body witness, strictness, LoRA bucket, and multi-device
   placement when present. The display graph-specialization name does not key;
+- `declared_input_layout`: the ratified layout-morphism handle the mint
+  compiled its inputs and constants against (`torch.contiguous@1` by default).
+  It is an axis because the `graph` axis is stride-BLIND -- the canonical graph
+  form carries shapes, dtypes and devices, never strides -- so two mints that
+  differ only in byte layout emit different code and would otherwise share one
+  address (tcg#83);
 - `sm`: the concrete CUDA compute capability or CPU target; and
 - `toolchain`: the 16-hex current-worker digest of an explicit recorded
   compiler-content block. The block carries the settings declaration,
@@ -65,7 +72,18 @@ Required top-level metadata includes:
   constant survived as a bindable table row rather than being inlined into the
   generated code; it is delivered by `always_keep_tensor_constants`, and the
   policy — not the flag's name — is what the artifact states and what the key
-  carries.
+  carries. The policy is the EXECUTED one: an option the target would silently
+  drop is refused at mint, or, when the drop is explicitly sanctioned, removed
+  before the digest, so the key states what actually ran (tcg#85);
+- `declared_input_layout`, a ratified layout-morphism handle, which is also a
+  key axis and the contract the constant binder enforces: bytes already in the
+  declared layout bind by reference with zero copies, and bytes in any other
+  layout are a typed refusal rather than a silent repack; and
+- `layout_wishlist`, the layouts inductor asked to CHANGE during this compile,
+  read from its own `require_strides` and stated per constant fqn. A row names
+  a ratified morphism or nothing -- an out-of-catalog wish carries only the
+  stride order, as an unratified candidate. It is deliberately NOT a key axis:
+  it is an output of the bytes, not an input to them.
 
 Those are the exact v1 top-level and graph-specialization fields; extensions and abandoned
 pre-launch shapes are refused. Readers reject missing, duplicate, non-file, or

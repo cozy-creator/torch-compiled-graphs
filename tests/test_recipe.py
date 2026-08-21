@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from torchcg.compiler import compile_policy_digest
+from torchcg.compiler import compile_policy_digest, declared_input_layout
 from torchcg.contracts import read_contract
 from torchcg.identity import KEY_SCHEME, from_axes, toolchain_axis_digest
 from torchcg.ingress import CallIngress, CallInput
@@ -323,7 +323,8 @@ def test_recipe_digest_is_machine_independent_and_the_key_is_not() -> None:
     assert variant.key(ampere) != variant.key(rebuilt)
     assert variant.key(ampere) == from_axes(
         {
-            "compile_policy": compile_policy_digest(),
+            "compile_policy": compile_policy_digest("cuda"),
+            "declared_input_layout": declared_input_layout(),
             "graph": str(variant.specialization_hash),
             "sm": "sm_86",
             "toolchain": toolchain_axis_digest({"torch": "a" * 16}),

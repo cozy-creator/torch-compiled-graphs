@@ -27,24 +27,30 @@ from torchcg.identity import (
 )
 
 #: One complete axis set, so a test about ONE axis states only that axis.
-_AXES = {"compile_policy": "p", "graph": "g", "sm": "s", "toolchain": "t"}
+_AXES = {
+    "compile_policy": "p",
+    "declared_input_layout": "torch.contiguous@1",
+    "graph": "g",
+    "sm": "s",
+    "toolchain": "t",
+}
 
 
-def test_key_is_stable_and_has_only_the_four_compilation_axes() -> None:
+def test_key_is_stable_and_has_only_the_five_compilation_axes() -> None:
     key = from_axes(
         {
             "sm": "sm_89",
             "toolchain": "0123456789abcdef",
             "graph": "fedcba9876543210",
             "compile_policy": "89abcdef01234567",
+            "declared_input_layout": "torch.contiguous@1",
         }
     )
     assert key.canonical() == (
-        b'{"compile_policy":"89abcdef01234567","graph":"fedcba9876543210",'
-        b'"sm":"sm_89","toolchain":"0123456789abcdef"}'
+        b'{"compile_policy":"89abcdef01234567","declared_input_layout":"torch.contiguous@1","graph":"fedcba9876543210","sm":"sm_89","toolchain":"0123456789abcdef"}'
     )
     assert str(key) == (
-        "cg-key-v2-6bc2ed171c5937903d4c70aa9a7f26fd4c6d5ab5308bf17210922413"
+        "cg-key-v3-c18bfdb53993bfbfda3dde3334757f1705627eb6e59761ab85436179"
     )
 
 
@@ -59,6 +65,7 @@ def test_toolchain_axis_and_final_key_match_current_worker_golden_vector() -> No
                 "sm": vector["sm"],
                 "toolchain": axis,
                 "compile_policy": vector["compile_policy_axis"],
+                "declared_input_layout": vector["declared_input_layout"],
             }
         )
     ) == vector["key"]
@@ -140,6 +147,7 @@ def _artifact_metadata(block_name: str) -> dict[str, object]:
         block_name: {"specialization_hash": "fedcba9876543210"},
         "toolchain": {"torch": "2.13.0"},
         "compile_policy": {"aot_inductor.package": True},
+        "declared_input_layout": "torch.contiguous@1",
     }
 
 

@@ -104,12 +104,13 @@ second implementation as a real bound.
 
 ## Identity and the key
 
-**A recipe never carries a `cg-key-v2` value.** It pins `graph` only. The exact
+**A recipe never carries a `cg-key-v3` value.** It pins `graph` only. The exact
 key is folded at adopt time from the pod's own axes:
 
 ```text
-cg-key-v2 = key({graph: <variant specialization_hash>, sm: <pod>,
-                 toolchain: <pod>, compile_policy: <this build's compiler>})
+cg-key-v3 = key({graph: <variant specialization_hash>, sm: <pod>,
+                 toolchain: <pod>, compile_policy: <this build's compiler>,
+                 declared_input_layout: <this build's declaration>})
 ```
 
 so one recipe digest is valid on every SKU and toolchain, and a re-mint changes
