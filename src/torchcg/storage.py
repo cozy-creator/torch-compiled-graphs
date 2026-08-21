@@ -116,14 +116,25 @@ class _CompiledGraphStore:
         self.cas = cas
 
     def _admit(self, artifact: Path) -> CASRef:
-        """Admit one whole-file blob, writing nothing when the store already holds it."""
+        """Admit one whole-file blob, writing nothing when the store already holds it.
+
+        `verify_object`, not `contains`. tensorfs `276640a` split the two on
+        purpose -- "presence is not integrity": `contains` is one `lstat` and
+        answers True for bytes corrupted IN PLACE, by design, because that is
+        the question a resume journal or a fetch decision asks. The question
+        HERE is different and it is the suspicious one: an artifact whose blob
+        went bad must be REPLACED rather than re-registered, or the corruption
+        survives admission and surfaces later as a quarantine on a graph that
+        was never divergent. `verify_object` is the scrub, and it is the only
+        thing that rehashes.
+        """
 
         ref = _digest_file(artifact)
         try:
-            if self.cas.contains(ref):
-                return ref
-        except DigestMismatch:
-            # The named blob is present but unusable; put_file replaces it atomically.
+            self.cas.verify_object(ref)
+            return ref
+        except (DigestMismatch, FileNotFoundError):
+            # Absent, or present and unusable; put_file writes it atomically.
             pass
         return self.cas.put_file(artifact, expected=ref)
 
