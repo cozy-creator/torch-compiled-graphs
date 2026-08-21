@@ -98,7 +98,7 @@ def test_the_store_banks_one_symbolic_parent_and_the_compile_seam_rebinds(
         static_bind=True,
         program_sink=lambda graph, program: banked.__setitem__(graph, program),
     )
-    records = list(lane.graphs)  # type: ignore[attr-defined]
+    records = list(lane.graphs)
     assert len(banked) == len(records)
     # Every record banked a SYMBOLIC parent, and per structural group the
     # parent is ONE object — the bytes dedup in a content-addressed store.

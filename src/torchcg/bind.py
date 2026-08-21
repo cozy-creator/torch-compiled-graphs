@@ -79,7 +79,7 @@ def respecialize(program: Any, ingress: Any, *, strict: bool = False) -> Any:
             if isinstance(spec.arg, ConstantArgument):
                 leaves.append(spec.arg.value)
                 continue
-            name = getattr(spec.arg, "name", None)
+            name = str(getattr(spec.arg, "name", "") or "")
             row = rows.get(name)
             template = values.get(name)
             if row is None or template is None:
