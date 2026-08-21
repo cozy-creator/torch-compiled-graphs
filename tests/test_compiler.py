@@ -130,6 +130,15 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "AdoptSession",
         "ArtifactError",
         "ArtifactFormatSkew",
+        # tcg#88 -- static bind. `respecialize`/`bind_static_spec` derive a
+        # program whose identity is VERIFIED against the requested graph hash
+        # before anything compiles, and `strip_diagnostics` removes per-node
+        # debug strings the hash never reads -- none can change a compiled
+        # graph's output without the identity refusal firing first.
+        "BindError",
+        "bind_static_spec",
+        "respecialize",
+        "strip_diagnostics",
         # tcg#83 -- the layout-morphism vocabulary and the declaration read
         # off this build. `require_morphism` is a validator, not a callback:
         # it resolves a NAME in a closed catalog and refuses everything else.
