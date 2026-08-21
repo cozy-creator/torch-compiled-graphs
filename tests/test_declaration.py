@@ -16,6 +16,7 @@ from torchcg import (
 )
 from torchcg.contracts import read_contract
 from torchcg.declaration import _graph_digest
+from torchcg.identity import KEY_SCHEME
 
 torch: Any = pytest.importorskip("torch")
 
@@ -170,7 +171,7 @@ def test_graph_specialization_target_and_runtime_are_exact_key_facts() -> None:
 
     assert first.specialization_hash == renamed.specialization_hash
     assert first.specialization_hash != retargeted.specialization_hash
-    assert str(runtime.key(first)).startswith("cg-key-v1-")
+    assert str(runtime.key(first)).startswith(KEY_SCHEME + "-")
     assert runtime.key(first) != RuntimeCompatibility(
         "cpu", toolchain={"torch": "build-b"}
     ).key(first)

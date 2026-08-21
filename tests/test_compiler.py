@@ -48,7 +48,8 @@ def test_compile_uses_the_one_fixed_v1_policy(monkeypatch: pytest.MonkeyPatch) -
     assert seen["options"] == {
         "compile_threads": 4,
         "aot_inductor.package_constants_in_so": False,
-        "aot_inductor.use_runtime_constant_folding": True,
+        "always_keep_tensor_constants": True,
+        "aot_inductor.use_runtime_constant_folding": False,
         "aot_inductor.package": True,
     }
 

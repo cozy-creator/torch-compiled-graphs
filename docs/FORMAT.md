@@ -8,8 +8,8 @@ formats.
 An artifact carries one `compiled_graph_key` with this canonical derivation:
 
 ```text
-cg-key-v1- + first 56 lowercase hexadecimal characters of
-SHA-256(canonical JSON({graph, sm, toolchain}))
+cg-key-v2- + first 56 lowercase hexadecimal characters of
+SHA-256(canonical JSON({compile_policy, graph, sm, toolchain}))
 ```
 
 The three axes are exhaustive:
@@ -57,8 +57,15 @@ Required top-level metadata includes:
   recomputable from the exact facts-v3 fold;
 - non-empty `sm` and worker-recorded `toolchain` facts;
 - a separate `host_isa` requirement;
-- `package_constants_in_so: false`; and
-- `constant_folding_fenced: true`.
+- `compile_policy`, the codegen-relevant compile options the mint ran under,
+  verbatim; and
+- `package_constants_in_so: false` and `constant_folding_fenced: true`, both
+  DERIVED from that `compile_policy` and refused when they disagree with it
+  (tcg#80). `constant_folding_fenced` is the property that every state-dict
+  constant survived as a bindable table row rather than being inlined into the
+  generated code; it is delivered by `always_keep_tensor_constants`, and the
+  policy — not the flag's name — is what the artifact states and what the key
+  carries.
 
 Those are the exact v1 top-level and graph-specialization fields; extensions and abandoned
 pre-launch shapes are refused. Readers reject missing, duplicate, non-file, or

@@ -22,17 +22,29 @@ from torchcg.contracts import read_contract
 from torchcg.identity import (
     from_artifact_metadata,
     from_axes,
+    policy_axis_digest,
     toolchain_axis_digest,
 )
 
+#: One complete axis set, so a test about ONE axis states only that axis.
+_AXES = {"compile_policy": "p", "graph": "g", "sm": "s", "toolchain": "t"}
 
-def test_key_is_stable_and_has_only_the_three_compilation_axes() -> None:
-    key = from_axes({"sm": "sm_89", "toolchain": "0123456789abcdef", "graph": "fedcba9876543210"})
+
+def test_key_is_stable_and_has_only_the_four_compilation_axes() -> None:
+    key = from_axes(
+        {
+            "sm": "sm_89",
+            "toolchain": "0123456789abcdef",
+            "graph": "fedcba9876543210",
+            "compile_policy": "89abcdef01234567",
+        }
+    )
     assert key.canonical() == (
-        b'{"graph":"fedcba9876543210","sm":"sm_89","toolchain":"0123456789abcdef"}'
+        b'{"compile_policy":"89abcdef01234567","graph":"fedcba9876543210",'
+        b'"sm":"sm_89","toolchain":"0123456789abcdef"}'
     )
     assert str(key) == (
-        "cg-key-v1-aefe4c6d52d304f8ef7cc6f9ffae296113b1546defe761e1c12ac2cf"
+        "cg-key-v2-6bc2ed171c5937903d4c70aa9a7f26fd4c6d5ab5308bf17210922413"
     )
 
 
@@ -41,8 +53,16 @@ def test_toolchain_axis_and_final_key_match_current_worker_golden_vector() -> No
     axis = toolchain_axis_digest(vector["block"])
     assert axis == vector["toolchain_axis"]
     assert str(
-        from_axes({"graph": vector["graph"], "sm": vector["sm"], "toolchain": axis})
+        from_axes(
+            {
+                "graph": vector["graph"],
+                "sm": vector["sm"],
+                "toolchain": axis,
+                "compile_policy": vector["compile_policy_axis"],
+            }
+        )
     ) == vector["key"]
+    assert policy_axis_digest(vector["compile_policy"]) == vector["compile_policy_axis"]
     changed_model_libraries = dict(vector["block"])
     changed_model_libraries.update(diffusers="changed", transformers="changed", peft="changed")
     assert toolchain_axis_digest(changed_model_libraries) == axis
@@ -50,19 +70,19 @@ def test_toolchain_axis_and_final_key_match_current_worker_golden_vector() -> No
 
 def test_unknown_or_missing_axes_are_refused() -> None:
     with pytest.raises(IdentityError, match="unknown identity"):
-        from_axes({"graph": "g", "sm": "s", "toolchain": "t", "family": "sdxl"})
+        from_axes({**_AXES, "family": "sdxl"})
     with pytest.raises(IdentityError, match="toolchain"):
-        from_axes({"graph": "g", "sm": "s"})
+        from_axes({name: value for name, value in _AXES.items() if name != "toolchain"})
 
 
 def test_a_key_cannot_be_hashed_as_an_input_fact() -> None:
-    key = str(from_axes({"graph": "g", "sm": "s", "toolchain": "t"}))
+    key = str(from_axes(_AXES))
     with pytest.raises(IdentityError, match="not an identity fact"):
-        from_axes({"graph": key, "sm": "s", "toolchain": "t"})
+        from_axes({**_AXES, "graph": key})
 
 
 def test_public_boundary_validator_accepts_only_the_key_shape() -> None:
-    key = str(from_axes({"graph": "g", "sm": "s", "toolchain": "t"}))
+    key = str(from_axes(_AXES))
     assert is_compiled_graph_key(key)
     assert not is_compiled_graph_key(key.upper())
     assert not is_compiled_graph_key("not-a-key")
@@ -86,11 +106,11 @@ def test_public_boundary_validator_matches_shared_key_corpus() -> None:
     assert all(is_compiled_graph_key(row["key"]) is row["valid"] for row in vectors)
 
 
-def test_compiled_key_constructor_enforces_the_three_canonical_axes() -> None:
+def test_compiled_key_constructor_enforces_the_canonical_axes() -> None:
     with pytest.raises(IdentityError, match="axes must be exactly"):
         CompiledGraphKey((("bogus", "axis"),))
     with pytest.raises(IdentityError, match="canonical string 'sm'"):
-        CompiledGraphKey((("graph", "g"), ("sm", " cpu"), ("toolchain", "t")))
+        CompiledGraphKey(tuple(sorted({**_AXES, "sm": " cpu"}.items())))
 
 
 @pytest.mark.parametrize(
@@ -119,6 +139,7 @@ def _artifact_metadata(block_name: str) -> dict[str, object]:
         "sm": "sm_89",
         block_name: {"specialization_hash": "fedcba9876543210"},
         "toolchain": {"torch": "2.13.0"},
+        "compile_policy": {"aot_inductor.package": True},
     }
 
 

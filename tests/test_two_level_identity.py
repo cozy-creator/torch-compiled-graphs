@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from torchcg.graph_identity import (
+    ENV_SCHEME,
     EnvIdentity,
     GraphIdentityError,
     compile_stack,
@@ -74,7 +75,7 @@ def test_env_identity_refuses_a_whole_installed_set() -> None:
 def test_env_identity_is_deterministic_and_axis_sensitive() -> None:
     a = EnvIdentity(stack=STACK, sm="sm_89")
     assert a.value == EnvIdentity(stack=dict(STACK), sm="sm_89").value
-    assert a.value.startswith("cg-env-v2-")
+    assert a.value.startswith(ENV_SCHEME + "-")
     assert a.value != EnvIdentity(stack=STACK, sm="sm_86").value
     assert a.value != EnvIdentity(stack=(("torch", "2.14.0"),), sm="sm_89").value
     assert "torch 2.13.0" in a.describe() and "sm_89" in a.describe()

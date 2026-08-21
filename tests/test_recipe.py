@@ -8,8 +8,9 @@ from typing import Any
 
 import pytest
 
+from torchcg.compiler import compile_policy_digest
 from torchcg.contracts import read_contract
-from torchcg.identity import from_axes, toolchain_axis_digest
+from torchcg.identity import KEY_SCHEME, from_axes, toolchain_axis_digest
 from torchcg.ingress import CallIngress, CallInput
 from torchcg.recipe import (
     IDENTIFIER_GRAMMAR,
@@ -322,12 +323,13 @@ def test_recipe_digest_is_machine_independent_and_the_key_is_not() -> None:
     assert variant.key(ampere) != variant.key(rebuilt)
     assert variant.key(ampere) == from_axes(
         {
+            "compile_policy": compile_policy_digest(),
             "graph": str(variant.specialization_hash),
             "sm": "sm_86",
             "toolchain": toolchain_axis_digest({"torch": "a" * 16}),
         }
     )
-    assert str(variant.key(ampere)).startswith("cg-key-v1-")
+    assert str(variant.key(ampere)).startswith(KEY_SCHEME + "-")
     # The document carries no machine axis at all, so no SKU can rekey the pin.
     assert "sm_" not in recipe.canonical().decode("ascii")
 
