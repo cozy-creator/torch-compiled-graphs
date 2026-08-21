@@ -139,14 +139,19 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "bind_static_spec",
         "respecialize",
         "strip_diagnostics",
-        # tcg#83 -- the layout-morphism vocabulary and the declaration read
-        # off this build. `require_morphism` is a validator, not a callback:
-        # it resolves a NAME in a closed catalog and refuses everything else.
-        "CONTIGUOUS",
-        "LAYOUT_CATALOG",
+        # tcg#83/tcg#87 -- the declaration read off this build, resolved
+        # against the ONE ratified vocabulary (tensorfs' spec/v2/layouts).
+        # `require_morphism` is a validator, not a callback: it resolves a NAME
+        # in the ratified catalog and refuses everything else, distinguishing
+        # unratified from ratified-but-undeliverable.
+        "CORPUS_ENV",
+        "LayoutCorpusError",
         "LayoutError",
         "LayoutMorphism",
+        "LayoutUndeliverableError",
+        "contiguous_handle",
         "declared_input_layout",
+        "layout_catalog",
         "require_morphism",
         # tcg#85 -- an optimization the target will silently drop.
         "DroppedOptimization",

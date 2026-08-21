@@ -11,7 +11,7 @@ from typing import Any, cast
 from . import _wrapper_split
 from .host_isa import HostISAError, _impose_host_policy
 from .identity import policy_axis_digest
-from .layout import CONTIGUOUS, morphism_for_stride_order, require_morphism
+from .layout import contiguous_handle, morphism_for_stride_order, require_morphism
 
 logger = logging.getLogger(__name__)
 
@@ -93,12 +93,18 @@ _INERT_OPTIONS = frozenset(("triton.cudagraphs",))
 #: The declared byte layout of the tensors this mint compiles against, and the
 #: sole v1 policy -- the same sealed shape `_COMPILER_OPTIONS` has, and the
 #: same rule: the axis is READ from here, so moving this moves the key, the
-#: metadata and the binder together (tcg#83). It is `torch.contiguous@1`
-#: today, which is what every existing tree and every existing artifact is.
+#: metadata and the binder together (tcg#83).
+#:
+#: `None` means THE IDENTITY, resolved from the ratified corpus at call time
+#: rather than spelled here (tcg#87). It is deliberately not the string: this
+#: module is not an author of the one handle every existing tree and every
+#: existing artifact carries, and resolving it lazily also keeps `import
+#: torchcg` working with no corpus in reach, which a module-level literal read
+#: from the corpus would not.
 #: `research/layout-morphisms/0-DESIGN.md` §1: the compiler declares the layout
 #: it wants and the platform delivers it; until the storage half lands
 #: ([[tensorfs#155]]/[[pgw#1645]]) the honest declaration is the stored layout.
-_DECLARED_INPUT_LAYOUT: str = CONTIGUOUS
+_DECLARED_INPUT_LAYOUT: str | None = None
 
 
 class CompileError(RuntimeError):
@@ -322,7 +328,10 @@ def declared_input_layout() -> str:
     build, so a build cannot state a layout it did not compile under.
     """
 
-    return require_morphism(_DECLARED_INPUT_LAYOUT).handle
+    declared = _DECLARED_INPUT_LAYOUT
+    if declared is None:
+        declared = contiguous_handle()
+    return require_morphism(declared).handle
 
 
 def _option(policy: Mapping[str, object], name: str) -> bool:
@@ -707,7 +716,7 @@ def layout_violations(program: object) -> list[str]:
     disagreement is named here, before a compile is paid for.
     """
 
-    morphism = require_morphism(_DECLARED_INPUT_LAYOUT)
+    morphism = require_morphism(declared_input_layout())
     tensors: dict[str, Any] = {}
     for source in ("state_dict", "constants"):
         for name, value in (getattr(program, source, None) or {}).items():

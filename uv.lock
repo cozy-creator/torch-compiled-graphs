@@ -1411,7 +1411,7 @@ wheels = [
 [[package]]
 name = "tensorfs"
 version = "0.1.0"
-source = { git = "https://github.com/cozy-creator/tensorfs#c7951236c77b8672953b758b71bbe7f029e7bbf9" }
+source = { git = "https://github.com/cozy-creator/tensorfs#b65b2c0e055866ff5e4b7749fd4833e322436415" }
 
 [[package]]
 name = "tokenizers"
