@@ -23,7 +23,7 @@ from torchcg.document import GraphSetDocument
 # contract reference; compile targets are endpoint-level attribute paths on
 # the pipeline's own components -- the module named is the one actually
 # CALLED.
-LANE_CONTRACT = "sd15.diffusers-fp32@1"
+LANE_CONTRACT = "sd15.diffusers@1+plain.f32@1"
 COMPILE_TARGETS = ("unet", "vae.decoder")
 
 

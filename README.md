@@ -30,7 +30,8 @@ from source, which needs a Rust toolchain on the resolving machine.
 
 The ship-code-as-is surface (2026-08-18 rulings). The author's serving code
 runs untouched; a lane names compile-target attribute paths on the author's
-own objects plus the tensor-layout contract that lane expects checkpoints in.
+own objects plus the tensor-layout STAMP that lane expects checkpoints in --
+the v2 `(topology, quant)` pair, `sdxl.diffusers@1+plain.bf16@1`.
 Discovery hooks the targets, runs the author's sample invocation, and every
 distinct observed call is one graph specialization -- the observed ingress set IS the
 graph set. Identity is two-level: `cg-graph-v1` content-hashes the DERIVED
@@ -41,30 +42,25 @@ and artifacts hang off a graph by env = (resolved lockfile-closure hash, sm).
 import torch
 from tensorfs import LocalCAS
 from torchcg import (
-    EnvIdentity,
     GraphSetDocument,
-    Lane,
+    LaneRef,
     LocalGraphStore,
-    closure_hash,
+    compile_stack,
     discover_lane,
     holes,
     installed_closure,
 )
 
-lane = Lane(
-    "bf16",
-    compile=("unet", "vae.decoder"),
-    contract="plain.bf16@1",
-    dtype=torch.bfloat16,
+lane = LaneRef("sdxl.diffusers@1+plain.bf16@1", dtype=torch.bfloat16)
+graphs = discover_lane(
+    lane, ("unet", "vae.decoder"), pipe.components, lambda: pipe(**sample)
 )
-graphs = discover_lane(lane, pipe.components, lambda: pipe(**sample))
-document = GraphSetDocument(closure=closure_hash(installed_closure()),
-                            lanes=(graphs,))
+stack = compile_stack(installed_closure())
+document = GraphSetDocument(stack=stack, lanes=(graphs,))
 
 store = LocalGraphStore(LocalCAS("/var/cache/graphs"))
 store.put_graphs("release-1", document)
-env = EnvIdentity(closure=document.closure, sm="sm_89")
-missing = holes(store, document.lanes[0], env)   # mint ONLY these
+missing = holes(store, document.lanes[0], document.env("sm_89"))  # mint ONLY these
 ```
 
 `GraphStore` is the abstract seam: torchcg knows nothing about hubs, releases
@@ -73,9 +69,10 @@ backends implement the same protocol. Requirements manifests
 (`RequirementsManifest`, written by the mint from what it actually linked) are
 an AUDIT assertion -- `assert_exact_env` refuses loudly when a pod's env is not
 the release's stamped env -- and `rank` exists only for the miss-path ladder.
-The lane spelling is the contract file's (the sdxl `main_v2.py` endpoint under
+The lane spelling is the contract file's (the sdxl `main.py` endpoint under
 line review); `tests/test_contract_lane_shape.py` keeps this API from drifting
-from it.
+from it, and `tests/test_lane_stamp_tcg79.py` holds the stamp grammar to
+tensorfs' own (`isTFM1ContractName` + `ParseHandle`, joined by `+`).
 
 ## V1 lifecycle
 

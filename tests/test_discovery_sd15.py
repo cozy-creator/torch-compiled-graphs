@@ -69,7 +69,7 @@ def test_document_is_stable_across_processes(document: GraphSetDocument) -> None
 def test_a_second_lane_stamps_a_distinct_graph_set() -> None:
     pipe = sd15_tiny.build_pipe()
     lane = discover_lane(
-        "sd15.decoder-only-fp32@1",
+        "sd15.decoder-only@1+plain.f32@1",
         ("vae.decoder",),
         pipe.components,
         lambda: sd15_tiny.drive(pipe),

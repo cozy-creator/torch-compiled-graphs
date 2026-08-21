@@ -48,7 +48,7 @@ def graph(letter: str) -> str:
 
 def lane_graphs(*letters: str) -> LaneGraphs:
     return LaneGraphs(
-        contract="sd15.diffusers-bf16@1",
+        contract="sd15.diffusers@1+plain.bf16@1",
         targets=("pipe.unet", "pipe.vae.decoder"),
         graphs=tuple(
             GraphRecord(graph=graph(letter), target="pipe.unet", ingress=ingress())
@@ -60,8 +60,8 @@ def lane_graphs(*letters: str) -> LaneGraphs:
 
 class TestLane:
     def test_accepts_the_contract_file_spelling(self) -> None:
-        lane = LaneRef("sdxl.diffusers-bf16@1", dtype="bf16-stand-in")
-        assert lane.contract == "sdxl.diffusers-bf16@1"
+        lane = LaneRef("sdxl.diffusers@1+plain.bf16@1", dtype="bf16-stand-in")
+        assert lane.contract == "sdxl.diffusers@1+plain.bf16@1"
         assert lane.dtype == "bf16-stand-in"
 
     def test_refuses_noncanonical_declarations(self) -> None:
@@ -106,7 +106,7 @@ class TestDocument:
     def test_every_declared_target_must_be_stated(self) -> None:
         with pytest.raises(DocumentError, match="says nothing about"):
             LaneGraphs(
-                contract="unit.c@1",
+                contract="unit.c@1+plain.bf16@1",
                 targets=("pipe.unet", "pipe.vae.decoder"),
                 graphs=(),
                 unobserved_targets=("pipe.unet",),

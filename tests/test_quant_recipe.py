@@ -48,7 +48,7 @@ from torchcg.transform import (
 )
 
 WIDTH = 64
-LANE = "tiny.fp8-rowwise@1"
+LANE = "tiny.plain@1+cozy.fp8-rowwise@1"
 QUANT_PASS = RecipeQuantize.NAME
 
 

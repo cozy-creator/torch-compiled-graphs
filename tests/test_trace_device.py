@@ -363,7 +363,7 @@ def test_the_restate_survives_the_SESSION_it_runs_inside() -> None:
                 module(torch.zeros((2, 4), dtype=torch.float32))
 
         discover_modules(
-            "tiny.lane@1",
+            "tiny.lane@1+plain.f32@1",
             {"denoiser": module},
             drive,
             program_sink=lambda graph, program: stored.setdefault(graph, program) and "",

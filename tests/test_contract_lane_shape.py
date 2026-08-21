@@ -1,31 +1,36 @@
 """The lane API is pinned to the contract file Paul line-reviews.
 
-The target-state SDXL endpoint (`serverless-endpoints/sdxl/src/sdxl/main_v2.py`)
+The target-state SDXL endpoint (`serverless-endpoints/sdxl/src/sdxl/main.py`)
 is the authority on the author-facing spelling. Paul's review ruling: the
-named ``Lane(...)`` class is DEAD -- a lane IS a tensorfs contract reference::
+named ``Lane(...)`` class is DEAD -- a lane IS a reference to the LAYOUT its
+checkpoints are in::
 
-    @endpoint(lanes=("sdxl.diffusers-bf16@1", "cozy.sdxl-fp8-rowwise@1"))
-    class SdxlEndpoint(Endpoint):
+    class SdxlModel(Model[SDXL], lanes={contracts.SDXL_DIFFUSERS_BF16: lane(...)}):
         def setup(self, ctx):
             ...
             self.pipe.unet = ctx.compile(self.pipe.unet)
 
-The decorator carries ``lanes=`` ONLY; the compile hint is IMPERATIVE,
+The class kwarg carries ``lanes=`` ONLY; the compile hint is IMPERATIVE,
 torch.compile-style, in setup (``self.pipe.unet = ctx.compile(self.pipe.unet)``)
 -- real objects, no strings. dtype comes FROM resolution (``ctx.lane.dtype``
 on the resolved ``LaneRef``), never from the author.
 
+tcg#79: what resolution renders those objects to is the v2 STAMP,
+``<topology>@<v>+<quant>@<v>`` -- so that, not the retired v1 contract handle,
+is what ``LaneRef`` and the document carry.
+
 Two fences, different in kind:
 
 1. ALWAYS-RUN -- a fixture endpoint shaped exactly like the contract file
-   (contract-handle lanes, imperative ctx.compile marking in setup, resolved
+   (stamp lanes, imperative ctx.compile marking in setup, resolved
    ``LaneRef.dtype`` consumed by setup) drives the real discovery primitive
    over the MARKED modules.
 2. SIBLING-CHECKOUT -- when the contract file itself is present on this
-   machine, its decorator's ``lanes=`` handles are validated through this
-   package's ``require_contract_ref``, the imperative ``ctx.compile(``
-   marking is asserted PRESENT, and the dead spellings (``Lane(``,
-   decorator ``compile=``) are asserted ABSENT.
+   machine, its ``lanes=`` entries are read (a MAPPING keyed by contract, or
+   the older tuple), any handle STRING among them is validated through this
+   package's ``require_lane_id``, the imperative ``ctx.compile(`` marking is
+   asserted PRESENT, and the dead spellings (``Lane(``, a ``compile=`` kwarg)
+   are asserted ABSENT.
    CI has no sibling checkouts; the skip names the absent path rather than
    printing green (the rename-hazard lesson: read the count, not the
    verdict).
@@ -44,9 +49,9 @@ pytest.importorskip("torch")
 import torch  # noqa: E402
 
 from torchcg.discovery import discover_modules  # noqa: E402
-from torchcg.lane import LaneRef, require_contract_ref  # noqa: E402
+from torchcg.lane import LaneRef, require_lane_id  # noqa: E402
 
-CONTRACT_FILE = Path.home() / "cozy/serverless-endpoints/sdxl/src/sdxl/main_v2.py"
+CONTRACT_FILE = Path.home() / "cozy/serverless-endpoints/sdxl/src/sdxl/main.py"
 
 
 class TinyUnet(torch.nn.Module):
@@ -99,10 +104,10 @@ class _MarkingCtx:
 class FixtureEndpoint:
     """The contract file's shape: contract-handle lanes beside unchanged code."""
 
-    lanes = ("sdxl.diffusers-bf16@1", "cozy.sdxl-fp8-rowwise@1")
+    lanes = ("sdxl.diffusers@1+plain.bf16@1", "sdxl.diffusers@1+cozy.fp8-rowwise@1")
 
     def setup(self, ctx: _MarkingCtx) -> None:
-        # main_v2: from_pretrained(..., torch_dtype=ctx.lane.dtype), then
+        # main.py: from_pretrained(..., torch_dtype=ctx.lane.dtype), then
         # self.pipe.unet = ctx.compile(self.pipe.unet)
         lane = ctx.lane
         self.pipe = TinyPipe(dtype=torch.float32 if lane.dtype is None else lane.dtype)
@@ -139,38 +144,49 @@ def test_fixture_endpoint_discovers_through_the_contract_shape() -> None:
 def test_two_lanes_share_targets_but_keep_their_own_contract() -> None:
     bf16, fp8 = FixtureEndpoint.lanes
     assert bf16 != fp8
-    assert require_contract_ref(bf16) and require_contract_ref(fp8)
+    assert require_lane_id(bf16) and require_lane_id(fp8)
 
 
 def _decorator_kwarg_elements(tree: ast.Module, kwarg: str) -> list[ast.expr]:
-    """Elements of `kwarg=(...)` on a class -- CLASS KEYWORDS first (the
-    ratified `class M(Model[MT], lanes=(...))` spelling), decorator calls as
-    the historical fallback."""
+    """Entries of `kwarg=` on a class -- CLASS KEYWORDS first (the ratified
+    `class M(Model[MT], lanes={...})` spelling), decorator calls as the
+    historical fallback.
+
+    Both container shapes are read. `lanes=` is a MAPPING today (the value is
+    the lane's demand formula), and it was a tuple before pgw#984; a reader
+    that knew only the tuple found ZERO entries in the live file and skipped
+    past the fence while printing green.
+    """
+
+    def entries(value: ast.expr) -> list[ast.expr]:
+        if isinstance(value, ast.Tuple):
+            return list(value.elts)
+        if isinstance(value, ast.Dict):
+            return [key for key in value.keys if key is not None]
+        return []
 
     out: list[ast.expr] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
         for keyword in node.keywords:
-            if keyword.arg == kwarg and isinstance(keyword.value, ast.Tuple):
-                out.extend(keyword.value.elts)
+            if keyword.arg == kwarg:
+                out.extend(entries(keyword.value))
         for decorator in node.decorator_list:
             if not isinstance(decorator, ast.Call):
                 continue
             for keyword in decorator.keywords:
-                if keyword.arg != kwarg or not isinstance(keyword.value, ast.Tuple):
-                    continue
-                out.extend(keyword.value.elts)
+                if keyword.arg == kwarg:
+                    out.extend(entries(keyword.value))
     return out
 
 
 def test_the_reviewed_contract_file_spells_lanes_as_contract_refs() -> None:
-    """Lanes are contract REFERENCES: registry objects or handle strings.
+    """Lanes are LAYOUT references: contract objects or v2 stamp strings.
 
-    Either spelling resolves to a tensorfs layout contract; what is fenced
-    OUT is the dead vocabulary -- a named Lane class, a decorator-level
-    compile= -- and a lanes= entry that is neither a registry reference nor
-    a handle.
+    Either spelling resolves to a tensor-layout stamp; what is fenced OUT is
+    the dead vocabulary -- a named Lane class, a decorator-level compile= --
+    and a lanes= entry that is neither a contract reference nor a stamp.
     """
 
     if not CONTRACT_FILE.is_file():
@@ -183,13 +199,13 @@ def test_the_reviewed_contract_file_spells_lanes_as_contract_refs() -> None:
     assert lanes, "the contract file's decorator spells no lanes=(...)"
     for element in lanes:
         if isinstance(element, ast.Constant) and isinstance(element.value, str):
-            # Handle-string spelling: must be a registry contract handle.
-            assert require_contract_ref(element.value) == element.value
+            # String spelling: must be the v2 (topology, quant) stamp.
+            assert require_lane_id(element.value) == element.value
             assert LaneRef(element.value).contract == element.value
         else:
-            # Registry-object spelling: an imported reference or an inline
+            # Contract-object spelling: an imported reference or an inline
             # tensorfs.Contract(...); a bare name would be the dead class.
             assert isinstance(element, (ast.Attribute, ast.Call)), ast.dump(element)
     assert not _decorator_kwarg_elements(tree, "compile"), (
-        "the decorator-level compile= spelling is dead; marking is imperative"
+        "the class/decorator-level compile= spelling is dead; marking is imperative"
     )

@@ -1,6 +1,7 @@
 # Transform passes
 
-A **pass** is what makes a lane's format. A lane is a tensor-layout contract;
+A **pass** is what makes a lane's format. A lane is a tensor-layout STAMP —
+the `(topology, quant)` pair, `sdxl.diffusers@1+cozy.fp8-rowwise@1`;
 an fp8 lane's weights are fp8 because something converted them, and a
 precompute lane's blocks hold a side table because something folded them.
 A pass gives that "something" a name, a version, an identity and an artifact.
