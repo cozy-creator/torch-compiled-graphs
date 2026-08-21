@@ -497,6 +497,7 @@ def test_each_quarantine_event_replaces_the_previous_marker_generation(
         from_axes(
             {
                 "compile_policy": "policy",
+                "declared_input_layout": "torch.contiguous@1",
                 "graph": "graph",
                 "sm": "sm_89",
                 "toolchain": "toolchain",
@@ -975,6 +976,7 @@ def test_imported_artifact_restarts_and_wrong_key_is_refused(tmp_path: Path) -> 
     wrong = from_axes(
         {
             "compile_policy": "wrong",
+            "declared_input_layout": "torch.contiguous@1",
             "graph": "wrong",
             "sm": "cpu",
             "toolchain": "wrong",
