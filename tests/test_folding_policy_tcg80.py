@@ -171,7 +171,7 @@ def test_an_unclassified_compile_option_is_a_refusal_not_a_silent_omission(
     """A new option nobody classified would leave the key blind to it."""
 
     _policy(monkeypatch, {**SHIPPED, "aot_inductor.emit_current_arch_binary": True})
-    with pytest.raises(compiler_module.CompileError, match="neither codegen nor topology"):
+    with pytest.raises(compiler_module.CompileError, match="neither codegen, topology nor inert"):
         compiler_module.compile_policy()
 
 

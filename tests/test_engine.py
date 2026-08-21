@@ -209,15 +209,18 @@ def _fake_compile_package(
     package: Callable[[str, Mapping[str, Sequence[object]]], object] = packager,
     *,
     mutate: Callable[[], None] | None = None,
-) -> Callable[[Any, Path], Path]:
-    def compile_package(plan: Any, workspace: Path) -> Path:
+) -> Callable[[Any, Path], tuple[Path, tuple[Any, ...]]]:
+    def compile_package(plan: Any, workspace: Path) -> tuple[Path, tuple[Any, ...]]:
         if mutate is not None:
             mutate()
         result = package(
             str(workspace / "model.pt2"),
             {plan.declaration.name: ["wrapper.cpp", "model.so"]},
         )
-        return Path(str(result))
+        # tcg#83: a compile hands back its layout wishes beside its files. A
+        # stub compiler observed nothing, which is exactly what an empty
+        # wishlist means.
+        return Path(str(result)), ()
 
     return compile_package
 
@@ -596,7 +599,7 @@ def test_compile_derives_its_own_key_and_reuses_without_recompiling(
     runtime = _runtime()
     calls = 0
 
-    def compile_once(plan: object, workspace: Path) -> Path:
+    def compile_once(plan: object, workspace: Path) -> tuple[Path, tuple[Any, ...]]:
         nonlocal calls
         calls += 1
         return _fake_compile_package(packager)(plan, workspace)

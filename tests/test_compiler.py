@@ -43,8 +43,11 @@ def test_compile_uses_the_one_fixed_v1_policy(monkeypatch: pytest.MonkeyPatch) -
         return ["wrapper.cpp", "kernel.so"]
 
     monkeypatch.setattr(compiler_module, "_aot_compile", compiler)
-    files = compiler_module._compile_exported_program(_program())
-    assert files == ("wrapper.cpp", "kernel.so")
+    compiled = compiler_module._compile_exported_program(_program())
+    assert compiled.files == ("wrapper.cpp", "kernel.so")
+    # tcg#83: a compile also reports what it WISHED for. A stubbed compiler
+    # runs no lowering, so it observes nothing.
+    assert compiled.wishes == ()
     assert seen["options"] == {
         "compile_threads": 4,
         "aot_inductor.package_constants_in_so": False,
@@ -127,6 +130,17 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "AdoptSession",
         "ArtifactError",
         "ArtifactFormatSkew",
+        # tcg#83 -- the layout-morphism vocabulary and the declaration read
+        # off this build. `require_morphism` is a validator, not a callback:
+        # it resolves a NAME in a closed catalog and refuses everything else.
+        "CONTIGUOUS",
+        "LAYOUT_CATALOG",
+        "LayoutError",
+        "LayoutMorphism",
+        "declared_input_layout",
+        "require_morphism",
+        # tcg#85 -- an optimization the target will silently drop.
+        "DroppedOptimization",
         "ArtifactLoader",
         "CompileError",
         "COMPILED_GRAPH_FORMAT",
@@ -243,7 +257,7 @@ def test_compile_installs_the_sealed_host_transform(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(wrapper_split, "install", install)
     monkeypatch.setattr(compiler_module, "_aot_compile", lambda *args, **kwargs: ["model.so"])
 
-    assert compiler_module._compile_exported_program(_program()) == ("model.so",)
+    assert compiler_module._compile_exported_program(_program()).files == ("model.so",)
     assert installed == [True]
 
 
