@@ -41,7 +41,7 @@ CHANNELS_LAST = "torch.channels_last-2d@1"
 STACK = (("nvidia-cublas-cu13", "13.0.0"), ("torch", "2.13.0"), ("triton", "3.7.1"))
 
 
-_CORPUS = Path(__file__).resolve().parent / "testdata" / "spec" / "v2"
+_CORPUS = Path(__file__).resolve().parent / "layout_corpus" / "v2"
 
 
 @pytest.fixture()
