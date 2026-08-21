@@ -106,11 +106,14 @@ UNREADABLE = {
     "a v1 spelling (the shape the issue was filed as)": json.dumps(
         {"v": 1, "stack": [], "lanes": []}, separators=(",", ":")
     ).encode("ascii"),
+    # tcg#79 moved DOCUMENT_FORMAT 3 -> 4, so these two move with it: a case
+    # named "ahead of this one" that is actually THIS build's format would still
+    # go red (its stack is empty) while proving something else entirely.
     "a newer format from a build ahead of this one": json.dumps(
-        {"v": 4, "stack": [], "lanes": []}, separators=(",", ":")
+        {"v": 5, "stack": [], "lanes": []}, separators=(",", ":")
     ).encode("ascii"),
     "a field set this grammar does not have": json.dumps(
-        {"v": 3, "stack": [], "lanes": [], "closure": "deadbeef"},
+        {"v": 4, "stack": [], "lanes": [], "closure": "deadbeef"},
         separators=(",", ":"),
     ).encode("ascii"),
     "bytes that are not JSON at all": b"\x00\x01 not a document",
@@ -189,7 +192,7 @@ class TestTheDiscardIsAnnouncedOnce:
         message = warnings[0].getMessage()
         assert NAME in message
         assert ref in message
-        assert "document v must be 3" in message
+        assert "document v must be 4" in message
 
     def test_the_ordinary_miss_says_nothing(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

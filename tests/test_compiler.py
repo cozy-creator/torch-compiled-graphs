@@ -152,6 +152,7 @@ def test_compile_surface_has_no_output_changing_callbacks() -> None:
         "GraphSetDocument",
         "GraphStore",
         "Hole",
+        "LANE_JOIN",
         "LaneError",
         "LaneGraphs",
         "LocalGraphStore",
