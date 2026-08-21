@@ -438,3 +438,41 @@ def test_real_aoti_an_out_of_catalog_wish_falls_back_and_emits_an_unratified_can
     assert runner is not None
     runner.bind(dict(module.state_dict()), device="cpu")
     torch.testing.assert_close(runner(sample), module(sample))
+
+
+def test_resolving_the_IDENTITY_never_imports_torch(tmp_path: Path) -> None:
+    """tcg#87 regression fence, and it is load-bearing.
+
+    `torchcg resolve` and the cold-process reuse path exist to hand an artifact
+    back out of the store in a process that never imports torch, and
+    `require_morphism` sits on that path because EVERY artifact declares a
+    layout. Pairing a record to a `memory_format` needs a torch probe, so
+    making the catalog corpus-derived came within one line of importing torch
+    on every resolve -- caught by `test_engine`'s cold-process arm, whose whole
+    assertion is `"torch" not in sys.modules`.
+
+    The identity is resolvable from the corpus ALONE (unique rankless record,
+    permutes nothing), which is what keeps that property. Driven in a real cold
+    subprocess, because the parent process has torch imported already and
+    cannot answer this question about itself.
+    """
+
+    import subprocess
+    import sys
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            "from torchcg.layout import contiguous_handle, require_morphism\n"
+            "handle = contiguous_handle()\n"
+            "assert require_morphism(handle).handle == handle\n"
+            "assert 'torch' not in sys.modules, sorted(sys.modules)[:0] or 'torch imported'\n"
+            "print(handle)\n",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == CONTIGUOUS

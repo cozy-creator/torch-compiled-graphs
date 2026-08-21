@@ -85,6 +85,7 @@ from .lane import (
     resolve_target,
 )
 from .layout import (
+    CORPUS_ENV,
     LayoutCorpusError,
     LayoutError,
     LayoutMorphism,
@@ -220,6 +221,7 @@ __all__ = [
     "CompileError",
     "COMPILED_GRAPH_FORMAT",
     "DroppedOptimization",
+    "CORPUS_ENV",
     "LayoutCorpusError",
     "contiguous_handle",
     "layout_catalog",

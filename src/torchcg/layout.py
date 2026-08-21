@@ -189,6 +189,33 @@ def _corpus(root: Path | None) -> dict[str, Any]:
 
 
 @cache
+def _identity(root: Path | None = None) -> LayoutMorphism:
+    """The identity morphism, resolved WITHOUT importing torch.
+
+    This is load-bearing, not an optimization. `torchcg resolve` and the
+    cold-process reuse path exist to hand an artifact back out of the store in
+    a process that never imports torch, and `require_morphism` is on that path
+    because every artifact declares a layout. Pairing a record to a
+    `memory_format` needs a torch probe -- so the identity, which every
+    artifact in the fleet declares, is resolved from the CORPUS alone: it is
+    the unique rankless record, it permutes nothing, and row-major is
+    row-major without asking torch. A non-identity handle does pull torch in,
+    and that is honest: nothing can serve one without it.
+    """
+
+    from tensorfs import identity_arrangement
+
+    try:
+        arrangement = identity_arrangement(_corpus_root(root))
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise LayoutCorpusError(
+            f"the identity layout is the corpus' unique rankless record and it "
+            f"could not be read: {exc}"
+        ) from exc
+    return LayoutMorphism(str(arrangement.handle), "contiguous_format", None)
+
+
+@cache
 def _paired(root: Path | None = None) -> tuple[
     dict[str, LayoutMorphism], tuple[str, ...]
 ]:
@@ -249,6 +276,10 @@ def catalog(root: Path | None = None) -> dict[str, LayoutMorphism]:
     return dict(_paired(_resolve(root))[0])
 
 
+def _corpus_root(root: Path | None) -> Path | None:
+    return _resolve(root)
+
+
 def contiguous_handle(root: Path | None = None) -> str:
     """The identity handle, READ from the corpus rather than spelled.
 
@@ -258,15 +289,7 @@ def contiguous_handle(root: Path | None = None) -> str:
     predates the layout axis carries.
     """
 
-    from tensorfs import identity_arrangement
-
-    try:
-        return str(identity_arrangement(_resolve(root)).handle)
-    except (FileNotFoundError, OSError, ValueError) as exc:
-        raise LayoutCorpusError(
-            f"the identity layout is the corpus' unique rankless record and it "
-            f"could not be read: {exc}"
-        ) from exc
+    return _identity(_resolve(root)).handle
 
 
 def require_morphism(handle: object, root: Path | None = None) -> LayoutMorphism:
@@ -277,7 +300,13 @@ def require_morphism(handle: object, root: Path | None = None) -> LayoutMorphism
     loader silently ignores, which is the defect this axis exists to remove.
     """
 
-    deliverable, undeliverable = _paired(_resolve(root))
+    resolved = _resolve(root)
+    # The identity first, and WITHOUT torch: it is what every artifact in the
+    # fleet declares, and the cold resolve path must stay torch-free.
+    identity = _identity(resolved)
+    if handle == identity.handle:
+        return identity
+    deliverable, undeliverable = _paired(resolved)
     if isinstance(handle, str) and handle in deliverable:
         return deliverable[handle]
     if isinstance(handle, str) and handle in undeliverable:
@@ -298,7 +327,10 @@ def require_morphism(handle: object, root: Path | None = None) -> LayoutMorphism
 
 
 def is_catalog_handle(value: object, root: Path | None = None) -> bool:
-    return isinstance(value, str) and value in _paired(_resolve(root))[0]
+    if not isinstance(value, str):
+        return False
+    resolved = _resolve(root)
+    return value == _identity(resolved).handle or value in _paired(resolved)[0]
 
 
 @cache
