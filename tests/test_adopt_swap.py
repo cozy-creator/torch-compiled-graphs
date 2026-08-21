@@ -57,7 +57,7 @@ def pipe() -> SimpleNamespace:
     return SimpleNamespace(unet=TinyUnet())
 
 
-CONTRACT = "tiny.plain-fp32@1"
+CONTRACT = "tiny.plain@1+plain.f32@1"
 
 
 def discover(pipe: SimpleNamespace, *, flags: tuple[bool, ...] = (False,)) -> GraphSetDocument:
@@ -282,9 +282,10 @@ def test_missing_lane_and_eager_permanent_documents_refuse_typed(
     pipe: SimpleNamespace, store: LocalGraphStore, tmp_path: Path
 ) -> None:
     document = discover(pipe)
-    with pytest.raises(AdoptError, match="no lane 'other.fp8@1'"):
-        AdoptSession(store, document, "other.fp8@1", SM, loader=stub_loader({}),
-                     artifacts_dir=tmp_path / "a", stack=STACK)
+    # `match` is a regex and a stamp carries a `+`, so match the stable prefix.
+    with pytest.raises(AdoptError, match="no lane 'other[.]topology@1"):
+        AdoptSession(store, document, "other.topology@1+cozy.fp8-rowwise@1", SM,
+                     loader=stub_loader({}), artifacts_dir=tmp_path / "a", stack=STACK)
     eager = GraphSetDocument(stack=STACK, lanes=())
     with pytest.raises(AdoptError, match="eager-permanent"):
         AdoptSession(store, eager, CONTRACT, SM, loader=stub_loader({}),

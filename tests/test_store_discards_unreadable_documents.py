@@ -63,7 +63,7 @@ def a_readable_document() -> GraphSetDocument:
         stack=STACK,
         lanes=(
             LaneGraphs(
-                contract="sd15.diffusers-bf16@1",
+                contract="sd15.diffusers@1+plain.bf16@1",
                 targets=("pipe.unet",),
                 graphs=(
                     GraphRecord(

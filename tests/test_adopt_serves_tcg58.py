@@ -40,7 +40,7 @@ from torchcg.requirements import RequirementsManifest
 from torchcg.runner import ConstantBindingError
 from torchcg.store import LocalGraphStore
 
-CONTRACT = "tiny.plain-fp32@1"
+CONTRACT = "tiny.plain@1+plain.f32@1"
 STACK: tuple[tuple[str, str], ...] = (("torch", torch.__version__),)
 TOOLCHAIN = {
     "settings_declaration": "settings-v1",

@@ -45,8 +45,8 @@ WIDTH = 32
 BLOCKS = 3
 PRESETS: tuple[int, ...] = (4, 6)
 PASS = PrecomputeAndFree.NAME
-FOLDED_LANE = "tiny.folded-fp32@1"
-PLAIN_LANE = "tiny.plain-fp32@1"
+FOLDED_LANE = "tiny.folded@1+plain.f32@1"
+PLAIN_LANE = "tiny.plain@1+plain.f32@1"
 SM = "sm_89"
 STACK: tuple[tuple[str, str], ...] = (("torch", torch.__version__),)
 

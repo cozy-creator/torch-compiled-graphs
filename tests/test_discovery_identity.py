@@ -19,7 +19,7 @@ from torchcg.document import LaneGraphs  # noqa: E402
 
   # noqa: E402
 
-LANE = "unit.identity-fp32@1"
+LANE = "unit.identity@1+plain.f32@1"
 TARGETS = ("host.inner",)
 
 
