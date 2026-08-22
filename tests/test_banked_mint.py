@@ -349,3 +349,47 @@ def test_THIS_host_is_classified_correctly() -> None:
         assert expected == "x86-64-v3", (
             f"this CPU has AVX2/FMA/BMI2 and classified {expected}"
         )
+
+
+def test_the_host_ISA_is_IMPOSED_into_the_key_not_left_to_the_caller() -> None:
+    """The ISA is the one env fact this package decides, so it cannot be
+    optional. A v2-compiled and a v3-compiled artifact of one graph differ in
+    emitted instructions and in nothing else the key can see."""
+
+    merged = mint.imposed_env({"torch": "2.13.0"})
+    assert merged["torch"] == "2.13.0"
+    for name in ("machine", "cpp_march", "cpp_simdlen"):
+        assert name in merged, f"{name} is not in the keyed env fingerprint"
+    # ...and it is the value this host actually imposes.
+    assert merged["cpp_march"] == (mint._host_isa()[1] or "")
+
+
+def test_two_ISA_LEVELS_cannot_share_one_key() -> None:
+    """The collision the merge exists to prevent, asked directly."""
+
+    from torchcg.identity import artifact_key, contiguous_handle
+
+    graph = "cg-graph-v1-" + "a" * 56
+
+    def key(march: str) -> str:
+        return artifact_key(
+            graph,
+            sm="sm_89",
+            env={"torch": "2.13.0", "machine": "x86_64", "cpp_march": march,
+                 "cpp_simdlen": "256"},
+            policy={"always_keep_tensor_constants": True},
+            layout=contiguous_handle(),
+        ).value
+
+    assert key("x86-64-v2") != key("x86-64-v3")
+
+
+def test_a_caller_that_states_a_DIFFERENT_isa_is_refused() -> None:
+    """Disagreement means the caller believes something false about the machine
+    it is minting on -- a refusal, never a silent overwrite."""
+
+    with pytest.raises(MintError, match="ISA facts are measured here"):
+        mint.imposed_env({"cpp_march": "x86-64-v4"})
+    # Restating it CORRECTLY is fine: the caller is allowed to know.
+    imposed = mint.impose_host_policy()
+    assert mint.imposed_env(dict(imposed))["cpp_march"] == imposed["cpp_march"]

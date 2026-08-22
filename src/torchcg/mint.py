@@ -708,6 +708,42 @@ def metadata(spec: GraphSpec, *, key: str, sm: str, env: Mapping[str, str],
     }
 
 
+def imposed_env(env: Mapping[str, str]) -> dict[str, str]:
+    """The caller's env fingerprint with the host ISA facts MERGED IN.
+
+    The env block's members are deliberately the caller's to choose -- except
+    these. The ISA is the one environment fact this package itself decides (it
+    clamps `cpp.march` and `cpp.simdlen` before every compile), so leaving it to
+    the caller means leaving it OPTIONAL, and an optional key axis is one that
+    is eventually omitted.
+
+    What that costs is concrete: an artifact compiled at `x86-64-v2` and one
+    compiled at `x86-64-v3` differ in emitted instructions and in nothing the
+    rest of the key can see, so they would share one address and the second mint
+    would be refused as already-present -- serving v2 code to a fleet that keyed
+    for v3. That is not hypothetical here: this lane shipped an ISA table that
+    silently demoted every Intel host to v2, and nothing in the key would have
+    recorded which of the two an artifact actually was.
+
+    A caller that states one of these facts must state it correctly; disagreeing
+    is a refusal, never a silent overwrite, because the disagreement means the
+    caller believes something false about the machine it is minting on.
+    """
+
+    imposed = impose_host_policy()
+    merged = dict(env)
+    for name, value in imposed.items():
+        stated = merged.get(name)
+        if stated is not None and stated != value:
+            raise MintError(
+                f"env states {name}={stated!r} and this host imposes {value!r}. "
+                f"The ISA facts are measured here, not supplied: a mint cannot "
+                f"key as one machine and compile on another."
+            )
+        merged[name] = value
+    return merged
+
+
 def mint(
     spec: GraphSpec,
     *,
@@ -722,12 +758,16 @@ def mint(
     before anything is compiled, and the range check must run on the program
     that was ACTUALLY compiled (the compile installs ShapeEnv replacements, so
     asking earlier asks the wrong program).
+
+    ``env``'s other members are the caller's to choose; the host ISA facts are
+    not, and are merged in here (see :func:`imposed_env`).
     """
 
     from .identity import artifact_key
 
     bound = bind_static_spec(spec)
     assert_device_uniform(bound.program, bound.graph)
+    env = imposed_env(env)
     key = artifact_key(
         bound.graph,
         sm=sm,
@@ -768,6 +808,7 @@ __all__ = [
     "declared_ranges",
     "format_narrowing",
     "impose_host_policy",
+    "imposed_env",
     "isa_level",
     "live_ranges",
     "metadata",
