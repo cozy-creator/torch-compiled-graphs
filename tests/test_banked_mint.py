@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import torch  # noqa: E402
 
 import torchcg.identity as identity
 import torchcg.mint as mint
@@ -19,7 +20,7 @@ from torchcg.refuse import (
     RangeNarrowed,
 )
 
-torch = pytest.importorskip("torch")
+pytest.importorskip("torch")
 pytest.importorskip("diffusers")
 
 from fixture import UNET_PARAMS, export_unet, tiny_unet  # noqa: E402
