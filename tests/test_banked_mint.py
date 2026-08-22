@@ -22,7 +22,7 @@ from torchcg.refuse import (
 torch = pytest.importorskip("torch")
 pytest.importorskip("diffusers")
 
-from fixture import UNET_PARAMS, tiny_unet  # noqa: E402
+from fixture import UNET_PARAMS, export_unet, tiny_unet  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # tcg#80 -- the fold policy
@@ -409,3 +409,65 @@ def test_a_caller_that_states_a_DIFFERENT_isa_is_refused() -> None:
     imposed = mint.impose_host_policy()
     merged = identity.imposed_env({"torch": "2.13.0", **imposed})
     assert merged["cpp_march"] == imposed["cpp_march"]
+
+
+# ---------------------------------------------------------------------------
+# pgw#1662 -- a saved program carries STRUCTURE, and the key must not move
+# ---------------------------------------------------------------------------
+
+
+def test_stripping_weights_does_NOT_move_the_graph_key() -> None:
+    """The hard constraint on pgw#1662, discharged by construction.
+
+    `graph_hash` renders parameters and buffers as names, dtypes and shapes
+    only; the one digest that reads VALUES is the literal digest, and
+    `literal_names` is `constants - (parameters | buffers)`. So replacing every
+    state-dict entry with a meta tensor of the same dtype and shape cannot
+    reach either. This asserts it on a real export rather than trusting the
+    argument.
+    """
+
+    from torchcg.identity import graph_hash
+
+    program, ingress = export_unet(2)
+    before = graph_hash(program, ingress)
+
+    assert any(
+        v.device.type != "meta" for v in program.state_dict.values()
+    ), "the fixture has no real state-dict weights, so this proves nothing"
+
+    mint.strip_weights(program)
+
+    assert all(v.device.type == "meta" for v in program.state_dict.values())
+    assert graph_hash(program, ingress) == before, (
+        "stripping state-dict weights moved the graph key — the saved program "
+        "is a structural record and weights are checkpoint-side"
+    )
+
+
+def test_stripping_weights_leaves_the_TRACE_BAKED_constants_alone() -> None:
+    """The other half, and the reason the strip is scoped to `state_dict`.
+
+    Trace-baked constants DO feed the literal digest. Stripping them would move
+    the key, so they are deliberately untouched — the split is exactly
+    `literal_names`.
+    """
+
+    from torchcg.identity import literal_digest, literal_names
+
+    program, _ = export_unet(2)
+    before_names = literal_names(program)
+    before_digest = literal_digest(program)
+
+    mint.strip_weights(program)
+
+    assert literal_names(program) == before_names
+    assert literal_digest(program) == before_digest
+
+
+def test_a_program_with_no_state_dict_is_returned_untouched() -> None:
+    class _Bare:
+        state_dict: dict = {}
+
+    bare = _Bare()
+    assert mint.strip_weights(bare) is bare

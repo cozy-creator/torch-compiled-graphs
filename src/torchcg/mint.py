@@ -246,6 +246,46 @@ def strip_diagnostics(program: Any) -> Any:
     return program
 
 
+def strip_weights(program: Any) -> Any:
+    """Make a saved program carry STRUCTURE, not weight bytes (pgw#1662).
+
+    `torch.export.save` pickles `state_dict`. For an ordinary trace those are
+    fake tensors and it copes; for a `__tensor_flatten__` SUBCLASS — torchao's
+    `Float8Tensor`, and every quantized wrapper after it — it falls to the
+    generic pickle path and drags in the inner `FakeTensorMode`'s weakref
+    closure, which cannot be pickled. h3 dies on 1442 such entries.
+
+    Making the subclass picklable is the wrong repair: it would preserve bytes
+    nothing downstream reads. The banked program is a STRUCTURAL record — the
+    thing a compile position re-specializes from — and weights are
+    checkpoint-side. So each state-dict entry becomes a meta-device tensor of
+    the same dtype and shape: everything the structure needs, no storage, no
+    subclass.
+
+    **This cannot move the graph key, and that is provable rather than hoped.**
+    `graph_hash` renders parameters and buffers as names, dtypes and shapes
+    only, and `literal_names` is `constants - (parameters | buffers)` — so the
+    one digest that reads VALUES reads trace-baked constants, which this does
+    not touch. `tests/test_banked_mint.py` asserts the hash across the strip.
+
+    The sibling of `strip_diagnostics`, and the same rule: what nothing reads
+    does not get saved.
+    """
+
+    import torch
+
+    state = getattr(program, "state_dict", None)
+    if not state:
+        return program
+    for name, value in list(state.items()):
+        if not isinstance(value, torch.Tensor) or value.device.type == "meta":
+            continue
+        state[name] = torch.empty(
+            tuple(int(d) for d in value.shape), dtype=value.dtype, device="meta"
+        )
+    return program
+
+
 def _fake_mode_of(graph_module: Any) -> Any:
     import torch
 
@@ -742,5 +782,6 @@ __all__ = [
     "narrowed_symbols",
     "respecialize",
     "strip_diagnostics",
+    "strip_weights",
     "write_literals",
 ]
