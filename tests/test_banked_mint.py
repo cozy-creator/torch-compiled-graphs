@@ -524,3 +524,59 @@ def test_a_wrapper_holding_SEVERAL_tensors_is_refused_rather_than_guessed() -> N
 
     source = inspect.getsource(mint.flatten_weight_subclasses)
     assert "len(inner) != 1" in source
+
+
+# ---------------------------------------------------------------------------
+# pgw#1645 -- the layout WISHLIST is always written, even empty
+# ---------------------------------------------------------------------------
+
+
+def test_the_metadata_ALWAYS_carries_a_wishlist_even_when_empty() -> None:
+    """An ABSENT field and "the mint asked for nothing" are different facts.
+
+    pgw#1645's serving rung renders a missing wishlist as
+    `NO_WISH: "the mint asked for no layout change"` — a POSITIVE claim about
+    the mint, which it can only make honestly if the mint actually LOOKED. I
+    deleted the observer in the rebuild with a "no heir" note; the heir was
+    live, and the regression was invisible precisely because absence and
+    emptiness render identically.
+    """
+
+    program, ingress = export_unet(2)
+    spec = mint.GraphSpec(
+        graph="cg-graph-v1-" + "a" * 56, target="unet",
+        program=program, ingress=ingress,
+    )
+    stamped = mint.metadata(
+        spec, key="cg-key-v4-" + "b" * 56, sm="sm_89",
+        env={"torch": "2.13.0"}, device_type="cpu",
+    )
+    assert "layout_wishlist" in stamped, (
+        "an absent wishlist makes pgw#1645 claim the mint asked for nothing"
+    )
+    assert stamped["layout_wishlist"] == []
+
+
+def test_a_wish_is_rendered_with_its_order_and_its_morphism() -> None:
+    program, ingress = export_unet(2)
+    spec = mint.GraphSpec(
+        graph="cg-graph-v1-" + "a" * 56, target="unet",
+        program=program, ingress=ingress,
+    )
+    wish = mint.LayoutWish("conv_weight", (3, 0, 2, 1), "torch.channels_last-2d@1")
+    stamped = mint.metadata(
+        spec, key="cg-key-v4-" + "b" * 56, sm="sm_89",
+        env={"torch": "2.13.0"}, device_type="cpu", wishlist=[wish],
+    )
+    assert stamped["layout_wishlist"] == [
+        {"name": "conv_weight", "stride_order": [3, 0, 2, 1],
+         "morphism": "torch.channels_last-2d@1"}
+    ]
+
+
+def test_an_UNRATIFIED_wish_carries_its_order_and_no_name() -> None:
+    """The permanent fallback: a stride order no ratified morphism names is a
+    CANDIDATE, and the mint never invents a handle for it."""
+
+    assert mint.LayoutWish("w", (1, 0), "").ratified is False
+    assert mint.LayoutWish("w", (1, 0), "torch.contiguous@1").ratified is True
