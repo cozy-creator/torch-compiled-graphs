@@ -14,7 +14,6 @@ pytest.importorskip("diffusers")
 
 from fixture import UNET_PARAMS, tiny_unet  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # tcg#80 -- the fold policy
 # ---------------------------------------------------------------------------
@@ -58,12 +57,12 @@ def test_the_constant_table_must_be_fenced_at_READ_too() -> None:
     """The independent witness: an artifact whose stamped policy folds nothing
     is refused on load, whatever this build's own policy says."""
 
-    from torchcg.refuse import StoreError
-    from torchcg.store import read_metadata
-
     import json
     import tempfile
     from pathlib import Path
+
+    from torchcg.refuse import StoreError
+    from torchcg.store import read_metadata
 
     for policy, expected in (
         ({"always_keep_tensor_constants": True,

@@ -15,7 +15,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from fixture import UNET_PARAMS, export_unet, tiny_unet
 
 torch = pytest.importorskip("torch")
@@ -91,7 +90,7 @@ def test_the_canonical_form_reads_the_exported_symbol_not_the_live_one() -> None
 
     import sympy
 
-    from torchcg.identity import _Symbols, _render_symbol
+    from torchcg.identity import _render_symbol, _Symbols
 
     exported, live = sympy.Symbol("s53"), sympy.Integer(2)
 
