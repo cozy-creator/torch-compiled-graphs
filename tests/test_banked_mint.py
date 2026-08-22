@@ -4,6 +4,7 @@ device uniformity."""
 from __future__ import annotations
 
 import ast
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -276,3 +277,75 @@ def test_the_uniformity_check_compares_TYPE_against_TYPE() -> None:
     program.graph_module.graph.nodes[0].meta["val"] = None
     program.graph_module.graph.nodes[0].args = (torch.device("cuda", 0),)
     mint.assert_device_uniform(program, "g")
+
+
+# ---------------------------------------------------------------------------
+# Host ISA -- the classifier reads /proc/cpuinfo's vocabulary, not the psABI's
+# ---------------------------------------------------------------------------
+
+#: The flags a 13th-gen Intel Core prints, trimmed to the ones the levels use.
+#: Note `abm` and the ABSENCE of `lzcnt`: Linux never emits the latter.
+_INTEL_V3_FLAGS = frozenset({
+    "cx16", "lahf_lm", "popcnt", "sse4_1", "sse4_2", "ssse3",
+    "abm", "avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "movbe", "xsave",
+})
+
+
+def test_a_full_v3_host_classifies_as_v3() -> None:
+    """The regression this file exists for. A level table written from the psABI
+    document requires `lzcnt`; `/proc/cpuinfo` reports that capability as `abm`
+    and never prints `lzcnt`, so the spec-spelled table matches nothing and
+    demotes every Intel host one level -- costing AVX2 and FMA in every artifact
+    it mints, silently, with no error anywhere.
+
+    Measured on this box (i9-13950HX): full v3 feature set, classified v2.
+    """
+
+    assert mint.isa_level(_INTEL_V3_FLAGS) == "x86-64-v3"
+    assert "lzcnt" not in _INTEL_V3_FLAGS
+    # ...and the table must not be ASKING for a name Linux does not print.
+    for _, required in mint._X86_LEVELS:
+        assert "lzcnt" not in required, (
+            "the level table spells LZCNT the psABI way; /proc/cpuinfo says `abm`"
+        )
+
+
+def test_the_levels_are_ordered_and_each_one_is_reachable() -> None:
+    v2 = frozenset({"cx16", "lahf_lm", "popcnt", "sse4_1", "sse4_2", "ssse3"})
+    assert mint.isa_level(frozenset()) == "x86-64"
+    assert mint.isa_level(v2) == "x86-64-v2"
+    assert mint.isa_level(_INTEL_V3_FLAGS) == "x86-64-v3"
+    # One flag short of v3 falls back to v2 rather than claiming v3.
+    assert mint.isa_level(_INTEL_V3_FLAGS - {"avx2"}) == "x86-64-v2"
+
+
+def test_v3_widens_the_vector_register_budget() -> None:
+    """simdlen follows the level: 256-bit vectors are exactly what v3 buys."""
+
+    machine, march, simdlen = mint._host_isa()
+    if machine != "x86_64":
+        pytest.skip("simdlen policy is x86-only")
+    assert (simdlen == 256) == (march == "x86-64-v3")
+
+
+def test_THIS_host_is_classified_correctly() -> None:
+    """Not a substitute for the stated-flag-set arms above -- it can only agree
+    with whatever this CPU is. It is here because the demotion was found on a
+    real host and would have been caught here first."""
+
+    import platform
+
+    if platform.machine() != "x86_64":
+        pytest.skip("x86-only")
+    features = {
+        flag
+        for line in Path("/proc/cpuinfo").read_text().splitlines()
+        if line.split(":", 1)[0].strip() in ("flags", "Features")
+        for flag in line.split(":", 1)[1].split()
+    }
+    expected = mint.isa_level(frozenset(features))
+    assert mint._host_isa()[1] == expected
+    if {"avx2", "fma", "bmi2"} <= features:
+        assert expected == "x86-64-v3", (
+            f"this CPU has AVX2/FMA/BMI2 and classified {expected}"
+        )

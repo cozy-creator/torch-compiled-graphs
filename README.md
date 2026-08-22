@@ -110,6 +110,23 @@ tree and is the regression instrument: every artifact in the store is addressed
 by these strings, so a change that moves one has orphaned the corpus. Regenerate
 only with a stated reason — the bank moving is a fleet-wide re-mint.
 
-The end-to-end mint tests need `TORCHCG_E2E=1`. AOTI's CUDA path shells out to
-`nvcc`, which the `nvidia-*` wheels do not ship, so without a CUDA toolkit they
-run the CPU target.
+The end-to-end mint tests need `TORCHCG_E2E=1`. They target CUDA when a CUDA
+compiler is reachable and fall back to the CPU target otherwise — the fallback
+is honest, not a skip, because every seam this library owns is exercised either
+way.
+
+AOTI's CUDA path shells out to `nvcc`, which the `nvidia-*` runtime wheels do
+not ship. **No system CUDA toolkit is required**; two more wheels supply it:
+
+```sh
+uv pip install nvidia-cuda-nvcc nvidia-cuda-cccl
+export CUDA_HOME=$PWD/.venv/lib/python3.*/site-packages/nvidia/cu13
+export PATH=$CUDA_HOME/bin:$PATH
+```
+
+`nvidia-cuda-nvcc` provides `bin/nvcc`; `nvidia-cuda-cccl` provides the
+`nv/target` headers that `cuda_fp16.h` includes and without which the header
+precompile fails. Both install beside the runtime libraries already there, so
+`CUDA_HOME` is one directory. Match the suffix to `torch.version.cuda`
+(`cu13` here); the older `nvidia-cuda-nvcc-cu13` spelling is deprecated and
+refuses to build.

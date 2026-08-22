@@ -157,10 +157,21 @@ def declared_input_layout() -> str:
 # Host ISA -- the one env fact this package owns, and it fails closed
 # ---------------------------------------------------------------------------
 
+#: x86-64 microarchitecture levels, keyed by the names **`/proc/cpuinfo`
+#: actually prints** -- which are NOT the names the psABI document uses. Linux
+#: reports the LZCNT capability as `abm` and never emits `lzcnt`, so a table
+#: written from the spec matches nothing and silently demotes every Intel host
+#: one level: measured here on an i9-13950HX, which has the full v3 feature set
+#: and was classified v2, costing AVX2 and FMA in every artifact it minted.
+#: The `f16c`/`xsave`/`lahf_lm` members are part of the levels and are equally
+#: easy to leave out; they are listed for the same reason.
 _X86_LEVELS: tuple[tuple[str, frozenset[str]], ...] = (
     ("x86-64", frozenset()),
-    ("x86-64-v2", frozenset({"sse4_2", "popcnt", "ssse3", "sse4_1", "cx16"})),
-    ("x86-64-v3", frozenset({"avx", "avx2", "bmi1", "bmi2", "fma", "movbe", "lzcnt"})),
+    ("x86-64-v2", frozenset({"cx16", "lahf_lm", "popcnt", "sse4_1", "sse4_2", "ssse3"})),
+    (
+        "x86-64-v3",
+        frozenset({"abm", "avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "movbe", "xsave"}),
+    ),
 )
 _LOCK = threading.RLock()
 
@@ -190,11 +201,24 @@ def _host_isa() -> tuple[str, str | None, int | None]:
     }
     if not features:
         raise MintError("/proc/cpuinfo states no CPU flags")
+    level = isa_level(features)
+    return machine, level, 256 if level == "x86-64-v3" else 128
+
+
+def isa_level(features: frozenset[str] | set[str]) -> str:
+    """The highest x86-64 level one `/proc/cpuinfo` flag set satisfies.
+
+    Separate and public so the classification can be asked about a stated flag
+    set rather than only about whichever CPU the test happens to run on -- a
+    guard that can only read this host is a guard that agrees with whatever this
+    host does.
+    """
+
     level = "x86-64"
     for name, required in _X86_LEVELS:
-        if required <= features:
+        if required <= set(features):
             level = name
-    return machine, level, 256 if level == "x86-64-v3" else 128
+    return level
 
 
 def impose_host_policy() -> dict[str, str]:
@@ -744,6 +768,7 @@ __all__ = [
     "declared_ranges",
     "format_narrowing",
     "impose_host_policy",
+    "isa_level",
     "live_ranges",
     "metadata",
     "mint",
