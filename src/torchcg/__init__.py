@@ -15,7 +15,8 @@ something it is not.
 
 from __future__ import annotations
 
-from .adopt import Dispatcher, Recast, Record, adopt, fit, load, release
+from . import adopt, identity, mint, refuse, store  # noqa: F401
+from .adopt import Dispatcher, Recast, Record, fit
 from .identity import (
     GRAPH_SCHEME,
     KEY_SCHEME,
@@ -32,7 +33,7 @@ from .identity import (
     is_graph_hash,
     require_morphism,
 )
-from .mint import GraphSpec, bind_static_spec, compile_policy, mint, strip_diagnostics
+from .mint import GraphSpec, bind_static_spec, compile_policy, strip_diagnostics
 from .refuse import (
     AdoptError,
     BindError,
@@ -51,8 +52,6 @@ from .refuse import (
 from .store import Store, StoredArtifact
 
 __all__ = [
-    "GRAPH_SCHEME",
-    "KEY_SCHEME",
     "AdoptError",
     "ArtifactKey",
     "BindError",
@@ -61,9 +60,11 @@ __all__ = [
     "Dispatcher",
     "DivergentArtifact",
     "DroppedOptimization",
+    "GRAPH_SCHEME",
     "GraphSpec",
     "IdentityError",
     "IngressError",
+    "KEY_SCHEME",
     "KeyMismatch",
     "LayoutError",
     "LayoutMorphism",
@@ -85,11 +86,12 @@ __all__ = [
     "contiguous_handle",
     "fit",
     "graph_hash",
+    "identity",
     "is_artifact_key",
     "is_graph_hash",
-    "load",
     "mint",
-    "release",
+    "refuse",
     "require_morphism",
+    "store",
     "strip_diagnostics",
 ]
