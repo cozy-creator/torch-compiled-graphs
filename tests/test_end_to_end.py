@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from torchcg import store as store_module
 from torchcg.adopt import Dispatcher, Record, load
 from torchcg.identity import artifact_key
 from torchcg.mint import GraphSpec, compile_policy, declared_input_layout, mint
+from torchcg.refuse import KeyAlreadyMinted
 from torchcg.store import Store
 
 torch = pytest.importorskip("torch")
@@ -184,12 +184,13 @@ def test_a_second_mint_of_one_graph_does_not_DIVERGE(tmp_path: Path) -> None:
         GraphSpec(graph=graph, target="unet", program=program2, ingress=ingress2),
         sm=_sm(), env=ENV, device_type=device, destination=tmp_path / "b.tar.gz",
     )
-    # If AOTI's output is not byte-reproducible this REFUSES, and that refusal
-    # is the honest answer: it means an axis the key does not carry decided the
-    # output. Recorded either way rather than asserted away.
-    try:
+    # The key already resolved, so the second mint is refused on the KEY -- no
+    # byte comparison, per the tcg#84 ruling. What this arm still measures is
+    # the finding that produced the ruling: whether AOTI emitted the same bytes.
+    with pytest.raises(KeyAlreadyMinted, match="already minted"):
         store.put(key, second)
-        reproducible = True
-    except store_module.DivergentArtifact:  # type: ignore[attr-defined]
-        reproducible = False
+    from torchcg.store import _digest_file
+
+    reproducible = _digest_file(first).digest == _digest_file(second).digest
     print(f"AOTI byte-reproducible across two mints of one graph: {reproducible}")
+    assert store.get(key, tmp_path / "out") is not None, "the first artifact must stand"

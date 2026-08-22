@@ -74,12 +74,16 @@ class StoreError(TorchCGError):
     """A stored artifact is malformed, unreadable or unavailable."""
 
 
-class DivergentArtifact(StoreError):
-    """One key already holds different bytes (mint-once, first-writer-wins).
+class KeyAlreadyMinted(StoreError):
+    """This key already holds an artifact (mint-once, first-writer-wins).
 
-    tcg#84. The key IS the artifact's content address, so two different byte
-    strings under one key means an axis the key does not carry decided the
-    output -- never something to overwrite.
+    tcg#84 as ruled 2026-08-21. The refusal is on the KEY BEING PRESENT, not on
+    what its bytes are: AOTI does not emit the same bytes twice for one graph on
+    one host under one env and policy (measured), so a byte comparison here
+    cannot distinguish a key collision from compiler nondeterminism -- it is not
+    evidence of anything, and must not gate.
+
+    Identity integrity lives entirely in the key derivation.
     """
 
 
@@ -94,10 +98,10 @@ class KeyMismatch(AdoptError):
 __all__ = [
     "AdoptError",
     "BindError",
-    "DivergentArtifact",
     "DroppedOptimization",
     "IdentityError",
     "IngressError",
+    "KeyAlreadyMinted",
     "KeyMismatch",
     "LayoutCorpusError",
     "LayoutError",

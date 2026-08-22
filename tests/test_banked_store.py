@@ -10,7 +10,7 @@ import pytest
 from tensorfs import LocalCAS
 
 from torchcg.identity import artifact_key, contiguous_handle
-from torchcg.refuse import DivergentArtifact, StoreError
+from torchcg.refuse import KeyAlreadyMinted, StoreError
 from torchcg.store import Store, pack
 
 pytest.importorskip("torch")
@@ -66,29 +66,50 @@ def test_an_unknown_key_is_None_not_an_error(store: Store, tmp_path: Path) -> No
     assert store.get(key(), tmp_path / "out") is None
 
 
-def test_storing_the_SAME_bytes_twice_is_idempotent(store: Store, tmp_path: Path) -> None:
-    value = key()
-    first = make_artifact(tmp_path, "a", key_value=value, body=b"so-bytes")
-    second = make_artifact(tmp_path, "b", key_value=value, body=b"so-bytes")
-    assert store.put(value, first).digest == store.put(value, second).digest
+def test_a_key_MINTS_ONCE_whatever_the_bytes_say(store: Store, tmp_path: Path) -> None:
+    """tcg#84 as ruled 2026-08-21: the KEY is the identity, the bytes are not.
+
+    The refusal is on the key being PRESENT. It is not a byte comparison and
+    must not become one -- AOTI does not emit the same bytes twice for one graph
+    on one host, so a comparison here could not tell a key collision from
+    compiler nondeterminism, and a verdict a check cannot prove is worse than no
+    check because it will be believed.
+
+    Both arms refuse identically, which is the whole point: the store does not
+    know, and does not claim to know, whether these bytes match.
+    """
+
+    for name, body in (("same", b"first"), ("different", b"second")):
+        substore = Store(LocalCAS(tmp_path / f"cas-{name}"))
+        value = key()
+        substore.put(value, make_artifact(tmp_path, f"{name}-1", key_value=value, body=b"first"))
+        with pytest.raises(KeyAlreadyMinted, match="already minted"):
+            substore.put(value, make_artifact(tmp_path, f"{name}-2", key_value=value, body=body))
+        # The first artifact stands and is still servable.
+        stored = substore.get(value, tmp_path / f"out-{name}")
+        assert stored is not None and stored.package.read_bytes() == b"first"
 
 
-def test_DIVERGENT_bytes_under_one_key_REFUSE(store: Store, tmp_path: Path) -> None:
-    """tcg#84, mint-once / first-writer-wins.
+def test_IDENTICAL_bytes_are_refused_too_which_is_how_we_know(
+    store: Store, tmp_path: Path
+) -> None:
+    """The falsifier for the ruling itself.
 
-    The key IS the artifact's content address, so two different byte strings
-    under one key mean an axis the key does not carry decided the output. The
-    remedy is to find that axis -- never to overwrite, which would make the
-    store's answer depend on who published last.
+    A byte-comparing `put` ACCEPTS identical bytes -- that is what makes it a
+    comparison. So refusing them is the observable difference between "the store
+    checks the key" and "the store checks the bytes", and it is the arm that
+    goes red the day someone reintroduces the compare.
+
+    This is not hypothetical: relying on `compare_and_swap_ref` alone did exactly
+    that, because tensorfs treats a swap to the value already stored as a no-op
+    success. The refusal fired only when the bytes differed.
     """
 
     value = key()
-    store.put(value, make_artifact(tmp_path, "a", key_value=value, body=b"first"))
-    with pytest.raises(DivergentArtifact, match="FIRST artifact stands"):
-        store.put(value, make_artifact(tmp_path, "b", key_value=value, body=b"second"))
-    # The FIRST writer still wins: the store was not left half-updated.
-    stored = store.get(value, tmp_path / "out")
-    assert stored is not None and stored.package.read_bytes() == b"first"
+    body = b"identical"
+    store.put(value, make_artifact(tmp_path, "a", key_value=value, body=body))
+    with pytest.raises(KeyAlreadyMinted, match="already minted"):
+        store.put(value, make_artifact(tmp_path, "b", key_value=value, body=body))
 
 
 def test_bytes_that_disagree_with_their_own_ADDRESS_refuse(
@@ -130,14 +151,15 @@ def test_a_key_shaped_wrong_never_reaches_the_store(store: Store, tmp_path: Path
 
 
 def test_the_ENVELOPE_is_deterministic(tmp_path: Path) -> None:
-    """Found while writing the divergence arm: two tarballs of identical content
-    hashed differently, so `put` reported a key collision where nothing had
-    collided -- a false alarm on the one guard whose job is a real one.
+    """tar records mtime/uid/gid and gzip records the OUTPUT PATH in its header,
+    so an envelope built the ordinary way varies with the clock and the scratch
+    name.
 
-    tar records mtime/uid/gid and gzip records the OUTPUT PATH in its header, so
-    an envelope built the ordinary way varies with the clock and the scratch
-    name. Fixed, the only thing that can differ between two mints of one key is
-    the compiler's own output, which is exactly the question being asked.
+    This was found when it made `put`'s byte comparison fire on a clock. That
+    comparison is now gone (tcg#84 ruling), so the property is no longer
+    load-bearing -- it is kept because a digest that means "these bytes" rather
+    than "these bytes, packed at that moment" is the cheaper thing to have, and
+    because it is a precondition of any future reproducibility work.
     """
 
     directory = tmp_path / "build"

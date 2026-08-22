@@ -5,9 +5,23 @@ unchunked blob named by the sha256 of its bytes, and an exact-key ref points
 straight at it. There is no per-artifact manifest: a manifest holding exactly
 one file entry is an indirection with nothing to describe.
 
-Mint-once, first-writer-wins. The key IS the artifact's content address, so two
-different byte strings under one key mean an axis the key does not carry decided
-the output -- never something to overwrite.
+**Mint-once, first-writer-wins. The KEY is the identity; the bytes are not.**
+(tcg#84, ruled 2026-08-21.) A second write under an existing key is refused
+OUTRIGHT -- the store never compares the incoming bytes with the stored ones,
+because that comparison cannot mean what it looks like it means: AOTI does not
+emit the same bytes twice for one graph on one host under one env and policy
+(measured here, two mints, everything else held), so a byte difference is not
+evidence of a key collision and a byte match is not evidence of its absence.
+A verdict a check cannot prove is worse than no check, because it will be
+believed.
+
+Identity integrity therefore lives entirely in the key derivation -- graph
+witness x env x layout x policy -- whose stability is what the checked-in hash
+bank actually measures.
+
+The artifact's content digest survives for exactly one job: TRANSPORT
+INTEGRITY. It answers "did these bytes arrive intact", never "is this the right
+artifact".
 """
 
 from __future__ import annotations
@@ -22,7 +36,7 @@ from typing import Any
 from tensorfs import CASRef, DigestMismatch, LocalCAS, RefConflict
 
 from .identity import is_artifact_key
-from .refuse import DivergentArtifact, StoreError
+from .refuse import KeyAlreadyMinted, StoreError
 
 _REF_PREFIX = "torchcg/v1/graphs"
 _BUFFER = 1 << 16
@@ -78,11 +92,11 @@ class Store:
     def _admit(self, artifact: Path) -> CASRef:
         """Admit one whole-file blob, writing nothing when the store holds it.
 
-        `verify_object`, not `contains`: presence is not integrity. `contains`
-        is one lstat and answers True for bytes corrupted IN PLACE -- fine for a
-        resume journal, wrong here, where an artifact whose blob went bad must be
-        REPLACED rather than re-registered, or the corruption survives admission
-        and surfaces later as a divergence on a key that never diverged.
+        TRANSPORT integrity, and only that. `verify_object`, not `contains`:
+        presence is not integrity, and `contains` is one lstat that answers True
+        for bytes corrupted IN PLACE. An artifact whose blob went bad is
+        REPLACED rather than re-registered, so corruption cannot survive
+        admission and resurface later as a serving failure.
         """
 
         ref = _digest_file(artifact)
@@ -93,32 +107,43 @@ class Store:
             return self.cas.put_file(artifact, expected=ref)
 
     def put(self, key: str | Any, artifact: Path) -> CASRef:
-        """Store one artifact under its key. Idempotent; divergence REFUSES."""
+        """Store one artifact under its key. A key mints ONCE.
+
+        A second write is refused whatever the bytes say, and the refusal is a
+        statement about the KEY, not a comparison. `get` first: the stored
+        artifact is servable and this one is redundant.
+        """
 
         name = _require_key(key)
         if not artifact.is_file():
             raise StoreError(f"artifact {str(artifact)!r} is not a file")
+        # PRESENCE, asked directly. Leaving this to `compare_and_swap_ref` alone
+        # looked equivalent and was not: tensorfs treats a swap to the value
+        # already stored as a no-op success, so the refusal would have fired
+        # only when the bytes DIFFERED -- reintroducing the byte comparison the
+        # ruling removed, one layer down and invisibly.
+        if self.cas.read_ref(_ref_name(name)) is not None:
+            raise KeyAlreadyMinted(self._minted(name))
         ref = self._admit(artifact)
-        # Compare-and-swap rather than read-then-write: first-writer-wins is a
-        # claim about concurrent minters, and a read-then-write cannot make it.
+        # ...and the swap for the race the presence check cannot close: two
+        # minters can both read absent. Mint-once is a claim about CONCURRENT
+        # minters, and a read-then-write alone cannot make it.
         try:
             self.cas.compare_and_swap_ref(_ref_name(name), ref, expected=None)
-            return ref
-        except RefConflict:
-            pass
-        known = self.cas.read_ref(_ref_name(name))
-        if known is not None and known.digest != ref.digest:
-            raise DivergentArtifact(
-                f"key {name} already holds {known.digest[:16]}, and these bytes "
-                f"are {ref.digest[:16]}. The FIRST artifact stands and is still "
-                f"servable; nothing was overwritten. Two byte strings under one "
-                f"key mean either an axis the key does not carry decided the "
-                f"output, or AOTI simply did not emit the same bytes twice -- "
-                f"MEASURED not reproducible for one graph on one host, so this "
-                f"refusal cannot tell the two apart. Reaching it at all means a "
-                f"minter skipped `get` and re-minted a key that already existed."
-            )
+        except RefConflict as exc:
+            raise KeyAlreadyMinted(self._minted(name)) from exc
         return ref
+
+    @staticmethod
+    def _minted(name: str) -> str:
+        return (
+            f"key {name} is already minted; the first artifact stands and nothing "
+            f"was overwritten. The bytes offered here were NOT compared against "
+            f"it, deliberately: AOTI does not emit the same bytes twice for one "
+            f"graph on one host, so a comparison could not tell a key collision "
+            f"from compiler nondeterminism. Identity is the key, and the key "
+            f"already resolved -- call `get` and serve what is stored."
+        )
 
     def get(self, key: str | Any, destination: Path) -> StoredArtifact | None:
         """Unpack and verify one artifact, or None when the key is unknown."""
@@ -148,11 +173,17 @@ def pack(directory: Path, destination: Path) -> Path:
     The envelope carries no time and no ownership: members are added in a fixed
     order with mtime 0, uid/gid 0 and no names, and gzip is given `mtime=0`.
 
-    This is not tidiness. `put` reports divergence by comparing whole-file
-    digests, so an envelope that varied with the clock would make two identical
-    mints look like a key collision -- a false alarm on the one guard whose job
-    is to catch a real one. With the envelope fixed, the only thing that can
-    differ is the compiler's own output, which is exactly the question.
+    This USED to be load-bearing, and is no longer: it existed so that `put`'s
+    byte comparison could not fire on a clock instead of on a collision, and
+    that comparison is gone (tcg#84 ruling). What it still buys is smaller and
+    honest -- the artifact's digest becomes a function of its CONTENTS alone, so
+    the same contents cache and dedup as the same blob, and so the digest means
+    "these bytes" rather than "these bytes, packed at that moment".
+
+    It is deliberately NOT restored as evidence of identity. Today AOTI's own
+    output varies between mints, so a stable envelope cannot make an artifact
+    reproducible; if that ever changes, this is one of the things that would
+    have to already be true, which is the cheapest reason to keep it.
     """
 
     import gzip
