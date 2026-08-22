@@ -1,395 +1,132 @@
 # torchcg
 
-`torchcg` mints and reuses verified PyTorch AOTInductor graphs. It is
-independent of `python-gen-worker`: applications supply one exported program
-plus the worker-recorded compiler-content block, and `tensorfs` is the sole
-local content-addressed store.
+Mint, store, and adopt PyTorch AOTInductor graphs.
 
-Proven on GPU: a split-compiled artifact compiles, partial-links, loads and
-executes on a real sm_86 pod with output bitwise-identical to the unsplit
-compile and to eager (PR #33, `d7a0beb`).
+Torch does the compiling. This library owns identity, storage and adoption — and
+the refusals that keep an artifact from claiming to be something it is not.
+
+Five modules, each answering one question:
+
+| module | question |
+|---|---|
+| `identity` | what a compiled graph IS — one graph hash, one key |
+| `mint` | making the artifact — bind, compile, package |
+| `store` | where it lives — content-addressed, mint-once |
+| `adopt` | serving it — load, verify, dispatch-or-eager |
+| `refuse` | every way this can say no |
 
 ## Install
 
 Not on PyPI. Depend on it by git pin, at an exact rev:
 
 ```toml
-# pyproject.toml -- resolves under uv, pip, and an exported requirements file
-dependencies = [
-    "torchcg @ git+https://github.com/cozy-creator/torchcg@<rev>",
-]
+dependencies = ["torchcg @ git+https://github.com/cozy-creator/torchcg@<rev>"]
 ```
 
-Prefer that PEP 508 direct reference over a `[tool.uv.sources]` entry: a
-`uv.sources` pin binds only to the project that declares it, so it is dropped
-by `uv export`, by `pip install`, and by anything consuming your built wheel.
-`torch` is an extra (`torchcg[torch]`), and resolving the lock builds `tensorfs`
-from source, which needs a Rust toolchain on the resolving machine.
+Prefer that PEP 508 direct reference over `[tool.uv.sources]`: a `uv.sources`
+pin binds only to the project that declares it, so it is dropped by `uv export`,
+by `pip install`, and by anything consuming your built wheel. `torch` is an
+extra (`torchcg[torch]`), and resolving the lock builds `tensorfs` from source,
+which needs a Rust toolchain on the resolving machine.
 
-## Lanes, discovery, and two-level identity (tcg#41 / pgw#1368)
+## Identity
 
-The ship-code-as-is surface (2026-08-18 rulings). The author's serving code
-runs untouched; a lane names compile-target attribute paths on the author's
-own objects plus the tensor-layout STAMP that lane expects checkpoints in --
-the v2 `(topology, quant)` pair, `sdxl.diffusers@1+plain.bf16@1`.
-Discovery hooks the targets, runs the author's sample invocation, and every
-distinct observed call is one graph specialization -- the observed ingress set IS the
-graph set. Identity is two-level: `cg-graph-v1` content-hashes the DERIVED
-graph (identical traces dedup; pins are derivation inputs, not name parts),
-and artifacts hang off a graph by env = (resolved lockfile-closure hash, sm).
-
-```python
-import torch
-from tensorfs import LocalCAS
-from torchcg import (
-    GraphSetDocument,
-    LaneRef,
-    LocalGraphStore,
-    compile_stack,
-    discover_lane,
-    holes,
-    installed_closure,
-)
-
-lane = LaneRef("sdxl.diffusers@1+plain.bf16@1", dtype=torch.bfloat16)
-graphs = discover_lane(
-    lane, ("unet", "vae.decoder"), pipe.components, lambda: pipe(**sample)
-)
-stack = compile_stack(installed_closure())
-document = GraphSetDocument(stack=stack, lanes=(graphs,))
-
-store = LocalGraphStore(LocalCAS("/var/cache/graphs"))
-store.put_graphs("release-1", document)
-missing = holes(store, document.lanes[0], document.env("sm_89"))  # mint ONLY these
+```
+key = hash(graph capture × env fingerprint × declared input layout × mint policy)
 ```
 
-`GraphStore` is the abstract seam: torchcg knows nothing about hubs, releases
-or pods; `LocalGraphStore` is the reference/local-CAS implementation and other
-backends implement the same protocol. Requirements manifests
-(`RequirementsManifest`, written by the mint from what it actually linked) are
-an AUDIT assertion -- `assert_exact_env` refuses loudly when a pod's env is not
-the release's stamped env -- and `rank` exists only for the miss-path ladder.
-The lane spelling is the contract file's (the sdxl `main.py` endpoint under
-line review); `tests/test_contract_lane_shape.py` keeps this API from drifting
-from it, and `tests/test_lane_stamp_tcg79.py` holds the stamp grammar to
-tensorfs' own (`isTFM1ContractName` + `ParseHandle`, joined by `+`).
+The **graph hash** (`cg-graph-v1`) is a content hash of the derived graph: the
+canonical serialization of the traced program plus its call ingress. Code
+version, torch version and config are derivation INPUTS, never name components,
+so two code versions that trace byte-identically produce one graph.
 
-## V1 lifecycle
+The other three are the environment half, and each earned its place by causing a
+collision that was measured:
 
-```python
-from tensorfs import LocalCAS
-from torchcg import (
-    Engine,
-    GraphSpecialization,
-    RuntimeCompatibility,
-    build_call_ingress,
-)
+- **`env`** — which compiler and which host. Its MEMBERS are the caller's to
+  choose; a 2026-08-16 pod matrix found `os_release`, `glibc`, `libstdc++` and
+  the C++ compiler load-breaking in both directions.
+- **`policy`** — what the compiler was told to do. A fold-on mint and a
+  fold-off mint of one graph emit different `.so` bytes.
+- **`layout`** — which byte arrangement the inputs were compiled against. The
+  graph hash is stride-blind, so a contiguous mint and a channels-last mint of
+  one graph are otherwise one address.
 
-ingress = build_call_ingress(
-    exported_program,
-    call_parameter_names,
-    example_args,
-    example_kwargs,
-)
-graph_interface["pytree"]["ingress"] = ingress.as_dict()
+Layout handles are **read** from `tensorfs`' ratified corpus (`spec/v2/layouts`),
+never authored here — a handle is a key axis value, and two producers of one is
+how artifacts get addressed under names the ratifying corpus never saw. The
+corpus is the caller's to supply: vendor it beside the package, pass `root=`, or
+name it in `$TENSORFS_SPEC_V2`.
 
-spec = GraphSpecialization(
-    "denoiser/h=64,w=64",
-    "unet",
-    exported_program,
-    graph=graph_interface,
-)
-runtime = RuntimeCompatibility(
-    "sm_89",
-    toolchain=recorded_toolchain,
-)
-engine = Engine(LocalCAS("/var/cache/graphs"))
-result = engine.compile(
-    spec,
-    runtime,
-    "/run/graphs/denoiser-h64-w64",
-)
-runner = engine.runner(result.compiled_graph.key, "/run/graphs/loaded")
-assert runner is not None
-runner.bind(resident_constants, device="cuda")
-outputs = runner(*positional_inputs)
+## The call ingress
+
+The one fact an `ExportedProgram` cannot encode: the author's `forward`
+parameter names and the nesting of the call. It is what lets the dispatcher
+decide, per call, whether an armed graph can take it.
+
+## Dispatch
+
+**The selector IS the dispatcher.** One function decides whether a call fits a
+record and states what must be done to make it fit; the dispatcher does exactly
+that. A plan that is computable but never executed cannot exist, because
+computing it is how the match is decided.
+
+The only normalization that moves admission is a rank-0 integral feed recast to
+float32/float64 — the timestep. Euler-family samplers present float32;
+ddim/dpmpp/unipc end `set_timesteps` in `.to(int64)`; the sampler is deliberately
+not a compile axis, so both reach the same artifact. bfloat16 is not a target:
+its 8 mantissa bits round timestep 999 to 1000.
+
+Nothing on the hot path raises. A call that fits nothing serves eager — the
+correct answer; only speed is lost.
+
+There is **no selection ladder here**. Which artifact a pod should hold is the
+serve ladder's question.
+
+## The artifact
+
+A gzipped tar of exactly three members, packed deterministically (no mtime, no
+uid, no stored filename) so that two mints of one key differ only if the
+compiler's own output differed:
+
+```
+metadata.json          # key, graph, ingress, policy, layout, placement, constants
+model.pt2              # the AOTI package
+constants.safetensors  # trace-baked literal values, when there are any
 ```
 
-`graph_interface` carries the current v3 graph-specialization facts. Its required
-`pytree.ingress` value is built and decoded only by this package; its digest is
-the graph specialization's ingress-range digest rather than a caller-supplied second
-identity. The same declaration derives the `cg-key-v2` lookup, mint stamp, and
-admission expectation.
+Weightless by construction: `package_constants_in_so` is false and constants
+bind `user_managed=True` as raw pointers into the live module's own weights.
+There is no second copy of the checkpoint on the device — which is why adoption
+needs the module, and a bare `load_package(path)` is unservable.
 
-`Engine.compile(spec, runtime, destination)` is the sealed one-specialization operation
-used by a compile child: it derives its own key and reuses an admitted exact
-record before doing compiler work. A miss compiles one code-only graph under
-the sole v1 compile policy, packages it as a verified artifact, stores it in
-`tensorfs`, and materializes it. A later process pointed at the same store
-reuses it without compiling. There is no public plan, compiler callback, option
-map, or caller-supplied identity.
+## Tests
 
-`Engine.resolve(key, destination)` is the known-key hit path: it neither
-constructs an `ExportedProgram` nor imports Torch. It does read the local CPU
-feature surface and fails before returning a package if the artifact's host-code
-requirement is incomplete or unsupported. `Engine.ensure` resolves first and
-invokes its lazy recipe exactly once, only on a miss.
+`uv run pytest`. Real integration, no mocks of the seams that break: a real
+`torch.export`, a real `aot_compile`, a real tensorfs CAS, a real dispatcher.
 
-`Engine.runner(key, destination)` resolves the exact selected bytes, loads the
-named AOTI model, and returns a `CompiledGraphRunner`. The runner refuses every
-call until `bind` proves the package's own constant table equals the artifact
-manifest and completes one by-reference update. Missing, partial, or
-out-of-memory binding leaves that runner permanently unusable; a caller may load
-a fresh instance on a pod with capacity. Ingress selection, eager fallback,
-family composition, process scheduling, Hub receipts, and telemetry remain
-application policy and are intentionally absent.
+`tests/graph_hash_bank.json` holds graph hashes generated by the pre-rebuild
+tree and is the regression instrument: every artifact in the store is addressed
+by these strings, so a change that moves one has orphaned the corpus. Regenerate
+only with a stated reason — the bank moving is a fleet-wide re-mint.
 
-## Compiler policy
+The end-to-end mint tests need `TORCHCG_E2E=1`. They target CUDA when a CUDA
+compiler is reachable and fall back to the CPU target otherwise — the fallback
+is honest, not a skip, because every seam this library owns is exercised either
+way.
 
-The sealed policy uses four Inductor compile workers: pgw#757's measured
-contention ceiling and the current worker value. A balanced 16-run
-one-versus-four comparison found no material wall-time difference, so this is
-parity and a ceiling, not a claim that four is faster.
+AOTI's CUDA path shells out to `nvcc`, which the `nvidia-*` runtime wheels do
+not ship. **No system CUDA toolkit is required**; two more wheels supply it:
 
-The compiler privately rewrites the generated C++ wrapper's pathological
-constructor and `run_impl` functions into reconstruction-checked smaller
-functions and translation units. Unrecognized shapes compile unchanged. A failed
-`run_impl` split retries the constructor-transformed monolith when that first
-transform applied; if that build also fails, or the constructor transform was
-the failure, the compiler retries PyTorch's original source. Neither transform
-is a caller option, environment switch, public API, or identity axis.
-
-## Toolchain identity
-
-`recorded_toolchain` is an explicit adapter input, not a guessed version or host
-fingerprint. A worker records its settings declaration, loaded-library digest,
-installed Torch/Triton/NVIDIA wheel RECORD digests, and bundled CUDA binary
-digests. This core applies the current worker membership rule and folds that
-content to the 16-hex `toolchain` axis; trace-only `diffusers`, `transformers`,
-and `peft` records are excluded because their effects already ride the graph.
-Host ISA requirements are recorded and admitted separately.
-
-**Every toolchain member must be a BUILD fact, never a HOST fact** (tcg#26).
-The block's members are the caller's to choose, so this is a contract on the
-caller: a member whose value moves when the same artifacts run on a different
-machine fragments the cache by machine, and it does so on a dimension the ISA
-axis deliberately clamps flat — the fingerprint then contradicts itself. Content
-digests of installed files (wheel RECORDs, library bytes, tool binaries) satisfy
-this by construction. Strings a runtime *probes* do not: `torch.__config__.show()`
-is the measured example, since ATen interleaves build settings with the
-dispatched CPU ISA and with accelerator blocks emitted only when a live driver
-probe succeeds.
-
-The measured portability matrix behind the retained axes lives in
-`benchmarks/host_fingerprint/`, with the recorded rows beside `REQUIRED_AXES`.
-
-## Storage boundary
-
-`tensorfs` owns immutable objects, chunk manifests, durability, GC reachability,
-and transfer primitives. This package owns only graph declaration, compilation,
-artifact policy, exact-key refs, admission, and quarantine. A divergent second
-artifact never overwrites an admitted key. A corrupt or inadmissible manifest is
-quarantined and can be repaired only by a newly verified mint.
-
-`Engine.export_artifact(key, path)` emits the exact verified artifact envelope
-for a remote adapter. `Engine.import_artifact(key, path)` validates its metadata
-and host requirement before attaching the fully verified bytes to the local
-store. Neither operation exposes the package's private ref layout.
-
-A package literal whose AOTI wrapper names no FQN lifted by the exported program
-is refused rather than matched by tensor order or shape. Register durable module
-tensors as buffers; guessing an anonymous constant mapping can silently run the
-wrong computation. The opposite direction is safe: a program literal the
-compiler eliminates remains covered by the key-bearing `literal_values` digest.
-`literal_payload_values` separately authenticates the subset the package still
-consumes, so partial elimination never weakens either identity or payload
-verification.
-
-Tensorhub is the first intended remote service, but no speculative registry or
-plugin interface lives here. Its adapter will obtain byte-operation grants,
-populate the same objects, then call `Engine.import_artifact(key, path)` for
-verified attachment; compilation remains local-first and transport-independent.
-
-## Contracts and spans
-
-The versioned identity corpora used by non-Python consumers ship under
-`torchcg.contracts`. `read_contract(name)` reads their canonical bytes from an
-installed wheel; consumers pin the package version and corpus SHA-256 rather
-than fetching a moving source branch. Their `authority` strings still read
-`torch-compiled-graphs` — the pre-rename name is the historical authority, and
-renaming it would rekey corpora that peers pin byte-for-byte.
-
-`torchcg.recipe` is the reference implementation of `recipe_v1`, the versioned
-vocabulary for one family's composition: which graph specializations make one endpoint's
-compiled pipeline, the loop between them, and the scheduler block that loop runs
-under — including an autoregressive family's `loop.kind: host`, which states the
-per-step specializations and the session-state owner and says outright that the
-data-dependent iteration is the host's. It is a vocabulary, not a DSL, and it is
-deliberately class-level: it pins each class by specialization hash, its exact
-`CallIngress` value, and the tensor-layout contract it was traced against, never
-by a `cg-key-v2` value and never by a checkpoint, so one machine-independent
-digest is valid on every SKU and the key is folded at adopt time. Typed bindings are generated from a
-declaration-time export rather than from the recipe; the recipe is the drift
-assertion against that declaration and the adopt-time name-to-identity
-reference. `docs/RECIPE.md` states the document, the digest rule, how it rides
-beside `endpoint.lock`, and the numbered requirements a binding generator
-implements against.
-
-## Transform passes
-
-`torchcg.transform` is the pass mechanism: a lane-bound module rewrite that
-runs BEFORE discovery, declares the weights it makes removable, and mints the
-side table it replaces them with. Ordering is PASS → DISCOVERY → EXPORT and it
-is structural — a sealed `TransformSession` is what discovery accepts as
-evidence, the pass names enter `cg-graph-v1` exactly as pins do, and adoption
-refuses a boot whose ran-pass set differs from the document's lane row. Two
-instances ship: `precompute-and-free@1` (evaluate a submodule over a declared
-domain, install the outputs as a side table, release the weights) and
-`quantize-in-place@1` (`torchcg.quantize`'s `QuantRecipe` as a lane property).
-`docs/TRANSFORM.md` states the interface, the bucket format and the refusals.
-
-The versioned compile-span partition lives in `torchcg.spans`. Its three totals
-each have one explicit residual, and `check()` must be run by the measurement
-owner before emitting a table. Triton, autotune, and device-lock timing are
-overlays, never partition members.
-
-## Ingress selection
-
-`CallIngress` states what one graph specialization accepts. `torchcg.selection` states
-what a serve host does with several of them, as the versioned
-`ingress_selection_v1` corpus plus the reference implementation that produces
-it. A second serve host reads the corpus instead of reverse-engineering Python.
-
-- **Admission is all-or-nothing.** A specialization admits a call exactly when it has no
-  miss; every miss disqualifies and none merely ranks. Two admitting specializations are
-  `specialization_ambiguous` — a declaration that failed to discriminate them by ingress
-  is a defect to surface, never a coin to flip.
-- **Ranking orders the specializations that already lost.** `miss_distance` is the
-  sorted rung tuple, so the specialization matching every declared dimension and
-  disagreeing about one scalar fact sorts ahead of one the call does not fit;
-  among equals, fewer complaints wins, and an exact tie breaks on the specialization
-  name. The rungs are ordinal only — nothing may read their values as a score.
-- **Two normalizations, and only two.** A `recast` converts an integer rank-0
-  feed to a declared `float32`/`float64` — value-preserving, and the only
-  normalization that moves admission. A `realign` stages a non-contiguous or
-  non-16-byte-aligned feed; alignment is a performance fact and never
-  disqualifies a specialization. Per feed at most one applies, and a recast subsumes the
-  realign it implies. Producing the plan is this contract's; performing it, with
-  its buffers and their lifetime, is the host's.
-- **A total miss is `no_specialization_admits` and a ranking.** What a host does about it
-  — eager fallback, sticky de-arm, shape-growth reporting, event emission,
-  refusal wording — is host policy. The candidate set is the host's too:
-  selection never asks why a specialization is absent, unarmed, or pending a compile.
-
-Selection reads four facts per feed (dtype, shape, contiguity, pointer
-alignment), so the contract is executable without torch and expressible as JSON.
-`describe_call` is the adapter that reads them off a real call, replaying each
-declared input's recorded param/path coordinate.
-
-## CLI
-
-```bash
-torchcg inspect compiled_graph.tar.gz
-torchcg verify compiled_graph.tar.gz
-torchcg resolve --cas-root /var/cache/graphs CG_KEY DESTINATION
+```sh
+uv pip install nvidia-cuda-nvcc nvidia-cuda-cccl
+export CUDA_HOME=$PWD/.venv/lib/python3.*/site-packages/nvidia/cu13
+export PATH=$CUDA_HOME/bin:$PATH
 ```
 
-`inspect` validates and prints metadata. `verify` additionally checks the
-artifact envelope, generated AOTI wrapper, ELF structure, constant manifest, and
-code-only policy. `resolve` fully verifies a local exact-key artifact while
-materializing it.
-
-## Development
-
-```bash
-uv sync --all-extras
-uv run ruff check src tests
-uv run mypy
-uv run pytest
-```
-
-PyTorch is an optional install extra because production workers control their
-exact compiler build; the default compiler imports it only when minting.
-`tensorfs` is git-pinned rather than installed from an index, so resolving the
-lock builds a Rust extension — CI pins a stable toolchain for it.
-
-CI installs all extras and runs a real CPU `torch.export` → AOTInductor →
-`tensorfs` → restart-reuse test. CPU AOTI exercises the transforms' installed
-decline/fallback path; the applied-transform tests compile and run the generated
-CUDA-wrapper shapes as real C++, pinned against a verbatim captured sm_86
-wrapper in `tests/realdata/`. The applied path on a real GPU was proven
-separately on rented pods (PR #33) rather than in CI.
-
-## Versioning and release
-
-Package releases use SemVer, beginning with `0.1.0`; the first release tag is
-`v0.1.0`. Internal artifact/key formats are independently named v1. Before
-launch an internal v1 may be replaced in place: there are no dual readers,
-compatibility aliases, or migration paths for abandoned pre-launch formats.
-
-Internal consumers git-pin this repository. Nothing is published to PyPI as a
-side effect of development — `.github/workflows/publish.yaml` is
-`workflow_dispatch` only, and a release happens when someone deliberately asks
-for one (DESIGN-RULINGS "Release policy", 2026-08-16). When dispatched, it
-requires a `v<project version>` tag on `master`, rebuilds and smoke-tests the
-wheel, and publishes through PyPI Trusted Publishing.
-
-### 0.1.0 public API
-
-- Compilation is owned by `Engine`; no public compiler, packager, context, or
-  options callback can replace the fixed output-producing path. The engine
-  derives the sole FakeTensorMode, ShapeEnv, and tracing context recursively
-  from the `ExportedProgram` graph metadata and refuses incomplete or
-  conflicting context.
-- `is_compiled_graph_key` validates the shared scheme-agnostic
-  `<scheme>-<56 lowercase hex>` boundary grammar. The core derives only
-  `cg-key-v2` keys.
-- Graph-specialization declarations use the current worker facts-v3 fold. The 16-hex
-  canonical body witness and 16-hex specialization hash are paired collision chokepoints;
-  the graph-specialization display name does not key.
-- `CallIngress` is the closed v1 identity for one exported call. Its builder
-  preserves mapping insertion order, flattened sequence positions (including
-  non-tensor gaps), the ordered parameter axis (including zero-leaf arguments),
-  parameter paths, exported placeholder names, finite symbol bounds, and
-  excluded inputs. It is stamped at `graph.pytree.ingress`; its digest is derived
-  and verified by `GraphSpecializationDeclaration`.
-- Literal identity is the worker's exact 32-hex v1 value digest and rides inside
-  the graph-interface block. Weight values remain excluded. Toolchain identity
-  accepts the worker-recorded content block through an explicit adapter seam.
-- Durable values are `StoredCompiledGraph` objects and metadata carries one
-  `graph_specialization` object. The retired `entry`, `GraphSpec`, `GraphDeclaration`,
-  and `StoredGraph` shapes have no aliases or readers.
-- `Engine.export_artifact(key, destination)` exports a fully verified artifact
-  envelope without exposing ref layout. An occupied or racing destination is
-  accepted only when its size and full SHA-256 match the exact selected manifest
-  file; it is never overwritten.
-- Host ISA facts cover every CPU and CUDA artifact. x86-64 compilation is
-  process-wide capped at `x86-64-v3`; other architectures carry a conservative
-  native feature requirement. Unstamped or unsupported artifacts fail closed.
-- `Engine.runner` returns a gated `CompiledGraphRunner`; exact constant-table
-  binding, by-reference lifetime, and one-specialization call binding are library-owned.
-- `torchcg.selection` owns multi-specialization selection as the versioned
-  `ingress_selection_v1` corpus: admission, the miss-rung ranking, the two
-  permitted feed normalizations, and the total-miss outcome. Its typed values
-  are closed — `MissReason`, `NormalizationKind` and `SelectionOutcome` are
-  enums with no default member, and the rung table is total over the first.
-  What a host does with an outcome stays with the host: eager fallback, sticky
-  de-arm, shape-growth reporting, event emission and refusal wording are worker
-  policy and no part of this package.
-- `torchcg.spans` owns the compile attribution vocabulary and closure invariant
-  used across the worker child boundary.
-- `torchcg.recipe` owns the `recipe_v1` composition vocabulary: validated
-  identifier types rather than bare strings, one closed refusal enum, a document
-  that refuses any unknown version or field, and a `CallSignature` projection
-  that is a pure function of `CallIngress`. It imports neither Torch nor the
-  declaration module, and it decides nothing: bucket lookup is exact rather than
-  ranked, and selection stays with `ingress_selection_v1`.
-
-The package root exposes only the engine lifecycle, graph-specialization declarations,
-result/value types, error types, the single `COMPILED_GRAPH_FORMAT` authority,
-and `is_compiled_graph_key`. Introspection helpers remain in their owning
-modules rather than being re-exported as a second facade.
-
-## License
-
-MIT
+`nvidia-cuda-nvcc` provides `bin/nvcc`; `nvidia-cuda-cccl` provides the
+`nv/target` headers that `cuda_fp16.h` includes and without which the header
+precompile fails. Both install beside the runtime libraries already there, so
+`CUDA_HOME` is one directory. Match the suffix to `torch.version.cuda`
+(`cu13` here); the older `nvidia-cuda-nvcc-cu13` spelling is deprecated and
+refuses to build.

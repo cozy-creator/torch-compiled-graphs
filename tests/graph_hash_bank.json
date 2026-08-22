@@ -1,0 +1,9 @@
+{
+  "dynamic_batch_2_8": "cg-graph-v1-f7f4a4f04fb0fb4edacc643b9cf05afb030aeea16510012a5be16aa4",
+  "dynamic_batch_2_8_ingress": "3dfa4d1ff2bcf5543122321f66db17da",
+  "dynamic_batch_2_8_passes": "cg-graph-v1-70bb466a15e3e17922e9593b265c9fc22d683de23dcc13b64cd8bfec",
+  "static_batch1": "cg-graph-v1-4d88bdab918c0c0a3b88c10ea66497af0efa25a319867947b3a4fe2d",
+  "static_batch1_ingress": "e23401b2b132b7ec474673069133c6f5",
+  "static_batch2": "cg-graph-v1-68055736b1c0b01a6551a86c3a6a8943bb729acacd36c02e2fa7cfc0",
+  "static_batch2_ingress": "5e06d450ddbd31bad56e909a00bb5eaf"
+}

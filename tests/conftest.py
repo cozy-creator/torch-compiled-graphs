@@ -36,6 +36,7 @@ def pytest_runtest_teardown() -> None:
     arm's private corpus from being the next arm's answer -- a cache that
     outlives its input is a guard that cannot go red."""
 
-    from torchcg import layout
+    from torchcg import identity
 
-    layout._paired.cache_clear()
+    identity._paired.cache_clear()
+    identity._identity_morphism.cache_clear()
