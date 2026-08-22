@@ -467,7 +467,7 @@ def test_stripping_weights_leaves_the_TRACE_BAKED_constants_alone() -> None:
 
 def test_a_program_with_no_state_dict_is_returned_untouched() -> None:
     class _Bare:
-        state_dict: dict = {}
+        state_dict: dict[str, Any] = {}
 
     bare = _Bare()
     assert mint.strip_weights(bare) is bare
