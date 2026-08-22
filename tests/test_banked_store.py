@@ -11,7 +11,7 @@ from tensorfs import LocalCAS
 
 from torchcg.identity import artifact_key, contiguous_handle
 from torchcg.refuse import KeyAlreadyMinted, StoreError
-from torchcg.store import Store, pack
+from torchcg.store import Store, pack, unpack
 
 pytest.importorskip("torch")
 
@@ -207,3 +207,28 @@ def test_a_foreign_artifact_gets_the_SAME_refusals(tmp_path: Path) -> None:
     envelope = pack(directory, tmp_path / "bad.tar.gz")
     with pytest.raises(StoreError, match="unfenced"):
         open_artifact(envelope, tmp_path / "out")
+
+
+def test_a_BARE_PACKAGE_is_refused_BY_NAME_not_as_corruption(tmp_path: Path) -> None:
+    """The one wrong input a caller actually produces, and the remedy depends on
+    saying WHICH mistake it is.
+
+    A bare AOTI `.pt2` is a ZIP. Left to `tarfile` it comes back as "not a gzip
+    file", which reads as CORRUPTION and sends the reader to scrub the disk —
+    when the actual remedy is to re-publish an envelope. pgw's own
+    `test_a_SKEWED_remote_artifact_refuses_BY_TYPE_and_never_arms` holds this
+    bar: the refusal must name the skew.
+    """
+    import zipfile
+
+    package = tmp_path / "model.pt2"
+    with zipfile.ZipFile(package, "w") as bundle:
+        bundle.writestr("data/aotinductor/x/model.so", b"\x7fELF")
+
+    with pytest.raises(StoreError) as caught:
+        unpack(package, tmp_path / "out")
+    said = str(caught.value)
+    assert "bare AOTI .pt2 package" in said
+    assert "Re-publish" in said
+    assert "not corrupt" in said
+    assert "not a gzip file" not in said, "the corruption reading must not survive"
