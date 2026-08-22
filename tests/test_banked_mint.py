@@ -3,6 +3,9 @@ device uniformity."""
 
 from __future__ import annotations
 
+import ast
+from typing import Any
+
 import pytest
 
 import torchcg.mint as mint
@@ -44,7 +47,7 @@ def test_the_fold_policy_is_KEYED() -> None:
     assert "compile_threads" not in policy
 
 
-def test_an_unclassified_option_REFUSES(monkeypatch) -> None:
+def test_an_unclassified_option_REFUSES(monkeypatch: pytest.MonkeyPatch) -> None:
     """Classify or refuse. An option nobody has decided about is one nobody
     decided whether the key must carry."""
 
@@ -119,14 +122,16 @@ def test_the_sm_gate_is_read_from_torch_UNCACHED() -> None:
     )
 
 
-def _is_docstring(node) -> bool:
+def _is_docstring(node: ast.stmt) -> bool:
     import ast
 
     return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a card")
-def test_the_sm_gate_REFUSES_a_requested_lever_the_target_would_drop(monkeypatch) -> None:
+def test_the_sm_gate_REFUSES_a_requested_lever_the_target_would_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Measured on an RTX 4070 Laptop: `max_autotune: True` moved the key, cost
     622.5 s against an 85.2 s baseline, and torch logged `Not enough SMs to use
     max_autotune_gemm mode` -- 36 SMs against its internal min_sms = 68.
@@ -152,7 +157,7 @@ def test_the_sm_gate_REFUSES_a_requested_lever_the_target_would_drop(monkeypatch
 # ---------------------------------------------------------------------------
 
 
-def _export_batch_dim(low: int, high: int):
+def _export_batch_dim(low: int, high: int) -> tuple[Any, Any]:
     unet = tiny_unet()
     batch = torch.export.Dim("batch", min=low, max=high)
     args = (torch.zeros(2, 4, 8, 8), torch.zeros(()), torch.zeros(2, 77, 16))
@@ -219,14 +224,14 @@ def test_a_replacement_reads_as_the_STRONGEST_narrowing() -> None:
 
 
 class _Node:
-    def __init__(self, value):
-        self.meta = {"val": value}
-        self.args = ()
-        self.kwargs = {}
+    def __init__(self, value: Any) -> None:
+        self.meta: dict[str, Any] = {"val": value}
+        self.args: tuple[Any, ...] = ()
+        self.kwargs: dict[str, Any] = {}
 
 
 class _Program:
-    def __init__(self, devices):
+    def __init__(self, devices: list[str]) -> None:
         nodes = [_Node(torch.zeros(1, device=d)) for d in devices]
         self.graph_module = type(
             "GM", (), {"graph": type("G", (), {"nodes": nodes})()}

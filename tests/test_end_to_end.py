@@ -10,6 +10,7 @@ would remove exactly the seam that has historically broken.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -63,7 +64,7 @@ def _target() -> str:
     return "cuda:0" if _cuda_compilable() else "cpu"
 
 
-def test_mint_store_adopt_dispatch(tmp_path) -> None:
+def test_mint_store_adopt_dispatch(tmp_path: Path) -> None:
     device = _device_type()
     program, ingress = export_unet(2, device=_target())
     from torchcg.identity import graph_hash
@@ -117,7 +118,7 @@ def test_mint_store_adopt_dispatch(tmp_path) -> None:
     assert dispatcher.eager_calls == 1
 
 
-def test_an_int64_timestep_reaches_the_COMPILED_graph(tmp_path) -> None:
+def test_an_int64_timestep_reaches_the_COMPILED_graph(tmp_path: Path) -> None:
     """se#837 end to end: the recast is applied to a real call into a real .so.
 
     The unit arm proves the dispatcher hands over float32. This proves the
@@ -157,7 +158,7 @@ def test_an_int64_timestep_reaches_the_COMPILED_graph(tmp_path) -> None:
     assert result is not None
 
 
-def test_a_second_mint_of_one_graph_does_not_DIVERGE(tmp_path) -> None:
+def test_a_second_mint_of_one_graph_does_not_DIVERGE(tmp_path: Path) -> None:
     """The mint-once claim, asked of two real compiles rather than of two
     copies of one file."""
 

@@ -7,6 +7,8 @@ executed. It is tested by asserting the CALL the compiled thing received.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from torchcg.adopt import Dispatcher, Record, fit
@@ -15,7 +17,15 @@ from torchcg.identity import CallIngress, CallInput
 torch = pytest.importorskip("torch")
 
 
-def _row(name, position, param, param_position, dtype, shape, path=()):
+def _row(
+    name: str,
+    position: int,
+    param: str,
+    param_position: int,
+    dtype: str,
+    shape: tuple[int | str, ...],
+    path: tuple[int | str, ...] = (),
+) -> CallInput:
     from torchcg.identity import exported_input_name
 
     return CallInput(
@@ -51,14 +61,16 @@ class _Spy:
     call this library hands it."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple] = []
+        self.calls: list[tuple[Any, ...]] = []
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args: Any, **kwargs: Any) -> str:
         self.calls.append((args, kwargs))
         return "compiled"
 
 
-def _call(batch=2, *, timestep_dtype="float32"):
+def _call(
+    batch: int = 2, *, timestep_dtype: str = "float32"
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
     return (
         torch.zeros(batch, 4, 8, 8),
         torch.zeros((), dtype=getattr(torch, timestep_dtype)),
@@ -132,7 +144,9 @@ def test_the_caller_s_own_tensors_are_not_mutated() -> None:
     assert args[1].dtype is torch.int64
 
 
-def test_disabling_the_normalization_reproduces_the_PRE_FIX_REFUSAL(monkeypatch) -> None:
+def test_disabling_the_normalization_reproduces_the_PRE_FIX_REFUSAL(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The red arm the requirement asks for by name. With the recast targets
     emptied, the int64 request is refused on dtype and serves eager -- which is
     precisely the behavior se#837 measured in the old tree."""

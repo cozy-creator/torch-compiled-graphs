@@ -44,7 +44,7 @@ from .refuse import BindError, DroppedOptimization, MintError, RangeNarrowed
 #: full constant set by direct cudaMalloc outside the caching allocator
 #: (+4782 MiB first-call transient on sdxl UNet-only). This buys the same
 #: bindable table with no second set.
-POLICY: dict[str, object] = {
+POLICY: dict[str, bool | int | str] = {
     "compile_threads": 4,
     "aot_inductor.package_constants_in_so": False,
     "always_keep_tensor_constants": True,
@@ -111,7 +111,7 @@ _PRECONDITIONS = {
 }
 
 
-def compile_policy(device_type: str = "cpu") -> dict[str, object]:
+def compile_policy(device_type: str = "cpu") -> dict[str, bool | int | str]:
     """The codegen options this target will ACTUALLY run under.
 
     Classify or refuse: an option in none of the three sets is a `MintError`,

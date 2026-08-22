@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fixture import UNET_PARAMS, export_unet, tiny_unet
@@ -23,7 +24,7 @@ pytest.importorskip("diffusers")
 BANK = json.loads((Path(__file__).parent / "graph_hash_bank.json").read_text())
 
 
-def _dynamic_export():
+def _dynamic_export() -> tuple[Any, Any]:
     from torchcg.identity import build_call_ingress
 
     unet = tiny_unet()
@@ -88,7 +89,7 @@ def test_the_canonical_form_reads_the_exported_symbol_not_the_live_one() -> None
     It goes red the moment `_render_symbol` prefers `.expr`.
     """
 
-    import sympy
+    import sympy  # type: ignore[import-untyped]
 
     from torchcg.identity import _render_symbol, _Symbols
 

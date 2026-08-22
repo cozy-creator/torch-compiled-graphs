@@ -331,8 +331,11 @@ class CallInput:
         ):
             if not isinstance(value, str) or not value or value != value.strip():
                 raise IngressError("input_invalid", f"call input {field} must be canonical")
-        for field, value in (("position", self.position), ("param_position", self.param_position)):
-            if type(value) is not int or value < 0:
+        for field, index in (
+            ("position", self.position),
+            ("param_position", self.param_position),
+        ):
+            if type(index) is not int or index < 0:
                 raise IngressError("input_invalid", f"call input {field} must be non-negative")
         if not isinstance(self.path, tuple) or any(
             (type(step) is not int and not isinstance(step, str))

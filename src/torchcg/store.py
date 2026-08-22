@@ -160,10 +160,10 @@ def pack(directory: Path, destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     # `filename=""` because gzip stores the OUTPUT PATH in its header, so
     # packing the same artifact to two scratch names would digest differently.
-    with destination.open("wb") as handle, gzip.GzipFile(
-        filename="", mode="wb", fileobj=handle, mtime=0
+    with destination.open("wb") as sink, gzip.GzipFile(
+        filename="", mode="wb", fileobj=sink, mtime=0
     ) as raw:
-        with tarfile.open(fileobj=raw, mode="w") as tar:  # type: ignore[arg-type]
+        with tarfile.open(fileobj=raw, mode="w") as tar:
             for member in _MEMBERS:
                 path = directory / member
                 if not path.is_file():
@@ -173,8 +173,8 @@ def pack(directory: Path, destination: Path) -> Path:
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
                 info.mode = 0o644
-                with path.open("rb") as handle:
-                    tar.addfile(info, handle)
+                with path.open("rb") as source:
+                    tar.addfile(info, source)
     return destination
 
 

@@ -45,9 +45,6 @@ dev = [
     "transformers>=4.44",
 ]
 
-[project.scripts]
-torchcg = "torchcg.cli:main"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -66,7 +63,10 @@ include = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["real_aoti: exercise the installed PyTorch AOTInductor implementation"]
+# `tests` is on the path because the fixture and the hash bank are test-local:
+# they are the SUBJECT, not a package, and installing them would let production
+# code import a fixture.
+pythonpath = ["src", "tests"]
 
 [tool.mypy]
 python_version = "3.11"

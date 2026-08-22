@@ -39,7 +39,7 @@ def tiny_unet(**overrides: Any) -> Any:
 
 def unet_call(
     batch: int = 2, *, timestep_dtype: str = "float32", device: str = "cpu"
-) -> tuple[tuple, dict]:
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
     """The author's own call shape: (sample, timestep, encoder_hidden_states)."""
 
     import torch

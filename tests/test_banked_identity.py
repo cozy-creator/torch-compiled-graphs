@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from torchcg.identity import (
     KEY_SCHEME,
+    ArtifactKey,
     artifact_key,
     contiguous_handle,
     is_artifact_key,
@@ -21,7 +24,7 @@ FOLD_OFF = {"always_keep_tensor_constants": False, "aot_inductor.package": True}
 GRAPH = "cg-graph-v1-" + "a" * 56
 
 
-def key(**overrides):
+def key(**overrides: Any) -> ArtifactKey:
     fields = dict(overrides)
     graph = fields.pop("graph", GRAPH)
     return artifact_key(
