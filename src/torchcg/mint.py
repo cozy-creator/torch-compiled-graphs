@@ -744,6 +744,22 @@ def imposed_env(env: Mapping[str, str]) -> dict[str, str]:
     return merged
 
 
+@dataclass(frozen=True, slots=True)
+class Minted:
+    """One minted artifact and the identity it was minted under.
+
+    The key is RETURNED rather than left for the caller to re-derive. It cannot
+    be re-derived reliably: `mint` imposes the host ISA facts into the env, so a
+    caller repeating `artifact_key(...)` with the env it passed in computes a
+    DIFFERENT address and then cannot find its own artifact. A function that
+    decides an identity hands it back.
+    """
+
+    key: str
+    path: Path
+    env: Mapping[str, str]
+
+
 def mint(
     spec: GraphSpec,
     *,
@@ -751,7 +767,7 @@ def mint(
     env: Mapping[str, str],
     device_type: str,
     destination: Path,
-) -> Path:
+) -> Minted:
     """Bind, compile, package and stamp ONE graph into one artifact tarball.
 
     The order is load-bearing: the bind must re-derive the requested identity
@@ -791,13 +807,14 @@ def mint(
         from .store import pack
 
         pack(workspace, destination)
-    return destination
+    return Minted(key=key.value, path=destination, env=env)
 
 
 __all__ = [
     "ACCEPT_DROPPED",
     "POLICY",
     "GraphSpec",
+    "Minted",
     "assert_device_uniform",
     "assert_ranges_hold",
     "bind_static_spec",

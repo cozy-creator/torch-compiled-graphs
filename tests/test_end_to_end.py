@@ -72,19 +72,28 @@ def test_mint_store_adopt_dispatch(tmp_path: Path) -> None:
     graph = graph_hash(program, ingress)
     spec = GraphSpec(graph=graph, target="unet", program=program, ingress=ingress)
 
-    artifact = mint(
+    minted = mint(
         spec,
         sm=_sm(),
         env=ENV,
         device_type=device,
         destination=tmp_path / "artifact.tar.gz",
     )
-    assert artifact.is_file()
+    assert minted.path.is_file()
+    key, artifact = minted.key, minted.path
 
-    key = artifact_key(
+    # The key is RETURNED, and a caller re-deriving it from the env it passed in
+    # gets a DIFFERENT address -- because the mint imposes the host ISA facts.
+    # That gap is exactly why `mint` hands the key back.
+    naive = artifact_key(
         graph, sm=_sm(), env=ENV,
         policy=compile_policy(device), layout=declared_input_layout(),
     ).value
+    assert naive != key
+    assert artifact_key(
+        graph, sm=_sm(), env=minted.env,
+        policy=compile_policy(device), layout=declared_input_layout(),
+    ).value == key
 
     store = Store(tensorfs.LocalCAS(tmp_path / "cas"))
     store.put(key, artifact)
@@ -131,17 +140,14 @@ def test_an_int64_timestep_reaches_the_COMPILED_graph(tmp_path: Path) -> None:
     from torchcg.identity import graph_hash
 
     graph = graph_hash(program, ingress)
-    artifact = mint(
+    minted = mint(
         GraphSpec(graph=graph, target="unet", program=program, ingress=ingress),
         sm=_sm(), env=ENV, device_type=device,
         destination=tmp_path / "artifact.tar.gz",
     )
-    key = artifact_key(
-        graph, sm=_sm(), env=ENV,
-        policy=compile_policy(device), layout=declared_input_layout(),
-    ).value
+    key = minted.key
     store = Store(tensorfs.LocalCAS(tmp_path / "cas"))
-    store.put(key, artifact)
+    store.put(key, minted.path)
     stored = store.get(key, tmp_path / "unpacked")
     assert stored is not None
 
@@ -168,15 +174,12 @@ def test_a_second_mint_of_one_graph_does_not_DIVERGE(tmp_path: Path) -> None:
 
     graph = graph_hash(program, ingress)
     spec = GraphSpec(graph=graph, target="unet", program=program, ingress=ingress)
-    key = artifact_key(
-        graph, sm=_sm(), env=ENV,
-        policy=compile_policy(device), layout=declared_input_layout(),
-    ).value
     store = Store(tensorfs.LocalCAS(tmp_path / "cas"))
 
     first = mint(spec, sm=_sm(), env=ENV, device_type=device,
                  destination=tmp_path / "a.tar.gz")
-    store.put(key, first)
+    key = first.key
+    store.put(key, first.path)
 
     program2, ingress2 = export_unet(2, device=_target())
     assert graph_hash(program2, ingress2) == graph, "the same export re-keyed"
@@ -184,13 +187,14 @@ def test_a_second_mint_of_one_graph_does_not_DIVERGE(tmp_path: Path) -> None:
         GraphSpec(graph=graph, target="unet", program=program2, ingress=ingress2),
         sm=_sm(), env=ENV, device_type=device, destination=tmp_path / "b.tar.gz",
     )
+    assert second.key == key, "two mints of one graph on one host must key alike"
     # The key already resolved, so the second mint is refused on the KEY -- no
     # byte comparison, per the tcg#84 ruling. What this arm still measures is
     # the finding that produced the ruling: whether AOTI emitted the same bytes.
     with pytest.raises(KeyAlreadyMinted, match="already minted"):
-        store.put(key, second)
+        store.put(key, second.path)
     from torchcg.store import _digest_file
 
-    reproducible = _digest_file(first).digest == _digest_file(second).digest
+    reproducible = _digest_file(first.path).digest == _digest_file(second.path).digest
     print(f"AOTI byte-reproducible across two mints of one graph: {reproducible}")
     assert store.get(key, tmp_path / "out") is not None, "the first artifact must stand"

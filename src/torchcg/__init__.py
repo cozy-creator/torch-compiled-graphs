@@ -33,7 +33,13 @@ from .identity import (
     is_graph_hash,
     require_morphism,
 )
-from .mint import GraphSpec, bind_static_spec, compile_policy, strip_diagnostics
+from .mint import (
+    GraphSpec,
+    Minted,
+    bind_static_spec,
+    compile_policy,
+    strip_diagnostics,
+)
 from .refuse import (
     AdoptError,
     BindError,
@@ -70,6 +76,7 @@ __all__ = [
     "LayoutMorphism",
     "LayoutUndeliverableError",
     "MintError",
+    "Minted",
     "RangeNarrowed",
     "Recast",
     "Record",
