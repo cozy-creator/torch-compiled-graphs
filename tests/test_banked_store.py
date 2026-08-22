@@ -232,3 +232,28 @@ def test_a_BARE_PACKAGE_is_refused_BY_NAME_not_as_corruption(tmp_path: Path) -> 
     assert "Re-publish" in said
     assert "not corrupt" in said
     assert "not a gzip file" not in said, "the corruption reading must not survive"
+
+
+def test_the_artifact_KIND_has_ONE_producer() -> None:
+    """The mint stamps it and the store refuses on it. Two spellings of one
+    string is how a writer and a reader drift apart while both look correct —
+    the same shape as the layout handle tcg#87 had two producers of."""
+
+    import ast
+    import inspect
+
+    from torchcg import ARTIFACT_KIND
+    from torchcg import mint as mint_module
+    from torchcg import store as store_module
+
+    assert ARTIFACT_KIND == "aot-inductor"
+    for module in (mint_module, store_module):
+        tree = ast.parse(inspect.getsource(module))
+        literals = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and node.value == "aot-inductor"
+        ]
+        assert not literals, (
+            f"{module.__name__} re-spells the artifact kind; import "
+            f"ARTIFACT_KIND instead"
+        )
