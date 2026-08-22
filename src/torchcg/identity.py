@@ -82,6 +82,79 @@ def is_artifact_key(value: object) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# The compile stack -- which lockfile rows are allowed to split the pool
+# ---------------------------------------------------------------------------
+
+#: The distributions whose versions change what the compiler EMITS. ``torch``
+#: carries inductor and the AOTI runtime, ``triton`` compiles the kernels, and
+#: the ``nvidia-*`` wheels ARE the CUDA toolkit the generated code links
+#: against. Nothing else in a lockfile can reach codegen, so nothing else is
+#: allowed to split the artifact pool.
+STACK_NAMES = frozenset({"torch", "triton", "pytorch-triton"})
+STACK_PREFIXES = ("nvidia-",)
+
+
+def is_compile_relevant(name: str) -> bool:
+    """Whether one distribution name is part of the compile stack.
+
+    Spelling-tolerant on the SELECTION side only (``nvidia_cublas_cu12`` and
+    ``nvidia-cublas-cu12`` are one library). The selected pair goes into the env
+    block VERBATIM: normalizing key inputs can only ever paper over two sources
+    that should have been one.
+    """
+
+    handle = str(name).strip().lower().replace("_", "-")
+    return handle in STACK_NAMES or handle.startswith(STACK_PREFIXES)
+
+
+def compile_stack(entries: Mapping[str, str]) -> dict[str, str]:
+    """The compile-relevant subset of a stated package set.
+
+    The input is normally every ``[[package]]`` row of the endpoint's
+    ``uv.lock``. The output is the ~15 rows that decide what a mint produces, so
+    a bump anywhere else leaves every existing artifact valid -- which is the
+    entire point of selecting rather than digesting the whole set. Handing an
+    env fingerprint the WHOLE installed set is how an artifact pool gets split
+    on a docs extra or a pillow bump (measured: 43-package diffs between
+    environments that serve identically).
+
+    ``torch`` is required: it is the compiler, and an env block that cannot name
+    it is describing a machine that cannot mint.
+    """
+
+    clean: dict[str, str] = {}
+    # Duplicates are detected on the NORMALIZED handle and stored VERBATIM.
+    # Both halves matter: `nvidia_cublas_cu13` and `nvidia-cublas-cu13` are one
+    # library, so admitting both would put one distribution into the env block
+    # twice and digest differently than either spelling alone -- while
+    # normalizing what gets STORED would paper over two sources that should
+    # have been one.
+    seen: dict[str, str] = {}
+    for name, version in entries.items():
+        if not is_compile_relevant(name):
+            continue
+        if not isinstance(version, str) or not version.strip():
+            raise IdentityError(f"compile stack entry {name!r} states no version")
+        handle = str(name).strip()
+        normal = handle.lower().replace("_", "-")
+        known = seen.get(normal)
+        if known is not None and (known != handle or clean[known] != version.strip()):
+            raise IdentityError(
+                f"compile stack names {handle!r} and {known!r} are one "
+                f"distribution ({clean[known]!r} and {version.strip()!r}); the "
+                f"caller has two sources for one fact"
+            )
+        seen[normal] = handle
+        clean[handle] = version.strip()
+    if not any(name.strip().lower() == "torch" for name in clean):
+        raise IdentityError(
+            "a compile stack states torch: it is the compiler. Read the stack off "
+            "the endpoint's uv.lock, never off a guess"
+        )
+    return clean
+
+
+# ---------------------------------------------------------------------------
 # Layout morphisms -- CONSUMED from tensorfs, never authored
 # ---------------------------------------------------------------------------
 
@@ -1174,23 +1247,27 @@ def artifact_key(
 
 __all__ = [
     "AXES",
-    "CORPUS_ENV",
-    "GRAPH_SCHEME",
-    "KEY_SCHEME",
-    "MAX_KEY_LENGTH",
     "ArtifactKey",
+    "CORPUS_ENV",
     "CallIngress",
     "CallInput",
+    "GRAPH_SCHEME",
+    "KEY_SCHEME",
     "LayoutMorphism",
+    "MAX_KEY_LENGTH",
+    "STACK_NAMES",
+    "STACK_PREFIXES",
     "artifact_key",
     "build_call_ingress",
     "canonical_graph",
     "catalog",
+    "compile_stack",
     "constant_names",
     "contiguous_handle",
     "exported_input_name",
     "graph_hash",
     "is_artifact_key",
+    "is_compile_relevant",
     "is_graph_hash",
     "literal_digest",
     "literal_names",

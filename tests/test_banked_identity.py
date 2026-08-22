@@ -134,3 +134,46 @@ def test_an_unstatable_axis_refuses() -> None:
     # A float cannot be canonically restated across languages.
     with pytest.raises(IdentityError):
         key(policy={"threshold": 0.5})
+
+
+def test_the_compile_stack_SELECTS_and_refuses_the_whole_installed_set() -> None:
+    """pgw#1489: handing an env fingerprint every installed package splits the
+    artifact pool on drift that cannot reach the compiler — a docs extra, a
+    pillow bump, a dev tool (43-package diffs measured between environments that
+    serve identically). Only torch, triton and the nvidia-* wheels can change
+    what inductor emits."""
+
+    from torchcg.identity import compile_stack, is_compile_relevant
+
+    lock = {
+        "torch": "2.13.0", "triton": "3.7.1", "nvidia-cublas-cu13": "13.0.0",
+        "pillow": "11.0.0", "sphinx": "8.0.0", "gen-worker": "0.1.0",
+    }
+    assert compile_stack(lock) == {
+        "torch": "2.13.0", "triton": "3.7.1", "nvidia-cublas-cu13": "13.0.0",
+    }
+    # Spelling-tolerant on SELECTION only; the pair goes in verbatim.
+    assert is_compile_relevant("nvidia_cublas_cu12")
+    assert compile_stack({"torch": "2.13.0", "nvidia_cudnn_cu13": "9.0"})[
+        "nvidia_cudnn_cu13"
+    ] == "9.0"
+
+
+def test_a_stack_that_cannot_name_torch_is_refused() -> None:
+    """torch IS the compiler; an env block without it describes a machine that
+    cannot mint."""
+
+    from torchcg.identity import compile_stack
+
+    with pytest.raises(IdentityError, match="states torch"):
+        compile_stack({"triton": "3.7.1"})
+    with pytest.raises(IdentityError, match="one distribution"):
+        compile_stack({"torch": "2.13.0", "Torch": "2.14.0"})
+    # Two SPELLINGS of one library are two sources for one fact, even when the
+    # versions agree — that is the pgw#1472 disease, not a harmless alias.
+    with pytest.raises(IdentityError, match="one distribution"):
+        compile_stack({
+            "torch": "2.13.0",
+            "nvidia_cublas_cu13": "13.0.0",
+            "nvidia-cublas-cu13": "13.0.0",
+        })
