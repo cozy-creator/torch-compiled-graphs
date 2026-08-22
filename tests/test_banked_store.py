@@ -170,3 +170,40 @@ def test_the_ENVELOPE_is_deterministic(tmp_path: Path) -> None:
     (directory / "model.pt2").touch()  # move the mtime
     second = pack(directory, tmp_path / "second-different-name.tar.gz").read_bytes()
     assert first == second
+
+
+def test_an_artifact_that_arrived_by_ANOTHER_ROAD_is_admitted_the_same_way(
+    tmp_path: Path,
+) -> None:
+    """`open_artifact` is the seam for a caller with its own transport — a hub
+    fetch, a baked image layer, a pre-staged volume. It holds the bytes but
+    never put them in this store, and it must not get a weaker admission for
+    that: same unpack, same closed member list, same metadata refusals."""
+
+    from torchcg.store import open_artifact
+
+    value = key()
+    envelope = make_artifact(tmp_path, "hub", key_value=value, body=b"so")
+    opened = open_artifact(envelope, tmp_path / "out")
+    assert opened.key == value
+    assert opened.package.read_bytes() == b"so"
+    # The key is READ from the bytes, never claimed: this path has no address to
+    # check against, so inventing one would be worse than having none.
+    assert opened.metadata["key"] == value
+
+
+def test_a_foreign_artifact_gets_the_SAME_refusals(tmp_path: Path) -> None:
+    from torchcg.store import open_artifact
+
+    value = key()
+    directory = tmp_path / "bad"
+    directory.mkdir()
+    (directory / "model.pt2").write_bytes(b"so")
+    (directory / "metadata.json").write_text(
+        json.dumps({"kind": "aot-inductor", "key": value,
+                    "compile_policy": {"always_keep_tensor_constants": False,
+                                       "aot_inductor.package_constants_in_so": False}})
+    )
+    envelope = pack(directory, tmp_path / "bad.tar.gz")
+    with pytest.raises(StoreError, match="unfenced"):
+        open_artifact(envelope, tmp_path / "out")
