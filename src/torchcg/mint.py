@@ -280,8 +280,18 @@ def strip_weights(program: Any) -> Any:
     for name, value in list(state.items()):
         if not isinstance(value, torch.Tensor) or value.device.type == "meta":
             continue
-        state[name] = torch.empty(
+        bare = torch.empty(
             tuple(int(d) for d in value.shape), dtype=value.dtype, device="meta"
+        )
+        # PARAMETER-NESS SURVIVES. `torch.export.save` refuses a state-dict
+        # entry for a parameter that is not an `nn.Parameter`
+        # (`SpecViolationError`), so the structural record has to keep the
+        # wrapper even though it drops the storage. `requires_grad=False`
+        # because a banked program is never trained through.
+        state[name] = (
+            torch.nn.Parameter(bare, requires_grad=False)
+            if isinstance(value, torch.nn.Parameter)
+            else bare
         )
     return program
 

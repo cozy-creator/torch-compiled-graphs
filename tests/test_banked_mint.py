@@ -471,3 +471,24 @@ def test_a_program_with_no_state_dict_is_returned_untouched() -> None:
 
     bare = _Bare()
     assert mint.strip_weights(bare) is bare
+
+
+def test_stripping_weights_KEEPS_PARAMETER_NESS() -> None:
+    """`torch.export.save` refuses a state-dict entry for a parameter that is
+    not an `nn.Parameter` (`SpecViolationError`), so the structural record drops
+    the STORAGE and keeps the wrapper. Caught by a real derive, not by reading."""
+
+    program, _ = export_unet(2)
+    was_parameter = {
+        name for name, value in program.state_dict.items()
+        if isinstance(value, torch.nn.Parameter)
+    }
+    assert was_parameter, "the fixture has no parameters, so this proves nothing"
+
+    mint.strip_weights(program)
+
+    for name in was_parameter:
+        value = program.state_dict[name]
+        assert isinstance(value, torch.nn.Parameter), name
+        assert value.device.type == "meta", name
+        assert not value.requires_grad, name
