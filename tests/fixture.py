@@ -37,30 +37,36 @@ def tiny_unet(**overrides: Any) -> Any:
     return unet
 
 
-def unet_call(batch: int = 2, *, timestep_dtype: str = "float32") -> tuple[tuple, dict]:
+def unet_call(
+    batch: int = 2, *, timestep_dtype: str = "float32", device: str = "cpu"
+) -> tuple[tuple, dict]:
     """The author's own call shape: (sample, timestep, encoder_hidden_states)."""
 
     import torch
 
     return (
-        torch.zeros(batch, 4, 8, 8),
-        torch.zeros((), dtype=getattr(torch, timestep_dtype)),
-        torch.zeros(batch, 77, 16),
+        torch.zeros(batch, 4, 8, 8, device=device),
+        torch.zeros((), dtype=getattr(torch, timestep_dtype), device=device),
+        torch.zeros(batch, 77, 16, device=device),
     ), {"return_dict": False}
 
 
 UNET_PARAMS = ("sample", "timestep", "encoder_hidden_states", "return_dict")
 
 
-def export_unet(batch: int = 2, **kwargs: Any) -> tuple[Any, Any]:
-    """Export the tiny UNet and build its ingress. Returns (program, ingress)."""
+def export_unet(batch: int = 2, *, device: str = "cpu", **kwargs: Any) -> tuple[Any, Any]:
+    """Export the tiny UNet and build its ingress. Returns (program, ingress).
+
+    The module is moved to `device` BEFORE the trace: a graph is traced onto one
+    device and cannot be re-homed afterwards.
+    """
 
     import torch
 
     from torchcg.identity import build_call_ingress
 
-    unet = tiny_unet()
-    args, call_kwargs = unet_call(batch, **kwargs)
+    unet = tiny_unet().to(device)
+    args, call_kwargs = unet_call(batch, device=device, **kwargs)
     program = torch.export.export(unet, args, call_kwargs, strict=False)
     ingress = build_call_ingress(program, UNET_PARAMS, args, call_kwargs)
     return program, ingress

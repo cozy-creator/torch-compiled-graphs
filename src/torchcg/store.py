@@ -110,9 +110,13 @@ class Store:
         if known is not None and known.digest != ref.digest:
             raise DivergentArtifact(
                 f"key {name} already holds {known.digest[:16]}, and these bytes "
-                f"are {ref.digest[:16]}. The key IS the content address, so two "
-                f"byte strings under one key mean an axis the key does not carry "
-                f"decided the output -- find that axis rather than overwriting."
+                f"are {ref.digest[:16]}. The FIRST artifact stands and is still "
+                f"servable; nothing was overwritten. Two byte strings under one "
+                f"key mean either an axis the key does not carry decided the "
+                f"output, or AOTI simply did not emit the same bytes twice -- "
+                f"MEASURED not reproducible for one graph on one host, so this "
+                f"refusal cannot tell the two apart. Reaching it at all means a "
+                f"minter skipped `get` and re-minted a key that already existed."
             )
         return ref
 

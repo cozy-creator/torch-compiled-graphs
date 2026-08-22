@@ -165,7 +165,7 @@ _X86_LEVELS: tuple[tuple[str, frozenset[str]], ...] = (
 _LOCK = threading.RLock()
 
 
-def _host_isa() -> tuple[str, str | None, str]:
+def _host_isa() -> tuple[str, str | None, int | None]:
     """(machine, march, simdlen). Compiles CLAMP to x86-64-v3.
 
     Above v3 nothing is gained that the fleet can rely on, and every v3-or-
@@ -177,7 +177,7 @@ def _host_isa() -> tuple[str, str | None, str]:
     if not machine:
         raise MintError("platform states no host machine")
     if machine != "x86_64":
-        return machine, None, "128"
+        return machine, None, None
     try:
         text = Path("/proc/cpuinfo").read_text()
     except OSError as exc:
@@ -194,7 +194,7 @@ def _host_isa() -> tuple[str, str | None, str]:
     for name, required in _X86_LEVELS:
         if required <= features:
             level = name
-    return machine, level, "256" if level == "x86-64-v3" else "128"
+    return machine, level, 256 if level == "x86-64-v3" else 128
 
 
 def impose_host_policy() -> dict[str, str]:
@@ -211,6 +211,17 @@ def impose_host_policy() -> dict[str, str]:
             config = import_module("torch._inductor.config")
         except ImportError as exc:
             raise MintError("AOTInductor is required to impose host ISA") from exc
+        # The DEFAULT first, then the value. torch's ConfigModule resolves a
+        # read against a thread-local override layered over a process-wide
+        # default, so assigning only the attribute clamps THIS thread and leaves
+        # inductor's compile workers building for the native ISA -- which is the
+        # exact failure the readback below exists to catch.
+        entries = getattr(config, "_config", {})
+        for name, value in (("cpp.march", march), ("cpp.simdlen", simdlen)):
+            entry = entries.get(name)
+            if entry is None:
+                raise MintError(f"torch config states no process-wide {name!r} default")
+            entry.default = value
         config.cpp.march = march
         config.cpp.simdlen = simdlen
         if (config.cpp.march, config.cpp.simdlen) != (march, simdlen):
@@ -230,7 +241,11 @@ def impose_host_policy() -> dict[str, str]:
             raise MintError(
                 f"host ISA clamp is thread-local: a fresh thread reads {seen[0]!r}"
             )
-    return {"machine": machine, "cpp_march": march or "", "cpp_simdlen": simdlen}
+    return {
+        "machine": machine,
+        "cpp_march": march or "",
+        "cpp_simdlen": "" if simdlen is None else str(simdlen),
+    }
 
 
 # ---------------------------------------------------------------------------

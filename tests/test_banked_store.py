@@ -84,7 +84,7 @@ def test_DIVERGENT_bytes_under_one_key_REFUSE(store: Store, tmp_path: Path) -> N
 
     value = key()
     store.put(value, make_artifact(tmp_path, "a", key_value=value, body=b"first"))
-    with pytest.raises(DivergentArtifact, match="content address"):
+    with pytest.raises(DivergentArtifact, match="FIRST artifact stands"):
         store.put(value, make_artifact(tmp_path, "b", key_value=value, body=b"second"))
     # The FIRST writer still wins: the store was not left half-updated.
     stored = store.get(value, tmp_path / "out")
