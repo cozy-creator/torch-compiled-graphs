@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import platform
-import tarfile
 import tempfile
 import threading
 from collections.abc import Iterator, Mapping
@@ -702,7 +701,7 @@ def mint(
         workspace = Path(scratch)
         compile_package(bound.program, bound.graph, workspace / "model.pt2", device_type)
         assert_ranges_hold(bound.program, bound.graph)
-        literals = write_literals(bound.program, workspace / "constants.safetensors")
+        write_literals(bound.program, workspace / "constants.safetensors")
         (workspace / "metadata.json").write_text(
             json.dumps(
                 metadata(bound, key=key.value, sm=sm, env=env, device_type=device_type),
@@ -710,12 +709,9 @@ def mint(
                 indent=2,
             )
         )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(destination, "w:gz") as tar:
-            for member in ("metadata.json", "model.pt2"):
-                tar.add(workspace / member, arcname=member)
-            if literals is not None:
-                tar.add(literals, arcname="constants.safetensors")
+        from .store import pack
+
+        pack(workspace, destination)
     return destination
 
 

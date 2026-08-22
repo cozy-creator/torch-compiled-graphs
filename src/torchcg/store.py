@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tensorfs import CASRef, DigestMismatch, LocalCAS
+from tensorfs import CASRef, DigestMismatch, LocalCAS, RefConflict
 
 from .identity import is_artifact_key
 from .refuse import DivergentArtifact, StoreError
@@ -99,11 +99,15 @@ class Store:
         if not artifact.is_file():
             raise StoreError(f"artifact {str(artifact)!r} is not a file")
         ref = self._admit(artifact)
-        known = self.cas.read_ref(_ref_name(name))
-        if known is None:
-            self.cas.write_ref(_ref_name(name), ref)
+        # Compare-and-swap rather than read-then-write: first-writer-wins is a
+        # claim about concurrent minters, and a read-then-write cannot make it.
+        try:
+            self.cas.compare_and_swap_ref(_ref_name(name), ref, expected=None)
             return ref
-        if known.digest != ref.digest:
+        except RefConflict:
+            pass
+        known = self.cas.read_ref(_ref_name(name))
+        if known is not None and known.digest != ref.digest:
             raise DivergentArtifact(
                 f"key {name} already holds {known.digest[:16]}, and these bytes "
                 f"are {ref.digest[:16]}. The key IS the content address, so two "
@@ -133,13 +137,41 @@ class Store:
             )
         return StoredArtifact(key=name, directory=directory, metadata=stamped, ref=ref)
 
-    def keys(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                name.removeprefix(f"{_REF_PREFIX}/")
-                for name in self.cas.list_refs(_REF_PREFIX)
-            )
-        )
+
+def pack(directory: Path, destination: Path) -> Path:
+    """Pack one artifact DETERMINISTICALLY.
+
+    The envelope carries no time and no ownership: members are added in a fixed
+    order with mtime 0, uid/gid 0 and no names, and gzip is given `mtime=0`.
+
+    This is not tidiness. `put` reports divergence by comparing whole-file
+    digests, so an envelope that varied with the clock would make two identical
+    mints look like a key collision -- a false alarm on the one guard whose job
+    is to catch a real one. With the envelope fixed, the only thing that can
+    differ is the compiler's own output, which is exactly the question.
+    """
+
+    import gzip
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # `filename=""` because gzip stores the OUTPUT PATH in its header, so
+    # packing the same artifact to two scratch names would digest differently.
+    with destination.open("wb") as handle, gzip.GzipFile(
+        filename="", mode="wb", fileobj=handle, mtime=0
+    ) as raw:
+        with tarfile.open(fileobj=raw, mode="w") as tar:  # type: ignore[arg-type]
+            for member in _MEMBERS:
+                path = directory / member
+                if not path.is_file():
+                    continue
+                info = tar.gettarinfo(str(path), arcname=member)
+                info.mtime = 0
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                info.mode = 0o644
+                with path.open("rb") as handle:
+                    tar.addfile(info, handle)
+    return destination
 
 
 def unpack(artifact: Path, destination: Path) -> Path:
@@ -200,4 +232,4 @@ def read_metadata(directory: Path) -> dict[str, Any]:
     return stamped
 
 
-__all__ = ["Store", "StoredArtifact", "read_metadata", "unpack"]
+__all__ = ["Store", "StoredArtifact", "pack", "read_metadata", "unpack"]
