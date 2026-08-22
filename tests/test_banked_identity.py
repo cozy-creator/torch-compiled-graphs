@@ -127,8 +127,12 @@ def test_an_unstatable_axis_refuses() -> None:
         key(graph="not-a-graph-hash")
     with pytest.raises(IdentityError):
         key(sm="ampere")
-    with pytest.raises(IdentityError):
+    with pytest.raises(IdentityError, match="states torch"):
         key(env={})
+    # The imposed ISA facts must not make the caller's half unstatable-proof:
+    # an env naming everything BUT torch is still a refusal.
+    with pytest.raises(IdentityError, match="states torch"):
+        key(env={"glibc": "2.36"})
     with pytest.raises(IdentityError):
         key(policy={})
     # A float cannot be canonically restated across languages.

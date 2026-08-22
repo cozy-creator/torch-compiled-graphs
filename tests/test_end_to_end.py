@@ -82,18 +82,18 @@ def test_mint_store_adopt_dispatch(tmp_path: Path) -> None:
     assert minted.path.is_file()
     key, artifact = minted.key, minted.path
 
-    # The key is RETURNED, and a caller re-deriving it from the env it passed in
-    # gets a DIFFERENT address -- because the mint imposes the host ISA facts.
-    # That gap is exactly why `mint` hands the key back.
-    naive = artifact_key(
+    # A caller re-deriving the key from the env it passed IN reaches the same
+    # address, because `artifact_key` imposes the host ISA facts itself. This
+    # is the arm that would have caught the footgun the imposition removed: for
+    # one commit the mint imposed and the key did not, so a caller could not
+    # find the artifact it had just minted.
+    assert artifact_key(
         graph, sm=_sm(), env=ENV,
         policy=compile_policy(device), layout=declared_input_layout(),
-    ).value
-    assert naive != key
-    assert artifact_key(
-        graph, sm=_sm(), env=minted.env,
-        policy=compile_policy(device), layout=declared_input_layout(),
     ).value == key
+    # ...and the key reports the env it ACTUALLY digested, which is wider.
+    assert set(minted.env) > set(ENV)
+    assert minted.env["cpp_march"]
 
     store = Store(tensorfs.LocalCAS(tmp_path / "cas"))
     store.put(key, artifact)

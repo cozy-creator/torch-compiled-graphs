@@ -9,9 +9,15 @@ from typing import Any
 
 import pytest
 
+import torchcg.identity as identity
 import torchcg.mint as mint
 from torchcg.identity import build_call_ingress, placement
-from torchcg.refuse import DroppedOptimization, MintError, RangeNarrowed
+from torchcg.refuse import (
+    DroppedOptimization,
+    IdentityError,
+    MintError,
+    RangeNarrowed,
+)
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("diffusers")
@@ -301,10 +307,10 @@ def test_a_full_v3_host_classifies_as_v3() -> None:
     Measured on this box (i9-13950HX): full v3 feature set, classified v2.
     """
 
-    assert mint.isa_level(_INTEL_V3_FLAGS) == "x86-64-v3"
+    assert identity.isa_level(_INTEL_V3_FLAGS) == "x86-64-v3"
     assert "lzcnt" not in _INTEL_V3_FLAGS
     # ...and the table must not be ASKING for a name Linux does not print.
-    for _, required in mint._X86_LEVELS:
+    for _, required in identity._X86_LEVELS:
         assert "lzcnt" not in required, (
             "the level table spells LZCNT the psABI way; /proc/cpuinfo says `abm`"
         )
@@ -312,17 +318,17 @@ def test_a_full_v3_host_classifies_as_v3() -> None:
 
 def test_the_levels_are_ordered_and_each_one_is_reachable() -> None:
     v2 = frozenset({"cx16", "lahf_lm", "popcnt", "sse4_1", "sse4_2", "ssse3"})
-    assert mint.isa_level(frozenset()) == "x86-64"
-    assert mint.isa_level(v2) == "x86-64-v2"
-    assert mint.isa_level(_INTEL_V3_FLAGS) == "x86-64-v3"
+    assert identity.isa_level(frozenset()) == "x86-64"
+    assert identity.isa_level(v2) == "x86-64-v2"
+    assert identity.isa_level(_INTEL_V3_FLAGS) == "x86-64-v3"
     # One flag short of v3 falls back to v2 rather than claiming v3.
-    assert mint.isa_level(_INTEL_V3_FLAGS - {"avx2"}) == "x86-64-v2"
+    assert identity.isa_level(_INTEL_V3_FLAGS - {"avx2"}) == "x86-64-v2"
 
 
 def test_v3_widens_the_vector_register_budget() -> None:
     """simdlen follows the level: 256-bit vectors are exactly what v3 buys."""
 
-    machine, march, simdlen = mint._host_isa()
+    machine, march, simdlen = identity._host_isa()
     if machine != "x86_64":
         pytest.skip("simdlen policy is x86-only")
     assert (simdlen == 256) == (march == "x86-64-v3")
@@ -343,8 +349,8 @@ def test_THIS_host_is_classified_correctly() -> None:
         if line.split(":", 1)[0].strip() in ("flags", "Features")
         for flag in line.split(":", 1)[1].split()
     }
-    expected = mint.isa_level(frozenset(features))
-    assert mint._host_isa()[1] == expected
+    expected = identity.isa_level(frozenset(features))
+    assert identity._host_isa()[1] == expected
     if {"avx2", "fma", "bmi2"} <= features:
         assert expected == "x86-64-v3", (
             f"this CPU has AVX2/FMA/BMI2 and classified {expected}"
@@ -356,12 +362,12 @@ def test_the_host_ISA_is_IMPOSED_into_the_key_not_left_to_the_caller() -> None:
     optional. A v2-compiled and a v3-compiled artifact of one graph differ in
     emitted instructions and in nothing else the key can see."""
 
-    merged = mint.imposed_env({"torch": "2.13.0"})
+    merged = identity.imposed_env({"torch": "2.13.0"})
     assert merged["torch"] == "2.13.0"
     for name in ("machine", "cpp_march", "cpp_simdlen"):
         assert name in merged, f"{name} is not in the keyed env fingerprint"
     # ...and it is the value this host actually imposes.
-    assert merged["cpp_march"] == (mint._host_isa()[1] or "")
+    assert merged["cpp_march"] == (identity._host_isa()[1] or "")
 
 
 def test_two_ISA_LEVELS_cannot_share_one_key() -> None:
@@ -371,25 +377,35 @@ def test_two_ISA_LEVELS_cannot_share_one_key() -> None:
 
     graph = "cg-graph-v1-" + "a" * 56
 
-    def key(march: str) -> str:
-        return artifact_key(
-            graph,
-            sm="sm_89",
-            env={"torch": "2.13.0", "machine": "x86_64", "cpp_march": march,
-                 "cpp_simdlen": "256"},
-            policy={"always_keep_tensor_constants": True},
-            layout=contiguous_handle(),
-        ).value
+    # `artifact_key` imposes the LOCAL host's facts, so the two levels are
+    # compared through the block the key actually digests rather than by lying
+    # to the constructor -- which it would (correctly) refuse.
+    from torchcg.identity import _block_digest
 
-    assert key("x86-64-v2") != key("x86-64-v3")
+    def axes(march: str) -> str:
+        return _block_digest(
+            "env fingerprint",
+            {"torch": "2.13.0", "machine": "x86_64", "cpp_march": march,
+             "cpp_simdlen": "256"},
+            (str,),
+        )
+
+    assert axes("x86-64-v2") != axes("x86-64-v3")
+    # ...and the imposed facts really are inside the keyed block.
+    minted = artifact_key(
+        graph, sm="sm_89", env={"torch": "2.13.0"},
+        policy={"always_keep_tensor_constants": True}, layout=contiguous_handle(),
+    )
+    assert minted.env["cpp_march"] == identity.host_facts()["cpp_march"]
 
 
 def test_a_caller_that_states_a_DIFFERENT_isa_is_refused() -> None:
     """Disagreement means the caller believes something false about the machine
     it is minting on -- a refusal, never a silent overwrite."""
 
-    with pytest.raises(MintError, match="ISA facts are measured here"):
-        mint.imposed_env({"cpp_march": "x86-64-v4"})
+    with pytest.raises(IdentityError, match="ISA facts are measured here"):
+        identity.imposed_env({"torch": "2.13.0", "cpp_march": "x86-64-v4"})
     # Restating it CORRECTLY is fine: the caller is allowed to know.
     imposed = mint.impose_host_policy()
-    assert mint.imposed_env(dict(imposed))["cpp_march"] == imposed["cpp_march"]
+    merged = identity.imposed_env({"torch": "2.13.0", **imposed})
+    assert merged["cpp_march"] == imposed["cpp_march"]
