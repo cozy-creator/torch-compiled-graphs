@@ -309,3 +309,86 @@ def test_a_recast_reaches_a_NESTED_feed() -> None:
     assert int(seen_args[1]["step"]) == 7
     # The caller's own dict is untouched.
     assert conditioning["step"].dtype is torch.int64
+
+
+# ---------------------------------------------------------------------------
+# rebind -- the constant table after a WEIGHT WRITE
+# ---------------------------------------------------------------------------
+
+
+class _Package:
+    """Stands in for torch's AOTICompiledModel: records what it was bound to."""
+
+    def __init__(self) -> None:
+        self.installs: list[dict[str, Any]] = []
+        # The fields `adopt.load` stamps and `rebind` reads back.
+        self._torchcg_retained: dict[str, Any] = {}
+        self._torchcg_state_fqns: tuple[str, ...] = ()
+        self._torchcg_literals: dict[str, Any] = {}
+
+    def load_constants(self, values: Any, **_kw: Any) -> None:
+        self.installs.append(dict(values))
+
+
+class _Module:
+    def __init__(self, weight: Any) -> None:
+        self._weight = weight
+
+    def state_dict(self) -> dict[str, Any]:
+        return {"w.weight": self._weight}
+
+    def named_buffers(self) -> list[tuple[str, Any]]:
+        return []
+
+
+def test_rebind_re_resolves_the_state_dict_and_KEEPS_the_literals() -> None:
+    """Constants bind `user_managed=True`, so the artifact holds raw POINTERS
+    into the module's tensors. Folding a LoRA REPLACES a tensor rather than
+    writing through it, which leaves those pointers aimed at storage the module
+    no longer uses — and the graph then serves stale weights with nothing
+    raising."""
+
+    from torchcg.adopt import rebind
+
+    original, folded = torch.zeros(2, 2), torch.ones(2, 2)
+    module = _Module(original)
+    package = _Package()
+    package._torchcg_retained = {"w.weight": original, "baked": torch.full((1,), 7.0)}
+    package._torchcg_state_fqns = ("w.weight",)
+    package._torchcg_literals = {"baked": torch.full((1,), 7.0)}
+
+    module._weight = folded
+    assert rebind(package, module) == 2
+
+    installed = package.installs[-1]
+    assert installed["w.weight"] is folded, "rebind kept the STALE pointer"
+    assert torch.equal(installed["baked"], torch.full((1,), 7.0)), (
+        "the trace-baked literal was dropped — it was never the module's to change"
+    )
+
+
+def test_rebind_refuses_a_package_it_did_not_load() -> None:
+    from torchcg.adopt import rebind
+    from torchcg.refuse import AdoptError
+
+    class _Foreign:
+        """A package torchcg never loaded — no stamped table at all."""
+
+    with pytest.raises(AdoptError, match="not loaded by torchcg.adopt"):
+        rebind(_Foreign(), _Module(torch.zeros(1)))
+
+
+def test_rebind_refuses_when_the_module_LOST_a_declared_constant() -> None:
+    """Silently binding a short table is how a graph ends up reading whatever
+    happens to be at an address."""
+
+    from torchcg.adopt import rebind
+    from torchcg.refuse import AdoptError
+
+    package = _Package()
+    package._torchcg_retained = {"gone": torch.zeros(1)}
+    package._torchcg_state_fqns = ("gone",)
+    package._torchcg_literals = {}
+
+    with pytest.raises(AdoptError, match="no longer holds"):
+        rebind(package, _Module(torch.zeros(1)))
