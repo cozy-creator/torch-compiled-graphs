@@ -246,54 +246,63 @@ def strip_diagnostics(program: Any) -> Any:
     return program
 
 
-def strip_weights(program: Any) -> Any:
-    """Make a saved program carry STRUCTURE, not weight bytes (pgw#1662).
+def flatten_weight_subclasses(program: Any) -> tuple[str, ...]:
+    """Replace unpicklable weight WRAPPERS with the tensor they wrap (pgw#1662).
 
-    `torch.export.save` pickles `state_dict`. For an ordinary trace those are
-    fake tensors and it copes; for a `__tensor_flatten__` SUBCLASS — torchao's
-    `Float8Tensor`, and every quantized wrapper after it — it falls to the
-    generic pickle path and drags in the inner `FakeTensorMode`'s weakref
+    `torch.export.save` pickles `state_dict`. A traceable wrapper subclass —
+    torchao's `Float8Tensor`, and every quantized wrapper after it — falls to
+    the generic pickle path and drags in the inner `FakeTensorMode`'s weakref
     closure, which cannot be pickled. h3 dies on 1442 such entries.
 
-    Making the subclass picklable is the wrong repair: it would preserve bytes
-    nothing downstream reads. The banked program is a STRUCTURAL record — the
-    thing a compile position re-specializes from — and weights are
-    checkpoint-side. So each state-dict entry becomes a meta-device tensor of
-    the same dtype and shape: everything the structure needs, no storage, no
-    subclass.
+    **What is wrong is the WRAPPER, not the weight**, and the first version of
+    this got that wrong: it replaced each entry with a meta tensor, which
+    pgw#1465's fence caught immediately — a meta state dict against a
+    device-stamped graph is TWO DEVICE STORIES, and AOTI refuses it. The blob
+    keeps one device story.
 
-    **This cannot move the graph key, and that is provable rather than hoped.**
-    `graph_hash` renders parameters and buffers as names, dtypes and shapes
-    only, and `literal_names` is `constants - (parameters | buffers)` — so the
-    one digest that reads VALUES reads trace-baked constants, which this does
-    not touch. `tests/test_banked_mint.py` asserts the hash across the strip.
+    So this unwraps instead of erasing. The inner tensor is the same device and
+    the same virtuality; only the subclass that could not be pickled is gone.
+    A plain fake tensor pickles fine, which is why every non-quantized model
+    already banks cleanly. Returns the names it flattened, so a caller can SAY
+    what it did rather than doing it silently.
 
-    The sibling of `strip_diagnostics`, and the same rule: what nothing reads
-    does not get saved.
+    **It cannot move the graph key.** `graph_hash` renders the canonical GRAPH
+    plus the ingress plus the literal digest, and `literal_names` is
+    `constants - (parameters | buffers)` — the state dict is read for names,
+    dtypes and shapes only, and none of those move here.
     """
 
     import torch
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
     state = getattr(program, "state_dict", None)
     if not state:
-        return program
+        return ()
+    flattened: list[str] = []
     for name, value in list(state.items()):
-        if not isinstance(value, torch.Tensor) or value.device.type == "meta":
+        if not isinstance(value, torch.Tensor):
             continue
-        bare = torch.empty(
-            tuple(int(d) for d in value.shape), dtype=value.dtype, device="meta"
-        )
-        # PARAMETER-NESS SURVIVES. `torch.export.save` refuses a state-dict
-        # entry for a parameter that is not an `nn.Parameter`
-        # (`SpecViolationError`), so the structural record has to keep the
-        # wrapper even though it drops the storage. `requires_grad=False`
-        # because a banked program is never trained through.
+        if not is_traceable_wrapper_subclass(value):
+            continue
+        try:
+            names, _ctx = value.__tensor_flatten__()
+            inner = [getattr(value, str(held)) for held in names]
+        except Exception:  # noqa: BLE001 - an unwalkable wrapper is left alone
+            continue
+        if len(inner) != 1 or not isinstance(inner[0], torch.Tensor):
+            # Several held tensors is not one weight -- flattening would have
+            # to invent which one the state dict entry IS. Leave it and let the
+            # save refuse honestly rather than guess.
+            continue
+        # PARAMETER-NESS SURVIVES: `torch.export.save` refuses a state-dict
+        # entry for a parameter that is not an `nn.Parameter`.
         state[name] = (
-            torch.nn.Parameter(bare, requires_grad=False)
+            torch.nn.Parameter(inner[0], requires_grad=False)
             if isinstance(value, torch.nn.Parameter)
-            else bare
+            else inner[0]
         )
-    return program
+        flattened.append(str(name))
+    return tuple(sorted(flattened))
 
 
 def _fake_mode_of(graph_module: Any) -> Any:
@@ -791,7 +800,7 @@ __all__ = [
     "mint",
     "narrowed_symbols",
     "respecialize",
+    "flatten_weight_subclasses",
     "strip_diagnostics",
-    "strip_weights",
     "write_literals",
 ]

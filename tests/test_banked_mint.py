@@ -412,83 +412,114 @@ def test_a_caller_that_states_a_DIFFERENT_isa_is_refused() -> None:
 
 
 # ---------------------------------------------------------------------------
-# pgw#1662 -- a saved program carries STRUCTURE, and the key must not move
+# pgw#1662 -- unpicklable weight WRAPPERS flatten; the key and the device stay
 # ---------------------------------------------------------------------------
 
 
-def test_stripping_weights_does_NOT_move_the_graph_key() -> None:
-    """The hard constraint on pgw#1662, discharged by construction.
+class _WrappedFake(torch.Tensor):
+    """A traceable wrapper subclass over one inner tensor -- torchao's
+    `Float8Tensor` in miniature, and the shape that cannot be pickled."""
 
-    `graph_hash` renders parameters and buffers as names, dtypes and shapes
-    only; the one digest that reads VALUES is the literal digest, and
-    `literal_names` is `constants - (parameters | buffers)`. So replacing every
-    state-dict entry with a meta tensor of the same dtype and shape cannot
-    reach either. This asserts it on a real export rather than trusting the
-    argument.
-    """
+    _inner: Any
+
+    @staticmethod
+    def __new__(cls, inner: Any) -> _WrappedFake:
+        made = torch.Tensor._make_wrapper_subclass(
+            cls, tuple(int(d) for d in inner.shape),
+            dtype=inner.dtype, device=inner.device, requires_grad=False,
+        )
+        made._inner = inner
+        return made
+
+    def __tensor_flatten__(self) -> tuple[list[str], None]:
+        return ["_inner"], None
+
+    @staticmethod
+    def __tensor_unflatten__(
+        inner: Any, _ctx: Any, _sizes: Any = None, _strides: Any = None
+    ) -> _WrappedFake:
+        return _WrappedFake(inner["_inner"])
+
+    @classmethod
+    def __torch_dispatch__(  # type: ignore[override]
+        cls, func: Any, types: Any, args: Any = (), kwargs: Any = None
+    ) -> Any:
+        unwrapped = tuple(a._inner if isinstance(a, _WrappedFake) else a for a in args)
+        out = func(*unwrapped, **(kwargs or {}))
+        # A real subclass keeps its type through `detach()` — `nn.Parameter`
+        # refuses one whose detach() decays to a plain Tensor.
+        if func is torch.ops.aten.detach.default and isinstance(out, torch.Tensor):
+            return _WrappedFake(out)
+        return out
+
+
+def test_a_weight_WRAPPER_flattens_to_the_tensor_it_wraps() -> None:
+    program, _ = export_unet(2)
+    name = next(iter(program.state_dict))
+    original = program.state_dict[name]
+    program.state_dict[name] = torch.nn.Parameter(
+        _WrappedFake(original.detach()), requires_grad=False
+    )
+
+    flattened = mint.flatten_weight_subclasses(program)
+
+    assert flattened == (name,)
+    replaced = program.state_dict[name]
+    assert not isinstance(replaced, _WrappedFake), "the wrapper survived"
+    assert isinstance(replaced, torch.nn.Parameter), "parameter-ness was dropped"
+
+
+def test_flattening_keeps_ONE_DEVICE_STORY(pgw1465: None = None) -> None:
+    """The fence that killed the first design (pgw#1465). Erasing weights to
+    META gives a device-stamped graph a meta state dict — two device stories,
+    which AOTI refuses. Unwrapping keeps the inner tensor's device."""
+
+    program, _ = export_unet(2)
+    name = next(iter(program.state_dict))
+    device_before = program.state_dict[name].device
+    program.state_dict[name] = torch.nn.Parameter(
+        _WrappedFake(program.state_dict[name].detach()), requires_grad=False
+    )
+
+    mint.flatten_weight_subclasses(program)
+
+    assert program.state_dict[name].device == device_before
+    devices = {v.device.type for v in program.state_dict.values()}
+    assert devices == {device_before.type}, devices
+    assert "meta" not in devices
+
+
+def test_flattening_does_NOT_move_the_graph_key() -> None:
+    """The hard constraint on pgw#1662, asserted on a real export."""
 
     from torchcg.identity import graph_hash
 
     program, ingress = export_unet(2)
     before = graph_hash(program, ingress)
-
-    assert any(
-        v.device.type != "meta" for v in program.state_dict.values()
-    ), "the fixture has no real state-dict weights, so this proves nothing"
-
-    mint.strip_weights(program)
-
-    assert all(v.device.type == "meta" for v in program.state_dict.values())
-    assert graph_hash(program, ingress) == before, (
-        "stripping state-dict weights moved the graph key — the saved program "
-        "is a structural record and weights are checkpoint-side"
+    name = next(iter(program.state_dict))
+    program.state_dict[name] = torch.nn.Parameter(
+        _WrappedFake(program.state_dict[name].detach()), requires_grad=False
     )
 
+    assert mint.flatten_weight_subclasses(program) == (name,)
+    assert graph_hash(program, ingress) == before
 
-def test_stripping_weights_leaves_the_TRACE_BAKED_constants_alone() -> None:
-    """The other half, and the reason the strip is scoped to `state_dict`.
 
-    Trace-baked constants DO feed the literal digest. Stripping them would move
-    the key, so they are deliberately untouched — the split is exactly
-    `literal_names`.
-    """
-
-    from torchcg.identity import literal_digest, literal_names
+def test_an_ORDINARY_weight_is_left_alone() -> None:
+    """The green half: a plain tensor pickles fine and must not be touched, or
+    the arms above only prove that something changes."""
 
     program, _ = export_unet(2)
-    before_names = literal_names(program)
-    before_digest = literal_digest(program)
-
-    mint.strip_weights(program)
-
-    assert literal_names(program) == before_names
-    assert literal_digest(program) == before_digest
+    before = {n: type(v) for n, v in program.state_dict.items()}
+    assert mint.flatten_weight_subclasses(program) == ()
+    assert {n: type(v) for n, v in program.state_dict.items()} == before
 
 
-def test_a_program_with_no_state_dict_is_returned_untouched() -> None:
-    class _Bare:
-        state_dict: dict[str, Any] = {}
+def test_a_wrapper_holding_SEVERAL_tensors_is_refused_rather_than_guessed() -> None:
+    """Flattening would have to invent which held tensor the entry IS. Left
+    alone so the save refuses honestly instead."""
 
-    bare = _Bare()
-    assert mint.strip_weights(bare) is bare
+    import inspect
 
-
-def test_stripping_weights_KEEPS_PARAMETER_NESS() -> None:
-    """`torch.export.save` refuses a state-dict entry for a parameter that is
-    not an `nn.Parameter` (`SpecViolationError`), so the structural record drops
-    the STORAGE and keeps the wrapper. Caught by a real derive, not by reading."""
-
-    program, _ = export_unet(2)
-    was_parameter = {
-        name for name, value in program.state_dict.items()
-        if isinstance(value, torch.nn.Parameter)
-    }
-    assert was_parameter, "the fixture has no parameters, so this proves nothing"
-
-    mint.strip_weights(program)
-
-    for name in was_parameter:
-        value = program.state_dict[name]
-        assert isinstance(value, torch.nn.Parameter), name
-        assert value.device.type == "meta", name
-        assert not value.requires_grad, name
+    source = inspect.getsource(mint.flatten_weight_subclasses)
+    assert "len(inner) != 1" in source
